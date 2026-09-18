@@ -7,13 +7,8 @@
   import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
   import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
   import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput } from '@codemirror/language';
-  import { javascript } from '@codemirror/lang-javascript';
-  import { markdown } from '@codemirror/lang-markdown';
-  import { json } from '@codemirror/lang-json';
-  import { css } from '@codemirror/lang-css';
-  import { html } from '@codemirror/lang-html';
-  import { python } from '@codemirror/lang-python';
   import { vim } from '@replit/codemirror-vim';
+  import { languageExtension } from '../core/languages.js';
   import logoUrl from '../../resource/Logo NiZyLa.svg';
 
   export let file = null;
@@ -162,16 +157,6 @@
     });
   }
 
-  function languageExtension(name = '') {
-    const lower = name.toLowerCase();
-    if (/\.(js|jsx|ts|tsx|mjs|cjs|svelte)$/.test(lower)) return javascript({ jsx: true, typescript: /\.(ts|tsx|svelte)$/.test(lower) });
-    if (lower.endsWith('.md')) return markdown();
-    if (lower.endsWith('.json')) return json();
-    if (/\.(css|scss)$/.test(lower)) return css();
-    if (/\.(html|xml)$/.test(lower)) return html();
-    if (lower.endsWith('.py')) return python();
-    return [];
-  }
 </script>
 
 <div class="editor-host" class:hidden={!file} bind:this={host}></div>

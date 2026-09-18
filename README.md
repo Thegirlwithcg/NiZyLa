@@ -42,6 +42,10 @@ npm install
 npm run dev
 ```
 
+## Language support
+
+Syntax highlighting and local autocomplete are built in for GDScript, C/C++, C#, Python, JavaScript/TypeScript, HTML, CSS, JSON, and Markdown. GDScript, C/C++, and C# suggestions use language keywords, common built-ins, and words from the current file without requiring Godot or an external language server.
+
 ## Build desktop apps
 
 NiZyLa is configured with Electron Builder for Windows, Linux, and macOS.
@@ -61,6 +65,7 @@ Build artifacts are written to `release/`. GitHub Actions also builds all three 
 - Explorer sidebar
 - Create files and folders inside the active workspace
 - Code editor with optional Vim mode
+- GDScript, C/C++, and C# syntax highlighting and local autocomplete
 - Real file tabs
 - Toggleable split editor panes
 - Toggleable project graph panel
@@ -73,7 +78,6 @@ Build artifacts are written to `release/`. GitHub Actions also builds all three 
 - Command terminal panel
 - User-selectable themes; default is Cream Light with JetBrains-style monospace text
 - Plugin discovery scaffold via `.nizyla/plugins/*/plugin.json`
-- LSP registry scaffold for future language-server integration
 
 ## Useful shortcuts
 
@@ -87,6 +91,5 @@ Build artifacts are written to `release/`. GitHub Actions also builds all three 
 
 - True pseudo-terminal support with streaming output
 - Tree-sitter parsers for accurate symbols across languages
-- Full LSP transport and diagnostics UI
 - Plugin runtime sandbox and contribution points
 - Persist workspace/session state

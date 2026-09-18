@@ -23,6 +23,7 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5174 && cross-env NIZYLA_DEV=1 electron . --in-process-gpu\"",
     "web": "vite --host 127.0.0.1",
+    "test": "node --test test/*.test.js",
     "build": "vite build",
     "prepack": "npm run build",
     "start": "npm run build && electron .",
@@ -36,6 +37,7 @@
   "dependencies": {
     "@codemirror/autocomplete": "latest",
     "@codemirror/commands": "latest",
+    "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "latest",
     "@codemirror/lang-html": "latest",
     "@codemirror/lang-javascript": "latest",
@@ -43,6 +45,7 @@
     "@codemirror/lang-markdown": "latest",
     "@codemirror/lang-python": "latest",
     "@codemirror/language": "latest",
+    "@codemirror/legacy-modes": "^6.5.4",
     "@codemirror/search": "latest",
     "@codemirror/state": "latest",
     "@codemirror/view": "latest",

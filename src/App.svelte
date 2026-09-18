@@ -416,7 +416,7 @@
       <img class="logo" src={logoUrl} alt="NiZyLa logo" />
       <div>
         <strong>NiZyLa</strong>
-        <span>{projects.length} workspace{projects.length === 1 ? '' : 's'} · {plugins.length} plugin{plugins.length === 1 ? '' : 's'} · LSP-ready core</span>
+        <span>{projects.length} workspace{projects.length === 1 ? '' : 's'} · {plugins.length} plugin{plugins.length === 1 ? '' : 's'} · local code completion</span>
       </div>
     </div>
     <div class="actions">
