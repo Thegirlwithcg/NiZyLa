@@ -29,6 +29,7 @@
   let markdownMenu = null;
   let tablePicker = false;
   let tableSize = { columns: 2, rows: 2 };
+  let insertingTableDivider = false;
   $: isMarkdown = file?.name?.toLowerCase().endsWith('.md');
 
   $: if (view && (file?.path !== lastFilePath || vimMode !== lastVimMode || showLineNumbers !== lastShowLineNumbers)) {
@@ -103,6 +104,23 @@
     markdownMenu = null;
   }
 
+  function maybeInsertTableDivider(update) {
+    if (insertingTableDivider || !isMarkdown || !update.transactions.some((transaction) => transaction.isUserEvent('input'))) return;
+    const cursor = update.state.selection.main.head;
+    const current = update.state.doc.lineAt(cursor);
+    if (current.text.trim()) return;
+    const previous = update.state.doc.lineAt(Math.max(0, current.from - 1));
+    const values = previous.text.trim().replace(/^\||\|$/g, '').split('|').map((value) => value.trim());
+    if (!previous.text.trim().startsWith('|') || !previous.text.trim().endsWith('|') || values.length < 1 || values.some((value) => !value)) return;
+    insertingTableDivider = true;
+    queueMicrotask(() => {
+      const position = view.state.selection.main.head;
+      const emptyLine = view.state.doc.lineAt(position);
+      if (!emptyLine.text.trim()) view.dispatch({ changes: { from: emptyLine.from, insert: `| ${values.map(() => '---').join(' | ')} |\n` } });
+      insertingTableDivider = false;
+    });
+  }
+
   function heading(level) {
     const selection = view.state.selection.main;
     const line = view.state.doc.lineAt(selection.from);
@@ -135,7 +153,9 @@
           '.cm-cursor': { borderLeftColor: 'var(--accent)' }
         }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) dispatch('change', update.state.doc.toString());
+          if (!update.docChanged) return;
+          dispatch('change', update.state.doc.toString());
+          maybeInsertTableDivider(update);
         })
       ]
     });
