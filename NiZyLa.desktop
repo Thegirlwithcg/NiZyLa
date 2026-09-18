@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NiZyLa
+Comment=Graph-aware programming editor
+Exec=/home/nicha/Projects/Nicha/NiZyLa/NiZyLa.sh
+Path=/home/nicha/Projects/Nicha/NiZyLa
+Terminal=false
+Categories=Development;IDE;TextEditor;
+StartupNotify=true

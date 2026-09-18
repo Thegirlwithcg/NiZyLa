@@ -1,0 +1,27 @@
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('nizyla', {
+  openProject: () => ipcRenderer.invoke('project:open'),
+  scanProject: (rootPath) => ipcRenderer.invoke('project:scan', rootPath),
+  readFile: (filePath) => ipcRenderer.invoke('file:read', filePath),
+  writeFile: (filePath, content) => ipcRenderer.invoke('file:write', filePath, content),
+  createFile: (filePath) => ipcRenderer.invoke('file:create', filePath),
+  createFolder: (folderPath) => ipcRenderer.invoke('folder:create', folderPath),
+  deletePath: (targetPath) => ipcRenderer.invoke('path:delete', targetPath),
+  createTerminal: (cwd) => ipcRenderer.invoke('terminal:create', cwd),
+  terminalInput: (id, data) => ipcRenderer.send('terminal:input', id, data),
+  terminalResize: (id, cols, rows) => ipcRenderer.send('terminal:resize', id, cols, rows),
+  closeTerminal: (id) => ipcRenderer.send('terminal:close', id),
+  onTerminalData: (callback) => {
+    const handler = (_event, id, data) => callback(id, data);
+    ipcRenderer.on('terminal:data', handler);
+    return () => ipcRenderer.removeListener('terminal:data', handler);
+  },
+  onTerminalExit: (callback) => {
+    const handler = (_event, id) => callback(id);
+    ipcRenderer.on('terminal:exit', handler);
+    return () => ipcRenderer.removeListener('terminal:exit', handler);
+  },
+  runCommand: (command, cwd) => ipcRenderer.invoke('terminal:run', command, cwd),
+  listPlugins: (rootPaths) => ipcRenderer.invoke('plugins:list', rootPaths)
+});
