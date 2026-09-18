@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('nizyla', {
   createFile: (filePath) => ipcRenderer.invoke('file:create', filePath),
   createFolder: (folderPath) => ipcRenderer.invoke('folder:create', folderPath),
   deletePath: (targetPath) => ipcRenderer.invoke('path:delete', targetPath),
+  movePath: (sourcePath, targetFolderPath) => ipcRenderer.invoke('path:move', sourcePath, targetFolderPath),
   createTerminal: (cwd) => ipcRenderer.invoke('terminal:create', cwd),
   terminalInput: (id, data) => ipcRenderer.send('terminal:input', id, data),
   terminalResize: (id, cols, rows) => ipcRenderer.send('terminal:resize', id, cols, rows),

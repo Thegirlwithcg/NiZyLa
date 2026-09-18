@@ -199,6 +199,19 @@ ipcMain.handle('path:delete', async (_event, targetPath) => {
   await fs.rm(targetPath, { recursive: true, force: false });
   return { ok: true, path: targetPath };
 });
+ipcMain.handle('path:move', async (_event, sourcePath, targetFolderPath) => {
+  const source = path.resolve(sourcePath);
+  const targetFolder = path.resolve(targetFolderPath);
+  const destination = path.join(targetFolder, path.basename(source));
+  if (source === targetFolder || targetFolder.startsWith(`${source}${path.sep}`)) throw new Error('A folder cannot be moved into itself.');
+  const targetStat = await fs.stat(targetFolder);
+  if (!targetStat.isDirectory()) throw new Error('The destination must be a folder.');
+  await fs.access(destination).then(() => { throw new Error(`${path.basename(source)} already exists in this folder.`); }).catch((error) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  await fs.rename(source, destination);
+  return { ok: true, path: destination };
+});
 ipcMain.handle('terminal:create', async (event, cwd) => {
   const pty = await loadNodePty();
   if (!pty) throw new Error('Integrated terminal is unavailable because node-pty could not be installed.');

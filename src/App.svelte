@@ -144,6 +144,27 @@
     await selectFile(event.detail);
   }
 
+  async function moveGraphNode(event) {
+    const { source, target } = event.detail;
+    if (!api?.movePath || source.type !== 'file') return;
+    try {
+      const result = await api.movePath(source.path, target.path);
+      panes = panes.map((pane) => ({
+        ...pane,
+        tabs: pane.tabs.map((tab) => tab.file.path === source.path ? {
+          ...tab,
+          id: result.path,
+          file: { ...tab.file, path: result.path, relativePath: `${target.relativePath}/${tab.file.name}` }
+        } : tab),
+        active: pane.active === source.path ? result.path : pane.active
+      }));
+      status = `Moved ${source.name} to ${target.relativePath}`;
+      await refreshProject();
+    } catch (error) {
+      status = `Could not move ${source.name}: ${error.message}`;
+    }
+  }
+
   async function openWikiLink(target) {
     const wanted = target.trim().replace(/^\/+|\/+$/g, '').replace(/\.md$/i, '').toLowerCase();
     const note = files.find((file) => {
@@ -464,7 +485,7 @@
           <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
         </div>
         {#if project}
-          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} />
+          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} on:move={moveGraphNode} />
         {:else}
           <div class="empty">Graph appears after opening a project.</div>
         {/if}

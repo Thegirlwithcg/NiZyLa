@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import folderIcon from '../../resource/yellow_folder_icon.png';
 
   export let graph;
   export let activePath = null;
@@ -11,17 +12,26 @@
   let panY = 0;
   let drag = null;
   let customPositions = new Map();
+  let currentFolderId = null;
+  let suppressNodeClick = false;
+  let contextMenu = null;
 
-  $: layout = makeLayout(graph, customPositions);
+  $: layout = makeLayout(graph, customPositions, currentFolderId);
 
-  function makeLayout(input, positions) {
-    if (!input) return { nodes: [], edges: [], width: 640, height: 640 };
+  function makeLayout(input, positions, folderId) {
+    if (!input) return { nodes: [], edges: [], width: 640, height: 640, folder: null, parentId: null };
 
-    const importantEdges = input.edges.filter((edge) => edge.type !== 'contains');
-    const connected = new Set(importantEdges.flatMap((edge) => [edge.source, edge.target]));
+    const byId = new Map(input.nodes.map((node) => [node.id, node]));
+    const parentById = new Map(input.edges.filter((edge) => edge.type === 'contains').map((edge) => [edge.target, edge.source]));
+    const root = input.nodes.find((node) => node.type === 'folder' && !parentById.has(node.id));
+    const activeFolderId = folderId && byId.has(folderId) ? folderId : root?.id;
+    const folder = byId.get(activeFolderId) ?? null;
+
+    // Drill-down view: show only this folder's immediate contents.  This keeps
+    // hierarchy clear and avoids meaningless lines between unrelated nodes.
     const visibleNodes = input.nodes
-      .filter((node) => (node.type === 'file' || node.type === 'symbol') && (connected.has(node.id) || input.nodes.length < 100))
-      .slice(0, fullscreen ? 320 : 180);
+      .filter((node) => parentById.get(node.id) === activeFolderId && (node.type === 'folder' || node.type === 'file'))
+      .slice(0, fullscreen ? 420 : 240);
 
     const nodeIds = new Set(visibleNodes.map((node) => node.id));
     const visibleEdges = input.edges.filter((edge) => edge.type !== 'contains' && nodeIds.has(edge.source) && nodeIds.has(edge.target));
@@ -42,13 +52,14 @@
         y: saved?.y ?? centerY + Math.sin(angle) * (radius + importCount * 5),
         vx: 0,
         vy: 0,
+        z: saved?.z ?? Math.sin(index * 2.399) * 48,
         pinned: Boolean(saved),
-        size: Math.min(18, 7 + importCount * 2)
+        size: node.type === 'folder' ? 18 : Math.min(18, 7 + importCount * 2)
       };
     });
 
-    const byId = new Map(nodes.map((node) => [node.id, node]));
-    const edges = visibleEdges.map((edge) => ({ ...edge, sourceNode: byId.get(edge.source), targetNode: byId.get(edge.target) })).filter((edge) => edge.sourceNode && edge.targetNode);
+    const positionedById = new Map(nodes.map((node) => [node.id, node]));
+    const edges = visibleEdges.map((edge) => ({ ...edge, sourceNode: positionedById.get(edge.source), targetNode: positionedById.get(edge.target) })).filter((edge) => edge.sourceNode && edge.targetNode);
 
     for (let step = 0; step < 70; step += 1) {
       for (let i = 0; i < nodes.length; i += 1) {
@@ -80,17 +91,20 @@
         if (node.pinned) continue;
         node.vx += (centerX - node.x) * 0.0008;
         node.vy += (centerY - node.y) * 0.0008;
-        node.x = Math.max(20, Math.min(width - 140, node.x + node.vx));
-        node.y = Math.max(20, Math.min(height - 20, node.y + node.vy));
+        // The graph is a canvas, not a bounded diagram: nodes may travel beyond
+        // the initial viewport and remain reachable through pan/zoom.
+        node.x += node.vx;
+        node.y += node.vy;
         node.vx *= 0.84;
         node.vy *= 0.84;
       }
     }
 
-    return { nodes, edges, width, height };
+    return { nodes, edges, width, height, folder, parentId: parentById.get(activeFolderId) ?? null };
   }
 
   function colorFor(edge) {
+    if (edge.type === 'contains') return 'var(--border-strong)';
     if (edge.type === 'imports') return 'var(--graph-imports)';
     if (edge.type === 'links') return 'var(--graph-links)';
     if (edge.type === 'defines') return 'var(--graph-defines)';
@@ -99,14 +113,41 @@
 
   function activateNode(node) { dispatch('node', node); }
 
+  function nodeClick(node) {
+    if (node.type === 'folder' && !suppressNodeClick) enterFolder(node);
+  }
+
+  function enterFolder(node) {
+    // Folder navigation is intentionally independent from drag suppression:
+    // a normal double-click has two mouse-up events and may include a few
+    // pixels of pointer jitter, which must not block navigation.
+    if (node.type !== 'folder') return;
+    currentFolderId = node.id;
+    customPositions = new Map();
+    panX = 0;
+    panY = 0;
+    zoom = 1;
+  }
+
+  function goUp() {
+    if (!layout.parentId) return;
+    currentFolderId = layout.parentId;
+    customPositions = new Map();
+    panX = 0;
+    panY = 0;
+    zoom = 1;
+  }
+
   function nodeKeydown(event, node) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      activateNode(node);
+      if (node.type === 'folder') enterFolder(node);
+      else activateNode(node);
     }
   }
 
   let svgEl;
+  let graphHost;
 
   function viewportPoint(event) {
     const rect = svgEl.getBoundingClientRect();
@@ -126,11 +167,15 @@
 
   function startNodeDrag(event, node) {
     event.stopPropagation();
+    graphHost?.focus({ preventScroll: true });
     const point = svgPoint(event);
-    drag = { type: 'node', id: node.id, dx: node.x - point.x, dy: node.y - point.y };
+    suppressNodeClick = false;
+    drag = { type: 'node', id: node.id, dx: node.x - point.x, dy: node.y - point.y, z: node.z, startX: event.clientX, startY: event.clientY }; 
   }
 
   function startPan(event) {
+    contextMenu = null;
+    graphHost?.focus({ preventScroll: true });
     drag = { type: 'pan', x: event.clientX, y: event.clientY, panX, panY };
   }
 
@@ -141,21 +186,50 @@
       panY = drag.panY + event.clientY - drag.y;
       return;
     }
+    if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) suppressNodeClick = true;
     const point = svgPoint(event);
-    customPositions = new Map(customPositions).set(drag.id, { x: point.x + drag.dx, y: point.y + drag.dy });
+    customPositions = new Map(customPositions).set(drag.id, { x: point.x + drag.dx, y: point.y + drag.dy, z: drag.z });
   }
 
-  function endDrag() { drag = null; }
+  function endDrag(event) {
+    const finishedDrag = drag;
+    drag = null;
+    if (finishedDrag?.type === 'node' && event) {
+      const point = svgPoint(event);
+      const target = layout.nodes.find((node) => node.type === 'folder' && node.id !== finishedDrag.id && Math.hypot(node.x - point.x, node.y - point.y) < node.size + 18);
+      const source = layout.nodes.find((node) => node.id === finishedDrag.id);
+      if (source && target && source.type === 'file') dispatch('move', { source, target });
+    }
+    if (suppressNodeClick) setTimeout(() => { suppressNodeClick = false; }, 0);
+  }
+
+  function openNodeMenu(event, node) {
+    event.preventDefault();
+    event.stopPropagation();
+    contextMenu = { x: event.clientX, y: event.clientY, node };
+  }
+
+  function openFolderFromMenu() {
+    if (contextMenu?.node.type === 'folder') enterFolder(contextMenu.node);
+    contextMenu = null;
+  }
 
   function wheel(event) {
     event.preventDefault();
     const pointer = viewportPoint(event);
     const graphX = (pointer.x - panX) / zoom;
     const graphY = (pointer.y - panY) / zoom;
-    const next = Math.max(0.28, Math.min(3, zoom * (event.deltaY > 0 ? 0.9 : 1.1)));
+    const next = Math.max(0.1, Math.min(8, zoom * (event.deltaY > 0 ? 0.9 : 1.1)));
     panX = pointer.x - graphX * next;
     panY = pointer.y - graphY * next;
     zoom = next;
+  }
+
+  function graphKeydown(event) {
+    if (event.key === 'Backspace' && layout.parentId) {
+      event.preventDefault();
+      goUp();
+    }
   }
 
   function resetView() {
@@ -166,14 +240,15 @@
   }
 </script>
 
-<div class="graph-wrap" class:fullscreen role="presentation" on:mousedown={startPan} on:mousemove={move} on:mouseup={endDrag} on:mouseleave={endDrag} on:wheel={wheel}>
+<div class="graph-wrap" class:fullscreen role="button" tabindex="0" aria-label="Interactive project graph. Double-click a folder to enter it; press Backspace to go up." bind:this={graphHost} on:mousedown={startPan} on:mousemove={move} on:mouseup={endDrag} on:mouseleave={endDrag} on:wheel={wheel} on:keydown={graphKeydown}>
   <div class="graph-tools">
-    <button on:click={() => (zoom = Math.min(3, zoom * 1.18))}>+</button>
-    <button on:click={() => (zoom = Math.max(0.28, zoom / 1.18))}>−</button>
+    {#if layout.parentId}<button on:click={goUp} aria-label="Go to parent folder">↑</button>{/if}
+    <button on:click={() => (zoom = Math.min(8, zoom * 1.18))}>+</button>
+    <button on:click={() => (zoom = Math.max(0.1, zoom / 1.18))}>−</button>
     <button on:click={resetView}>Reset</button>
   </div>
 
-  <svg bind:this={svgEl} viewBox="0 0 {layout.width} {layout.height}" role="img" aria-label="Project graph">
+  <svg bind:this={svgEl} viewBox="0 0 {layout.width} {layout.height}" role="img" aria-label={`Project graph: ${layout.folder?.relativePath ?? ''}`}> 
     <defs>
       <filter id="glow">
         <feGaussianBlur stdDeviation="3" result="coloredBlur" />
@@ -183,17 +258,31 @@
 
     <g class="graph-camera" transform="translate({panX}, {panY}) scale({zoom})">
       {#each layout.edges as edge (edge.id)}
-        <line x1={edge.sourceNode.x} y1={edge.sourceNode.y} x2={edge.targetNode.x} y2={edge.targetNode.y} stroke={colorFor(edge)} stroke-width="1.3" stroke-opacity="0.68" />
+        <line x1={edge.sourceNode.x} y1={edge.sourceNode.y} x2={edge.targetNode.x} y2={edge.targetNode.y} stroke={colorFor(edge)} stroke-width={1 + ((edge.sourceNode.z + edge.targetNode.z + 96) / 192) * 1.1} stroke-opacity={0.34 + ((edge.sourceNode.z + edge.targetNode.z + 96) / 192) * 0.42} />
       {/each}
 
       {#each layout.nodes as node (node.id)}
-        <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} transform="translate({node.x}, {node.y})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:dblclick={() => activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
-          <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
+        <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} class:folder={node.type === 'folder'} transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:click={() => nodeClick(node)} on:contextmenu={(event) => openNodeMenu(event, node)} on:dblclick={() => node.type === 'folder' ? enterFolder(node) : activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
+          {#if node.type === 'folder'}
+            <image class="folder-icon" href={folderIcon} x={-node.size} y={-node.size} width={node.size * 2} height={node.size * 2} />
+          {:else}
+            <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
+          {/if}
           <text x={node.size + 6} y="4">{node.label}</text>
         </g>
       {/each}
     </g>
   </svg>
+
+  {#if contextMenu}
+    <div class="graph-context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px" role="menu" tabindex="-1" on:mousedown|stopPropagation>
+      {#if contextMenu.node.type === 'folder'}
+        <button on:click={openFolderFromMenu}>Open folder</button>
+      {:else}
+        <span>Drag this file onto a folder to move it</span>
+      {/if}
+    </div>
+  {/if}
 
   <div class="legend">
     <span><i class="imports"></i> imports</span>
