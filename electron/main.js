@@ -17,6 +17,19 @@ const isDev = process.env.NIZYLA_DEV === '1';
 
 let mainWindow;
 
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
+  process.exit(0);
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 function compareVersions(a, b) {
   const left = String(a).split('.').map((part) => Number.parseInt(part, 10) || 0);
   const right = String(b).split('.').map((part) => Number.parseInt(part, 10) || 0);
@@ -105,6 +118,11 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false
     }
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    mainWindow.focus();
   });
 
   if (isDev) {
