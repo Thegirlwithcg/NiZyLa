@@ -26,6 +26,19 @@ npm install
 npm run dev
 ```
 
+## Build desktop apps
+
+NiZyLa is configured with Electron Builder for Windows, Linux, and macOS.
+Build on the matching OS for best results:
+
+```bash
+npm run dist:linux   # Linux AppImage
+npm run dist:win     # Windows NSIS installer
+npm run dist:mac     # macOS DMG
+```
+
+Build artifacts are written to `release/`. GitHub Actions also builds all three platforms on push.
+
 ## Current prototype
 
 - Multiple workspaces

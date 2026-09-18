@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import { scanProject, readTextFile, writeTextFile } from './scanner.js';
@@ -16,6 +17,15 @@ const isDev = process.env.NIZYLA_DEV === '1';
 
 let mainWindow;
 
+function getShellConfig() {
+  if (process.platform === 'win32') {
+    const shell = process.env.COMSPEC || 'cmd.exe';
+    return { shell, args: [] };
+  }
+
+  return { shell: process.env.SHELL || '/bin/bash', args: ['--login'] };
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -24,7 +34,7 @@ function createWindow() {
     minHeight: 680,
     title: 'NiZyLa',
     backgroundColor: '#15141b',
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -40,6 +50,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'win32') app.setAppUserModelId('com.thegirlwithcg.nizyla');
+
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'fileMenu' },
     { role: 'editMenu' },
@@ -98,9 +110,9 @@ ipcMain.handle('path:delete', async (_event, targetPath) => {
   return { ok: true, path: targetPath };
 });
 ipcMain.handle('terminal:create', (event, cwd) => {
-  const id = crypto.randomUUID();
-  const shell = process.env.SHELL || '/bin/bash';
-  const terminal = pty.spawn(shell, ['--login'], {
+  const id = randomUUID();
+  const { shell, args } = getShellConfig();
+  const terminal = pty.spawn(shell, args, {
     name: 'xterm-256color',
     cols: 100,
     rows: 24,
