@@ -92,10 +92,12 @@
     plugins = await api.listPlugins(projects.map((p) => p.rootPath));
   }
 
-  function isImageFile(filePath = '') {
+  function previewTypeFor(filePath = '') {
     const cleanPath = filePath.split('?')[0].split('#')[0].toLowerCase();
     const ext = cleanPath.includes('.') ? cleanPath.slice(cleanPath.lastIndexOf('.')) : '';
-    return imageExtensions.has(ext);
+    if (imageExtensions.has(ext)) return 'image';
+    if (ext === '.pdf') return 'pdf';
+    return 'text';
   }
 
   function closeWorkspace(index) {
@@ -117,10 +119,11 @@
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
     if (owningProject >= 0) activeProjectIndex = owningProject;
 
-    const previewType = isImageFile(entry.path) ? 'image' : 'text';
+    const previewType = previewTypeFor(entry.path);
     let content = '';
     try {
-      content = previewType === 'image' ? await api.readFileDataUrl(entry.path) : await api.readFile(entry.path);
+      // ponytail: reuse the existing data-URL bridge; switch to a local protocol only if large PDFs become a measured bottleneck.
+      content = previewType === 'text' ? await api.readFile(entry.path) : await api.readFileDataUrl(entry.path);
     } catch (error) {
       status = `Could not read ${entry.name}: ${error.message}`;
       return;
@@ -210,7 +213,7 @@
   async function saveFile() {
     const pane = panes[activePane];
     const tab = pane?.tabs.find((item) => item.id === pane.active);
-    if (!tab || !api || tab.file.previewType === 'image') return;
+    if (!tab || !api || tab.file.previewType !== 'text') return;
     await api.writeFile(tab.file.path, tab.content);
     panes = panes.map((p, index) => index === activePane ? { ...p, tabs: p.tabs.map((t) => t.id === tab.id ? { ...t, dirty: false } : t) } : p);
     status = `Saved ${tab.file.relativePath}`;
@@ -485,6 +488,8 @@
               <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
               <div>{getActiveTab(pane).file.relativePath}</div>
             </div>
+          {:else if getActiveTab(pane)?.file?.previewType === 'pdf'}
+            <iframe class="pdf-preview" src={getActiveTab(pane).content} title={`PDF preview: ${getActiveTab(pane).file.relativePath}`}></iframe>
           {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
             <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}

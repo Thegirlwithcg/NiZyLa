@@ -66,6 +66,7 @@ Build artifacts are written to `release/`. GitHub Actions also builds all three 
 - Create files and folders inside the active workspace
 - Code editor with optional Vim mode
 - GDScript, C/C++, and C# syntax highlighting and local autocomplete
+- Built-in PDF preview
 - Real file tabs
 - Toggleable split editor panes
 - Toggleable project graph panel
