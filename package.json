@@ -30,9 +30,9 @@
     "preview": "vite preview",
     "electron": "electron .",
     "dist": "npm run build && electron-builder",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:mac": "npm run build && electron-builder --mac"
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never"
   },
   "dependencies": {
     "@codemirror/autocomplete": "latest",
@@ -98,6 +98,7 @@
       "icon": "resource/Logo NiZyLa.ico"
     },
     "mac": {
+      "icon": "resource/Logo NiZyLa.png",
       "target": [
         "dmg"
       ],
