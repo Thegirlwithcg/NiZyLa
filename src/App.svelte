@@ -4,6 +4,7 @@
   import CodeEditor from './components/CodeEditor.svelte';
   import GraphView from './components/GraphView.svelte';
   import TerminalPanel from './components/TerminalPanel.svelte';
+  import MarkdownPreview from './components/MarkdownPreview.svelte';
 
   let projects = [];
   let activeProjectIndex = 0;
@@ -14,6 +15,7 @@
   let terminalVisible = false;
   let splitMode = false;
   let vimMode = false;
+  let markdownPreview = false;
   let paletteOpen = false;
   let query = '';
   let paletteInput;
@@ -28,6 +30,9 @@
   let graphFloating = false;
   let graphFloat = { x: 320, y: 90, width: 760, height: 560 };
   let floatingDrag = null;
+  let workspaceEl;
+  let layoutDrag = null;
+  let layoutSize = { sidebar: 270, graph: 390, terminal: 190 };
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -136,6 +141,16 @@
     await selectFile(event.detail);
   }
 
+  async function openWikiLink(target) {
+    const wanted = target.trim().replace(/^\/+|\/+$/g, '').replace(/\.md$/i, '').toLowerCase();
+    const note = files.find((file) => {
+      if (file.projectRoot !== project?.rootPath || !file.name.toLowerCase().endsWith('.md')) return false;
+      return file.relativePath.replace(/\.md$/i, '').toLowerCase() === wanted;
+    });
+    if (note) await selectFile(note);
+    else status = `Note not found: ${target}`;
+  }
+
   function updateTabContent(paneIndex, content) {
     const pane = panes[paneIndex];
     panes = panes.map((p, index) => index === paneIndex ? {
@@ -190,7 +205,7 @@
   async function openCreateDialog(type) {
     if (!project) return;
     createDialog = type;
-    createPath = type === 'file' ? 'src/new-file.js' : 'src/new-folder';
+    createPath = type === 'folder' ? 'src/new-folder' : type === 'note' ? 'notes/new-note.md' : 'src/new-file.js';
     await tick();
     createInput?.focus();
     createInput?.select();
@@ -252,9 +267,13 @@
     const name = cleanRelativePath(createPath);
     if (!name) return;
     try {
-      if (createDialog === 'file') {
+      if (createDialog === 'file' || createDialog === 'note') {
         const filePath = `${project.rootPath}/${name}`;
         await api.createFile(filePath);
+        if (createDialog === 'note') {
+          const title = name.split('/').at(-1).replace(/\.md$/i, '').replace(/[-_]/g, ' ');
+          await api.writeFile(filePath, `---\ntitle: ${title}\ncreated: ${new Date().toISOString().slice(0, 10)}\ntags: []\n---\n\n# ${title}\n\n`);
+        }
         await refreshProject();
         await selectFile({ name: name.split('/').at(-1), path: filePath, relativePath: name, type: 'file' });
         status = `Created file ${name}`;
@@ -277,20 +296,58 @@
     window.addEventListener('pointerup', stopFloatingGraphDrag, { once: true });
   }
 
+  function startFloatingGraphMove(event) {
+    if (!event.target.closest('button')) startFloatingGraphDrag(event, 'move');
+  }
+
   function moveFloatingGraph(event) {
     if (!floatingDrag) return;
     const dx = event.clientX - floatingDrag.startX;
     const dy = event.clientY - floatingDrag.startY;
     if (floatingDrag.type === 'move') {
-      graphFloat = { ...graphFloat, x: Math.max(8, floatingDrag.x + dx), y: Math.max(56, floatingDrag.y + dy) };
+      graphFloat = {
+        ...graphFloat,
+        x: Math.max(8, Math.min(window.innerWidth - floatingDrag.width - 8, floatingDrag.x + dx)),
+        y: Math.max(56, Math.min(window.innerHeight - floatingDrag.height - 32, floatingDrag.y + dy))
+      };
     } else {
-      graphFloat = { ...graphFloat, width: Math.max(360, floatingDrag.width + dx), height: Math.max(280, floatingDrag.height + dy) };
+      graphFloat = {
+        ...graphFloat,
+        width: Math.max(360, Math.min(window.innerWidth - floatingDrag.x - 8, floatingDrag.width + dx)),
+        height: Math.max(280, Math.min(window.innerHeight - floatingDrag.y - 32, floatingDrag.height + dy))
+      };
     }
   }
 
   function stopFloatingGraphDrag() {
     floatingDrag = null;
     window.removeEventListener('pointermove', moveFloatingGraph);
+  }
+
+  function startLayoutResize(event, type) {
+    event.preventDefault();
+    layoutDrag = { type, startX: event.clientX, startY: event.clientY, ...layoutSize };
+    window.addEventListener('pointermove', moveLayoutResize);
+    window.addEventListener('pointerup', stopLayoutResize, { once: true });
+  }
+
+  function moveLayoutResize(event) {
+    if (!layoutDrag) return;
+    const dx = event.clientX - layoutDrag.startX;
+    const dy = event.clientY - layoutDrag.startY;
+    const workspaceWidth = workspaceEl?.clientWidth ?? window.innerWidth;
+    if (layoutDrag.type === 'sidebar') {
+      layoutSize = { ...layoutSize, sidebar: Math.max(180, Math.min(workspaceWidth - layoutSize.graph - 380, layoutDrag.sidebar + dx)) };
+    } else if (layoutDrag.type === 'graph') {
+      layoutSize = { ...layoutSize, graph: Math.max(280, Math.min(workspaceWidth - layoutSize.sidebar - 360, layoutDrag.graph - dx)) };
+    } else {
+      layoutSize = { ...layoutSize, terminal: Math.max(120, Math.min(window.innerHeight - 180, layoutDrag.terminal - dy)) };
+    }
+  }
+
+  function stopLayoutResize() {
+    layoutDrag = null;
+    window.removeEventListener('pointermove', moveLayoutResize);
   }
 
   function flattenFiles(entry) {
@@ -302,7 +359,7 @@
   }
 </script>
 
-<div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating}>
+<div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
   <header class="topbar">
     <div class="brand">
       <div class="logo">N</div>
@@ -322,12 +379,15 @@
       <button on:click={() => (splitMode = !splitMode)} class:active={splitMode}>Split</button>
       <button on:click={() => (terminalVisible = !terminalVisible)} class:active={terminalVisible}>Terminal</button>
       <button on:click={() => (vimMode = !vimMode)} class:active={vimMode}>Vim {vimMode ? 'On' : 'Off'}</button>
+      {#if activeFile?.name?.toLowerCase().endsWith('.md')}
+        <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
+      {/if}
       <button on:click={() => (graphVisible = !graphVisible)}>Graph {graphVisible ? 'Hide' : 'Show'}</button>
       <button class="primary" on:click={saveFile} disabled={!activeTab || !activeTab.dirty}>Save</button>
     </div>
   </header>
 
-  <main class="workspace">
+  <main class="workspace" bind:this={workspaceEl}>
     <aside class="sidebar panel">
       <div class="panel-title">Workspaces</div>
       {#if projects.length}
@@ -342,6 +402,7 @@
         <div class="panel-title small explorer-title">
           <span>Explorer</span>
           <button on:click={() => openCreateDialog('file')} disabled={!project}>+ File</button>
+          <button on:click={() => openCreateDialog('note')} disabled={!project}>+ Note</button>
           <button on:click={() => openCreateDialog('folder')} disabled={!project}>+ Folder</button>
         </div>
         <FileTree entry={project.tree} {activeFile} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} />
@@ -349,6 +410,9 @@
         <div class="empty">No folder open.</div>
       {/if}
     </aside>
+    {#if !graphFullscreen}
+      <div class="pane-resizer sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" on:pointerdown={(event) => startLayoutResize(event, 'sidebar')}></div>
+    {/if}
 
     <section class="editors" class:split={splitMode}>
       {#each panes.slice(0, splitMode ? 2 : 1) as pane, paneIndex}
@@ -370,6 +434,8 @@
               <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
               <div>{getActiveTab(pane).file.relativePath}</div>
             </div>
+          {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
+            <MarkdownPreview content={getActiveTab(pane).content} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}
             <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} on:change={(event) => updateTabContent(paneIndex, event.detail)} />
           {/if}
@@ -378,9 +444,12 @@
     </section>
 
     {#if graphVisible}
+      {#if !graphFloating && !graphFullscreen}
+        <div class="pane-resizer graph-resizer" role="separator" aria-label="Resize graph panel" aria-orientation="vertical" on:pointerdown={(event) => startLayoutResize(event, 'graph')}></div>
+      {/if}
       <aside class="graph-panel panel" style={graphFloating ? `left: ${graphFloat.x}px; top: ${graphFloat.y}px; width: ${graphFloat.width}px; height: ${graphFloat.height}px` : undefined}>
-        <div class="panel-title graph-title">
-          <span role="button" tabindex="0" on:pointerdown={(event) => startFloatingGraphDrag(event, 'move')}>Project Graph</span>
+        <div class="panel-title graph-title" role="toolbar" tabindex="-1" aria-label="Project graph controls" on:pointerdown={startFloatingGraphMove}>
+          <span>Project Graph</span>
           <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock' : 'Float'}</button>
           <button on:click={() => (graphFullscreen = !graphFullscreen)}>{graphFullscreen ? 'Exit Full' : 'Full'}</button>
           <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
@@ -398,7 +467,10 @@
   </main>
 
   {#if terminalVisible}
-    <TerminalPanel api={api} cwd={project?.rootPath ?? ''} />
+    <section class="terminal-slot">
+      <div class="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" on:pointerdown={(event) => startLayoutResize(event, 'terminal')}></div>
+      <TerminalPanel api={api} cwd={project?.rootPath ?? ''} />
+    </section>
   {/if}
 
   <footer class="statusbar">{status} · Ctrl/⌘P search · Ctrl/⌘\\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
@@ -426,9 +498,9 @@
   {#if createDialog}
     <div class="modal-backdrop" role="presentation" on:click={closeCreateDialogFromBackdrop} on:keydown={(event) => event.key === 'Escape' && closeCreateDialog()}>
       <form class="modal" on:submit|preventDefault={submitCreateDialog}>
-        <h2>Create {createDialog}</h2>
+        <h2>Create {createDialog === 'note' ? 'note' : createDialog}</h2>
         <p>Path inside <strong>{project?.tree.name}</strong></p>
-        <input bind:this={createInput} bind:value={createPath} placeholder={createDialog === 'file' ? 'src/example.js' : 'src/components'} />
+        <input bind:this={createInput} bind:value={createPath} placeholder={createDialog === 'folder' ? 'src/components' : createDialog === 'note' ? 'notes/my-note.md' : 'src/example.js'} />
         <div class="modal-actions">
           <button type="button" on:click={closeCreateDialog}>Cancel</button>
           <button class="primary" type="submit">Create</button>
