@@ -45,6 +45,8 @@ Install the newest development version directly from GitHub:
 npm install -g github:Thegirlwithcg/NiZyLa
 ```
 
+If the `nizyla` command is not found after installing, restart your terminal or make sure `C:\Users\User\AppData\Roaming\npm` is in your Windows `Path`.
+
 npm package: https://www.npmjs.com/package/nizyla
 
 ## Run from source

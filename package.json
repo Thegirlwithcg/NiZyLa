@@ -24,7 +24,6 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env NIZYLA_DEV=1 electron .\"",
     "web": "vite --host 127.0.0.1",
     "build": "vite build",
-    "prepare": "npm run build",
     "prepack": "npm run build",
     "start": "npm run build && electron .",
     "preview": "vite preview",
