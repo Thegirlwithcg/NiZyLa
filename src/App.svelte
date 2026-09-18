@@ -26,6 +26,7 @@
   let graphFullscreen = false;
   let createDialog = null;
   let createPath = '';
+  let createParent = null;
   let createInput;
   let contextMenu = null;
   let deleteTarget = null;
@@ -144,19 +145,26 @@
     await selectFile(event.detail);
   }
 
-  async function moveFile(event) {
+  function isSameOrDescendant(filePath, parentPath) {
+    return filePath === parentPath || filePath.startsWith(`${parentPath}/`) || filePath.startsWith(`${parentPath}\\`);
+  }
+
+  async function moveEntry(event) {
     const { source, target } = event.detail;
-    if (!api?.movePath || source.type !== 'file') return;
+    if (!api?.movePath || (source.type !== 'file' && source.type !== 'folder')) return;
     try {
       const result = await api.movePath(source.path, target.path);
+      const targetRelativePath = target.path === project.rootPath ? '' : target.relativePath;
       panes = panes.map((pane) => ({
         ...pane,
-        tabs: pane.tabs.map((tab) => tab.file.path === source.path ? {
-          ...tab,
-          id: result.path,
-          file: { ...tab.file, path: result.path, relativePath: `${target.relativePath}/${tab.file.name}` }
-        } : tab),
-        active: pane.active === source.path ? result.path : pane.active
+        tabs: pane.tabs.map((tab) => {
+          if (!isSameOrDescendant(tab.file.path, source.path)) return tab;
+          const suffix = tab.file.path.slice(source.path.length);
+          const relativeSuffix = tab.file.relativePath.slice(source.relativePath.length).replace(/^[/\\]/, '');
+          const relativePath = [targetRelativePath, source.name, relativeSuffix].filter(Boolean).join('/');
+          return { ...tab, id: `${result.path}${suffix}`, file: { ...tab.file, path: `${result.path}${suffix}`, relativePath } };
+        }),
+        active: isSameOrDescendant(pane.active ?? '', source.path) ? `${result.path}${pane.active.slice(source.path.length)}` : pane.active
       }));
       status = `Moved ${source.name} to ${target.relativePath}`;
       await refreshProject();
@@ -231,18 +239,29 @@
     return value?.trim().replace(/^\/+/, '').replace(/\/+/g, '/') ?? '';
   }
 
-  async function openCreateDialog(type) {
+  async function openCreateDialog(type, parent = project?.tree) {
     if (!project) return;
     createDialog = type;
-    createPath = type === 'folder' ? 'src/new-folder' : type === 'note' ? 'notes/new-note.md' : 'src/new-file.js';
+    createParent = parent;
+    createPath = '';
     await tick();
     createInput?.focus();
-    createInput?.select();
   }
 
   function openContextMenu(event) {
-    if (event.detail.entry.path === project?.rootPath) return;
     contextMenu = event.detail;
+  }
+
+  function openExplorerContextMenu(event) {
+    if (event.target !== event.currentTarget || !project) return;
+    event.preventDefault();
+    contextMenu = { entry: project.tree, x: event.clientX, y: event.clientY };
+  }
+
+  function openCreateFromContext(type) {
+    const parent = contextMenu?.entry ?? project?.tree;
+    contextMenu = null;
+    openCreateDialog(type, parent);
   }
 
   function askDelete(entry) {
@@ -285,6 +304,7 @@
   function closeCreateDialog() {
     createDialog = null;
     createPath = '';
+    createParent = null;
   }
 
   function closeCreateDialogFromBackdrop(event) {
@@ -295,21 +315,23 @@
     if (!project || !api || !createDialog) return;
     const name = cleanRelativePath(createPath);
     if (!name) return;
+    const parent = createParent ?? project.tree;
+    const relativePath = parent.path === project.rootPath ? name : `${parent.relativePath}/${name}`;
     try {
       if (createDialog === 'file' || createDialog === 'note') {
-        const filePath = `${project.rootPath}/${name}`;
+        const filePath = `${parent.path}/${name}`;
         await api.createFile(filePath);
         if (createDialog === 'note') {
           const title = name.split('/').at(-1).replace(/\.md$/i, '').replace(/[-_]/g, ' ');
           await api.writeFile(filePath, `---\ntitle: ${title}\ncreated: ${new Date().toISOString().slice(0, 10)}\ntags: []\n---\n\n# ${title}\n\n`);
         }
         await refreshProject();
-        await selectFile({ name: name.split('/').at(-1), path: filePath, relativePath: name, type: 'file' });
-        status = `Created file ${name}`;
+        await selectFile({ name: name.split('/').at(-1), path: filePath, relativePath, type: 'file' });
+        status = `Created file ${relativePath}`;
       } else {
-        await api.createFolder(`${project.rootPath}/${name}`);
+        await api.createFolder(`${parent.path}/${name}`);
         await refreshProject();
-        status = `Created folder ${name}`;
+        status = `Created folder ${relativePath}`;
       }
       closeCreateDialog();
     } catch (error) {
@@ -431,11 +453,10 @@
         </div>
         <div class="panel-title small explorer-title">
           <span>Explorer</span>
-          <button on:click={() => openCreateDialog('file')} disabled={!project}>+ File</button>
-          <button on:click={() => openCreateDialog('note')} disabled={!project}>+ Note</button>
-          <button on:click={() => openCreateDialog('folder')} disabled={!project}>+ Folder</button>
         </div>
-        <FileTree entry={project.tree} {activeFile} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} on:move={moveFile} />
+        <div class="explorer-tree" role="presentation" on:contextmenu={openExplorerContextMenu}>
+          <FileTree entry={project.tree} {activeFile} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} on:move={moveEntry} />
+        </div>
       {:else}
         <div class="empty">No folder open.</div>
       {/if}
@@ -451,7 +472,7 @@
             {#if pane.tabs.length}
               {#each pane.tabs as tab (tab.id)}
                 <div class="tab tab-wrap" class:active={tab.id === pane.active}>
-                  <button on:click|stopPropagation={() => activateTab(paneIndex, tab.id)}>{tab.file.relativePath}{tab.dirty ? ' •' : ''}</button>
+                  <button on:click|stopPropagation={() => activateTab(paneIndex, tab.id)}>{tab.file.name}{tab.dirty ? ' •' : ''}</button>
                   <button class="tab-close" aria-label="Close tab" on:click|stopPropagation={() => closeTab(paneIndex, tab.id)}>×</button>
                 </div>
               {/each}
@@ -485,7 +506,7 @@
           <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
         </div>
         {#if project}
-          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} on:move={moveFile} />
+          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} on:move={moveEntry} />
         {:else}
           <div class="empty">Graph appears after opening a project.</div>
         {/if}
@@ -508,7 +529,14 @@
   {#if contextMenu}
     <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
       <div class="context-title">{contextMenu.entry.name}</div>
-      <button class="danger" on:click={() => askDelete(contextMenu.entry)}>Delete {contextMenu.entry.type}</button>
+      {#if contextMenu.entry.type === 'folder'}
+        <button on:click={() => openCreateFromContext('file')}>New File</button>
+        <button on:click={() => openCreateFromContext('note')}>New Note</button>
+        <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
+      {/if}
+      {#if contextMenu.entry.path !== project?.rootPath}
+        <button class="danger" on:click={() => askDelete(contextMenu.entry)}>Delete {contextMenu.entry.type}</button>
+      {/if}
     </div>
   {/if}
 
@@ -529,7 +557,7 @@
     <div class="modal-backdrop" role="presentation" on:click={closeCreateDialogFromBackdrop} on:keydown={(event) => event.key === 'Escape' && closeCreateDialog()}>
       <form class="modal" on:submit|preventDefault={submitCreateDialog}>
         <h2>Create {createDialog === 'note' ? 'note' : createDialog}</h2>
-        <p>Path inside <strong>{project?.tree.name}</strong></p>
+        <p>Path inside <strong>{createParent?.relativePath ?? project?.tree.name}</strong></p>
         <input bind:this={createInput} bind:value={createPath} placeholder={createDialog === 'folder' ? 'src/components' : createDialog === 'note' ? 'notes/my-note.md' : 'src/example.js'} />
         <div class="modal-actions">
           <button type="button" on:click={closeCreateDialog}>Cancel</button>
@@ -547,8 +575,6 @@
         <button on:click={() => (splitMode = !splitMode)}>Toggle split editor</button>
         <button on:click={() => (terminalVisible = !terminalVisible)}>Toggle terminal</button>
         <button on:click={() => (vimMode = !vimMode)}>Toggle Vim mode</button>
-        <button on:click={() => openCreateDialog('file')}>Create file</button>
-        <button on:click={() => openCreateDialog('folder')}>Create folder</button>
         <button on:click={() => setTheme(theme === 'cream' ? 'obsidian' : 'cream')}>Toggle theme</button>
         {#each filteredFiles as file (file.path)}
           <button class="result" on:click={() => selectFile(file)}>{file.relativePath}</button>

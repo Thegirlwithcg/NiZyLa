@@ -30,7 +30,7 @@
   }
 
   function startDrag(event) {
-    if (entry.type !== 'file') return;
+    if (entry.type !== 'file' && (entry.type !== 'folder' || depth === 0)) return;
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('application/x-nizyla-file', JSON.stringify(entry));
   }
@@ -49,14 +49,14 @@
 
     try {
       const source = JSON.parse(event.dataTransfer.getData('application/x-nizyla-file'));
-      if (source?.type === 'file' && source.path) dispatch('move', { source, target: entry });
+      if ((source?.type === 'file' || source?.type === 'folder') && source.path && source.path !== entry.path) dispatch('move', { source, target: entry });
     } catch {
       // Ignore drops that did not originate from this file tree.
     }
   }
 </script>
 
-<div class="tree-row {entry.type} {activeFile?.path === entry.path ? 'active' : ''}" class:drag-over={dragOver} style="padding-left: {depth * 14 + 8}px" role="button" tabindex="0" draggable={entry.type === 'file'} on:click={select} on:contextmenu={onContextMenu} on:keydown={onKeydown} on:dragstart={startDrag} on:dragover={dragOverFolder} on:dragleave={() => (dragOver = false)} on:drop={dropOnFolder}>
+<div class="tree-row {entry.type} {activeFile?.path === entry.path ? 'active' : ''}" class:drag-over={dragOver} style="padding-left: {depth * 14 + 8}px" role="button" tabindex="0" draggable={entry.type === 'file' || (entry.type === 'folder' && depth > 0)} on:click={select} on:contextmenu={onContextMenu} on:keydown={onKeydown} on:dragstart={startDrag} on:dragover={dragOverFolder} on:dragleave={() => (dragOver = false)} on:drop={dropOnFolder}>
   <span class="twisty">{entry.type === 'folder' ? (expanded ? '▾' : '▸') : '·'}</span>
   <span class="icon">{entry.type === 'folder' ? '📁' : '📄'}</span>
   <span class="name">{entry.name}</span>

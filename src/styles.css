@@ -169,7 +169,8 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .explorer-title span, .graph-title span { margin-right: auto; }
 .explorer-title button, .graph-title button { padding: 4px 7px; font-size: 11px; letter-spacing: 0; text-transform: none; }
 
-.sidebar { overflow: auto; }
+.sidebar { overflow: auto; display: flex; flex-direction: column; }
+.explorer-tree { flex: 1; min-height: 120px; }
 .workspace-tabs { display: grid; gap: 6px; padding: 8px; }
 .workspace-tab {
   display: grid;
