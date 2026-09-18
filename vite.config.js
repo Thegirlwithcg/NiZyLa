@@ -5,7 +5,7 @@ export default defineConfig({
   base: './',
   plugins: [svelte()],
   server: {
-    port: 5173,
+    port: 5174,
     strictPort: true
   },
   build: {

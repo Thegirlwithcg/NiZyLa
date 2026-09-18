@@ -14,6 +14,7 @@ const terminals = new Map();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NIZYLA_DEV === '1';
+if (isDev) app.setPath('userData', path.join(app.getPath('temp'), 'nizyla-dev'));
 const iconFile = process.platform === 'win32' ? 'Logo NiZyLa.ico' : 'Logo NiZyLa.png';
 const appIconPath = isDev
   ? path.join(__dirname, '..', 'resource', iconFile)
@@ -131,7 +132,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://127.0.0.1:5173');
+    mainWindow.loadURL('http://127.0.0.1:5174');
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
