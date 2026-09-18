@@ -14,6 +14,7 @@
   import { html } from '@codemirror/lang-html';
   import { python } from '@codemirror/lang-python';
   import { vim } from '@replit/codemirror-vim';
+  import logoUrl from '../../resource/Logo NiZyLa.svg';
 
   export let file = null;
   export let content = '';
@@ -207,6 +208,7 @@
 {/if}
 {#if !file}
   <div class="editor-empty">
+    <img src={logoUrl} alt="NiZyLa logo" />
     <h1>NiZyLa</h1>
     <p>Open a folder, select a file, and explore relationships in the project graph.</p>
   </div>

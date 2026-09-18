@@ -95,15 +95,11 @@ button, input, select { font: inherit; }
 }
 .brand { display: flex; gap: 10px; align-items: center; min-width: 220px; }
 .logo {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: white;
-  font-weight: 900;
-  box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 35%, transparent);
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 38%, transparent));
 }
 .brand strong { display: block; letter-spacing: 0.04em; font-size: 15px; }
 .brand span { color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -241,7 +237,8 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .tab.muted { color: var(--muted); }
 .editor-host { height: 100%; min-height: 0; }
 .editor-host.hidden { display: none; }
-.editor-empty { height: 100%; display: grid; place-content: center; text-align: center; color: var(--muted); }
+.editor-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: 14px; text-align: center; color: var(--muted); }
+.editor-empty img { width: min(260px, 34vw); height: min(260px, 34vw); object-fit: contain; filter: drop-shadow(0 16px 32px color-mix(in srgb, var(--accent) 24%, transparent)); }
 .editor-empty h1 { margin: 0; font-size: 54px; color: var(--text); text-shadow: 0 0 40px color-mix(in srgb, var(--accent) 30%, transparent); }
 .image-preview {
   min-height: 0;

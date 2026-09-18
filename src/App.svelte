@@ -4,6 +4,7 @@
   import CodeEditor from './components/CodeEditor.svelte';
   import GraphView from './components/GraphView.svelte';
   import TerminalPanel from './components/TerminalPanel.svelte';
+  import logoUrl from '../resource/Logo NiZyLa.svg';
   import MarkdownPreview from './components/MarkdownPreview.svelte';
 
   let projects = [];
@@ -369,7 +370,7 @@
 <div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
   <header class="topbar">
     <div class="brand">
-      <div class="logo">N</div>
+      <img class="logo" src={logoUrl} alt="NiZyLa logo" />
       <div>
         <strong>NiZyLa</strong>
         <span>{projects.length} workspace{projects.length === 1 ? '' : 's'} · {plugins.length} plugin{plugins.length === 1 ? '' : 's'} · LSP-ready core</span>

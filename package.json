@@ -68,6 +68,13 @@
     "directories": {
       "output": "release"
     },
+    "icon": "resource/Logo NiZyLa.ico",
+    "extraResources": [
+      {
+        "from": "resource",
+        "to": "resource"
+      }
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -77,12 +84,14 @@
       "target": [
         "AppImage"
       ],
+      "icon": "resource/Logo NiZyLa.png",
       "category": "Development"
     },
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "icon": "resource/Logo NiZyLa.ico"
     },
     "mac": {
       "target": [

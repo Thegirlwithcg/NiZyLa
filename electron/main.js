@@ -14,6 +14,10 @@ const terminals = new Map();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NIZYLA_DEV === '1';
+const iconFile = process.platform === 'win32' ? 'Logo NiZyLa.ico' : 'Logo NiZyLa.png';
+const appIconPath = isDev
+  ? path.join(__dirname, '..', 'resource', iconFile)
+  : path.join(process.resourcesPath, 'resource', iconFile);
 
 let mainWindow;
 
@@ -111,6 +115,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 680,
     title: 'NiZyLa',
+    icon: appIconPath,
     backgroundColor: '#15141b',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
