@@ -33,10 +33,16 @@ Launch it from your terminal:
 nizyla
 ```
 
-Update to the latest version:
+Update to the latest npm version:
 
 ```bash
 npm install -g nizyla@latest
+```
+
+Install the newest development version directly from GitHub:
+
+```bash
+npm install -g github:Thegirlwithcg/NiZyLa
 ```
 
 npm package: https://www.npmjs.com/package/nizyla
