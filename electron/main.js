@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
@@ -16,6 +16,60 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NIZYLA_DEV === '1';
 
 let mainWindow;
+
+function compareVersions(a, b) {
+  const left = String(a).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const right = String(b).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(left.length, right.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) return Math.sign(diff);
+  }
+
+  return 0;
+}
+
+async function readPackageJson() {
+  const packagePath = path.join(__dirname, '..', 'package.json');
+  const content = await fs.readFile(packagePath, 'utf8');
+  return JSON.parse(content);
+}
+
+async function checkForNpmUpdate() {
+  if (isDev || process.env.NIZYLA_DISABLE_UPDATE_CHECK === '1') return;
+
+  try {
+    const packageJson = await readPackageJson();
+    const packageName = packageJson.name;
+    const currentVersion = packageJson.version;
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
+      headers: { accept: 'application/json' }
+    });
+
+    if (!response.ok) return;
+
+    const latest = await response.json();
+    const latestVersion = latest.version;
+    if (!latestVersion || compareVersions(latestVersion, currentVersion) <= 0) return;
+
+    const updateCommand = `npm install -g ${packageName}@latest`;
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'NiZyLa update available',
+      message: `NiZyLa ${latestVersion} is available`,
+      detail: `You are using ${currentVersion}. To update, run:\n\n${updateCommand}`,
+      buttons: ['Later', 'Copy update command', 'Open npm page'],
+      defaultId: 1,
+      cancelId: 0
+    });
+
+    if (result.response === 1) clipboard.writeText(updateCommand);
+    if (result.response === 2) shell.openExternal(`https://www.npmjs.com/package/${packageName}`);
+  } catch (error) {
+    console.warn('Update check failed:', error.message);
+  }
+}
 
 function getShellConfig() {
   if (process.platform === 'win32') {
@@ -73,6 +127,7 @@ app.whenReady().then(() => {
     { role: 'help' }
   ]));
   createWindow();
+  setTimeout(() => checkForNpmUpdate(), 3000);
 });
 
 app.on('window-all-closed', () => {

@@ -19,7 +19,29 @@ A code-first editor inspired by NeoVim, VS Code, and Obsidian:
 - CodeMirror for code editing
 - Node.js scanner for project graph generation
 
-## Run
+## Install from npm
+
+NiZyLa is published on npm:
+
+```bash
+npm install -g nizyla
+```
+
+Launch it from your terminal:
+
+```bash
+nizyla
+```
+
+Update to the latest version:
+
+```bash
+npm install -g nizyla@latest
+```
+
+npm package: https://www.npmjs.com/package/nizyla
+
+## Run from source
 
 ```bash
 npm install
