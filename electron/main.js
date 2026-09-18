@@ -7,9 +7,9 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './scanner.js';
 import { discoverPlugins } from './plugins.js';
-import pty from 'node-pty';
 
 const execAsync = promisify(exec);
+let ptyModule;
 const terminals = new Map();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,17 @@ async function checkForNpmUpdate() {
   } catch (error) {
     console.warn('Update check failed:', error.message);
   }
+}
+
+async function loadNodePty() {
+  if (ptyModule !== undefined) return ptyModule;
+  try {
+    ptyModule = await import('node-pty');
+  } catch (error) {
+    console.warn('node-pty is unavailable; integrated terminal disabled:', error.message);
+    ptyModule = null;
+  }
+  return ptyModule;
 }
 
 function getShellConfig() {
@@ -165,7 +176,10 @@ ipcMain.handle('path:delete', async (_event, targetPath) => {
   await fs.rm(targetPath, { recursive: true, force: false });
   return { ok: true, path: targetPath };
 });
-ipcMain.handle('terminal:create', (event, cwd) => {
+ipcMain.handle('terminal:create', async (event, cwd) => {
+  const pty = await loadNodePty();
+  if (!pty) throw new Error('Integrated terminal is unavailable because node-pty could not be installed.');
+
   const id = randomUUID();
   const { shell, args } = getShellConfig();
   const terminal = pty.spawn(shell, args, {

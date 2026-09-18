@@ -34,7 +34,12 @@
     terminal.writeln(cwd ? `\x1b[90mNiZyLa terminal · ${cwd}\x1b[0m` : '\x1b[33mOpen a workspace to start the terminal.\x1b[0m');
 
     if (!api || !cwd) return;
-    terminalId = await api.createTerminal(cwd);
+    try {
+      terminalId = await api.createTerminal(cwd);
+    } catch (error) {
+      terminal.writeln(`\r\n\x1b[31m${error.message}\x1b[0m`);
+      return;
+    }
     removeDataListener = api.onTerminalData((id, data) => {
       if (id === terminalId) terminal.write(data);
     });
