@@ -197,6 +197,8 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 }
 .tree-row:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .tree-row.active { background: color-mix(in srgb, var(--accent) 24%, var(--panel-solid)); color: var(--text); }
+.tree-row[draggable="true"] { cursor: grab; }
+.tree-row.drag-over { outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 20%, var(--panel-solid)); }
 .tree-row.folder { color: var(--accent); }
 .twisty { width: 14px; color: var(--muted); }
 .icon { font-size: 13px; opacity: 0.9; }

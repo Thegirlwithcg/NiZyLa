@@ -144,7 +144,7 @@
     await selectFile(event.detail);
   }
 
-  async function moveGraphNode(event) {
+  async function moveFile(event) {
     const { source, target } = event.detail;
     if (!api?.movePath || source.type !== 'file') return;
     try {
@@ -435,7 +435,7 @@
           <button on:click={() => openCreateDialog('note')} disabled={!project}>+ Note</button>
           <button on:click={() => openCreateDialog('folder')} disabled={!project}>+ Folder</button>
         </div>
-        <FileTree entry={project.tree} {activeFile} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} />
+        <FileTree entry={project.tree} {activeFile} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} on:move={moveFile} />
       {:else}
         <div class="empty">No folder open.</div>
       {/if}
@@ -485,7 +485,7 @@
           <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
         </div>
         {#if project}
-          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} on:move={moveGraphNode} />
+          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} on:move={moveFile} />
         {:else}
           <div class="empty">Graph appears after opening a project.</div>
         {/if}
