@@ -20,7 +20,8 @@
   let query = '';
   let paletteInput;
   let plugins = [];
-  let theme = localStorage.getItem('nizyla.theme') || 'cream';
+  let theme = localStorage.getItem('nizyla.theme') || 'obsidian';
+  let showLineNumbers = localStorage.getItem('nizyla.lineNumbers') !== 'false';
   let graphFullscreen = false;
   let createDialog = null;
   let createPath = '';
@@ -124,6 +125,7 @@
     }
 
     const file = { name: entry.name ?? entry.label, path: entry.path, relativePath: entry.relativePath?.split('#')[0] ?? entry.label, type: 'file', previewType };
+    markdownPreview = file.name.toLowerCase().endsWith('.md');
     const id = file.path;
     const pane = panes[paneIndex];
     const exists = pane.tabs.some((tab) => tab.id === id);
@@ -196,6 +198,11 @@
   function setTheme(nextTheme) {
     theme = nextTheme;
     localStorage.setItem('nizyla.theme', nextTheme);
+  }
+
+  function toggleLineNumbers() {
+    showLineNumbers = !showLineNumbers;
+    localStorage.setItem('nizyla.lineNumbers', String(showLineNumbers));
   }
 
   function cleanRelativePath(value) {
@@ -373,11 +380,12 @@
       <button on:click={refreshProject} disabled={!project}>Refresh</button>
       <button on:click={openPalette}>Command / Search</button>
       <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
-        <option value="cream">Cream Light</option>
         <option value="obsidian">Obsidian Dark</option>
+        <option value="cream">Cream Light</option>
       </select>
       <button on:click={() => (splitMode = !splitMode)} class:active={splitMode}>Split</button>
       <button on:click={() => (terminalVisible = !terminalVisible)} class:active={terminalVisible}>Terminal</button>
+      <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
       <button on:click={() => (vimMode = !vimMode)} class:active={vimMode}>Vim {vimMode ? 'On' : 'Off'}</button>
       {#if activeFile?.name?.toLowerCase().endsWith('.md')}
         <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
@@ -435,9 +443,9 @@
               <div>{getActiveTab(pane).file.relativePath}</div>
             </div>
           {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
-            <MarkdownPreview content={getActiveTab(pane).content} on:wiki={(event) => openWikiLink(event.detail)} />
+            <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}
-            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} on:change={(event) => updateTabContent(paneIndex, event.detail)} />
+            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(paneIndex, event.detail)} />
           {/if}
         </div>
       {/each}

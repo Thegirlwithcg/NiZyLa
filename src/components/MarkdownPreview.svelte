@@ -2,9 +2,10 @@
   import { createEventDispatcher } from 'svelte';
 
   export let content = '';
+  export let title = '';
   const dispatch = createEventDispatcher();
 
-  $: html = renderMarkdown(content);
+  $: html = renderMarkdown(content, title);
 
   function escapeHtml(value) {
     return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -22,9 +23,10 @@
       .replace(/~~([^~]+)~~/g, '<del>$1</del>');
   }
 
-  function renderMarkdown(source) {
+  function renderMarkdown(source, documentTitle = '') {
     let lines = source.replace(/\r\n?/g, '\n').split('\n');
     const output = [];
+    if (documentTitle && !lines.some((line) => /^#\s+/.test(line))) output.push(`<h1 class="document-title">${escapeHtml(documentTitle)}</h1>`);
     if (lines[0] === '---') {
       const end = lines.indexOf('---', 1);
       if (end > 0) {
