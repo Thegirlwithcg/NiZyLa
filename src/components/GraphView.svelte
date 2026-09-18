@@ -1,6 +1,5 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import folderIcon from '../../resource/yellow_folder_icon.png';
 
   export let graph;
   export let activePath = null;
@@ -13,7 +12,6 @@
   let drag = null;
   let customPositions = new Map();
   let currentFolderId = null;
-  let suppressNodeClick = false;
   let contextMenu = null;
 
   $: layout = makeLayout(graph, customPositions, currentFolderId);
@@ -31,7 +29,6 @@
     // hierarchy clear and avoids meaningless lines between unrelated nodes.
     const visibleNodes = input.nodes
       .filter((node) => parentById.get(node.id) === activeFolderId && (node.type === 'folder' || node.type === 'file'))
-      .slice(0, fullscreen ? 420 : 240);
 
     const nodeIds = new Set(visibleNodes.map((node) => node.id));
     const visibleEdges = input.edges.filter((edge) => edge.type !== 'contains' && nodeIds.has(edge.source) && nodeIds.has(edge.target));
@@ -113,14 +110,7 @@
 
   function activateNode(node) { dispatch('node', node); }
 
-  function nodeClick(node) {
-    if (node.type === 'folder' && !suppressNodeClick) enterFolder(node);
-  }
-
   function enterFolder(node) {
-    // Folder navigation is intentionally independent from drag suppression:
-    // a normal double-click has two mouse-up events and may include a few
-    // pixels of pointer jitter, which must not block navigation.
     if (node.type !== 'folder') return;
     currentFolderId = node.id;
     customPositions = new Map();
@@ -169,8 +159,7 @@
     event.stopPropagation();
     graphHost?.focus({ preventScroll: true });
     const point = svgPoint(event);
-    suppressNodeClick = false;
-    drag = { type: 'node', id: node.id, dx: node.x - point.x, dy: node.y - point.y, z: node.z, startX: event.clientX, startY: event.clientY }; 
+    drag = { type: 'node', id: node.id, dx: node.x - point.x, dy: node.y - point.y, z: node.z, startX: event.clientX, startY: event.clientY, moved: false };
   }
 
   function startPan(event) {
@@ -186,7 +175,7 @@
       panY = drag.panY + event.clientY - drag.y;
       return;
     }
-    if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) suppressNodeClick = true;
+    if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) drag.moved = true;
     const point = svgPoint(event);
     customPositions = new Map(customPositions).set(drag.id, { x: point.x + drag.dx, y: point.y + drag.dy, z: drag.z });
   }
@@ -195,12 +184,14 @@
     const finishedDrag = drag;
     drag = null;
     if (finishedDrag?.type === 'node' && event) {
-      const point = svgPoint(event);
-      const target = layout.nodes.find((node) => node.type === 'folder' && node.id !== finishedDrag.id && Math.hypot(node.x - point.x, node.y - point.y) < node.size + 18);
       const source = layout.nodes.find((node) => node.id === finishedDrag.id);
-      if (source && target && source.type === 'file') dispatch('move', { source, target });
+      if (!finishedDrag.moved && source?.type === 'folder') enterFolder(source);
+      if (finishedDrag.moved) {
+        const point = svgPoint(event);
+        const target = layout.nodes.find((node) => node.type === 'folder' && node.id !== finishedDrag.id && Math.hypot(node.x - point.x, node.y - point.y) < node.size + 18);
+        if (source && target && source.type === 'file') dispatch('move', { source, target });
+      }
     }
-    if (suppressNodeClick) setTimeout(() => { suppressNodeClick = false; }, 0);
   }
 
   function openNodeMenu(event, node) {
@@ -226,10 +217,9 @@
   }
 
   function graphKeydown(event) {
-    if (event.key === 'Backspace' && layout.parentId) {
-      event.preventDefault();
-      goUp();
-    }
+    if (event.key !== 'Backspace' || event.target.closest?.('button, input, select, textarea')) return;
+    event.preventDefault();
+    goUp();
   }
 
   function resetView() {
@@ -240,7 +230,7 @@
   }
 </script>
 
-<div class="graph-wrap" class:fullscreen role="button" tabindex="0" aria-label="Interactive project graph. Double-click a folder to enter it; press Backspace to go up." bind:this={graphHost} on:mousedown={startPan} on:mousemove={move} on:mouseup={endDrag} on:mouseleave={endDrag} on:wheel={wheel} on:keydown={graphKeydown}>
+<div class="graph-wrap" class:fullscreen role="button" tabindex="0" aria-label="Interactive project graph. Click a folder to enter it; press Backspace to go up." bind:this={graphHost} on:mousedown={startPan} on:mousemove={move} on:mouseup={endDrag} on:mouseleave={endDrag} on:wheel={wheel} on:keydown={graphKeydown}>
   <div class="graph-tools">
     {#if layout.parentId}<button on:click={goUp} aria-label="Go to parent folder">↑</button>{/if}
     <button on:click={() => (zoom = Math.min(8, zoom * 1.18))}>+</button>
@@ -262,9 +252,9 @@
       {/each}
 
       {#each layout.nodes as node (node.id)}
-        <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} class:folder={node.type === 'folder'} transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:click={() => nodeClick(node)} on:contextmenu={(event) => openNodeMenu(event, node)} on:dblclick={() => node.type === 'folder' ? enterFolder(node) : activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
+        <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} class:folder={node.type === 'folder'} transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:contextmenu={(event) => openNodeMenu(event, node)} on:dblclick={() => node.type !== 'folder' && activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
           {#if node.type === 'folder'}
-            <image class="folder-icon" href={folderIcon} x={-node.size} y={-node.size} width={node.size * 2} height={node.size * 2} />
+            <text class="folder-icon" x="0" y="1" text-anchor="middle" aria-hidden="true">📁</text>
           {:else}
             <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
           {/if}

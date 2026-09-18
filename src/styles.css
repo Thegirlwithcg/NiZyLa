@@ -342,10 +342,9 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .graph-node:active { cursor: grabbing; }
 .graph-node circle { fill: var(--accent); stroke: var(--panel-solid); stroke-width: 1.4; transition: fill 220ms ease, r 220ms ease; }
 .graph-node.symbol circle { fill: var(--graph-defines); }
-.graph-node.folder { cursor: pointer; animation: graph-folder-enter 420ms cubic-bezier(.2,.8,.2,1) both; }
-.graph-node .folder-icon { pointer-events: none; filter: drop-shadow(0 2px 3px #0005); transition: transform 220ms ease, filter 220ms ease; transform-origin: center; }
-.graph-node.folder:hover .folder-icon { transform: scale(1.12); filter: drop-shadow(0 5px 7px #0008); }
-@keyframes graph-folder-enter { from { opacity: 0; transform: scale(.72); } to { opacity: 1; transform: scale(1); } }
+.graph-node.folder { cursor: pointer; }
+.graph-node .folder-icon { fill: initial; font-family: "Segoe UI Emoji", sans-serif; font-size: 32px; pointer-events: all; filter: drop-shadow(0 2px 3px #0005); transition: filter 220ms ease; }
+.graph-node.folder:hover .folder-icon { filter: drop-shadow(0 5px 7px #0008); }
 .graph-node.active circle { fill: var(--accent-2); stroke: var(--text); }
 .graph-node text {
   fill: var(--text);
