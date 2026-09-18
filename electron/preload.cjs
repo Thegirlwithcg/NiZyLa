@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('nizyla', {
   openProject: () => ipcRenderer.invoke('project:open'),
   scanProject: (rootPath) => ipcRenderer.invoke('project:scan', rootPath),
   readFile: (filePath) => ipcRenderer.invoke('file:read', filePath),
+  readFileDataUrl: (filePath) => ipcRenderer.invoke('file:read-data-url', filePath),
   writeFile: (filePath, content) => ipcRenderer.invoke('file:write', filePath, content),
   createFile: (filePath) => ipcRenderer.invoke('file:create', filePath),
   createFolder: (folderPath) => ipcRenderer.invoke('folder:create', folderPath),

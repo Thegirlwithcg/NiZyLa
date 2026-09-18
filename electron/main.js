@@ -5,7 +5,7 @@ import { exec } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
-import { scanProject, readTextFile, writeTextFile } from './scanner.js';
+import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './scanner.js';
 import { discoverPlugins } from './plugins.js';
 import pty from 'node-pty';
 
@@ -150,6 +150,7 @@ ipcMain.handle('project:open', async () => {
 
 ipcMain.handle('project:scan', async (_event, rootPath) => scanProject(rootPath));
 ipcMain.handle('file:read', async (_event, filePath) => readTextFile(filePath));
+ipcMain.handle('file:read-data-url', async (_event, filePath) => readFileDataUrl(filePath));
 ipcMain.handle('file:write', async (_event, filePath, content) => writeTextFile(filePath, content));
 ipcMain.handle('file:create', async (_event, filePath) => {
   await fs.mkdir(path.dirname(filePath), { recursive: true });

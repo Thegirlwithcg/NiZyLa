@@ -1,6 +1,6 @@
 {
   "name": "nizyla",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NiZyLa - a graph-aware programming editor built with Node, Electron, and Svelte.",
   "homepage": "https://github.com/Thegirlwithcg/NiZyLa",
   "author": {

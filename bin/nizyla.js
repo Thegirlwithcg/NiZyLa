@@ -7,10 +7,12 @@ import electronPath from 'electron';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appPath = path.resolve(__dirname, '..');
 const args = [appPath, ...process.argv.slice(2)];
+const isWindows = process.platform === 'win32';
 
 const child = spawn(electronPath, args, {
-  stdio: 'inherit',
-  windowsHide: false
+  stdio: isWindows ? 'ignore' : 'inherit',
+  detached: isWindows,
+  windowsHide: true
 });
 
 child.on('error', (error) => {
@@ -18,6 +20,11 @@ child.on('error', (error) => {
   process.exit(1);
 });
 
-child.on('close', (code) => {
-  process.exit(code ?? 0);
-});
+if (isWindows) {
+  child.unref();
+  process.exit(0);
+} else {
+  child.on('close', (code) => {
+    process.exit(code ?? 0);
+  });
+}

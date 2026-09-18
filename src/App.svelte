@@ -25,8 +25,12 @@
   let createInput;
   let contextMenu = null;
   let deleteTarget = null;
+  let graphFloating = false;
+  let graphFloat = { x: 320, y: 90, width: 760, height: 560 };
+  let floatingDrag = null;
 
   const api = globalThis.nizyla;
+  const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
   $: project = projects[activeProjectIndex] ?? null;
   $: activeTab = panes[activePane]?.tabs.find((tab) => tab.id === panes[activePane]?.active) ?? null;
   $: activeFile = activeTab?.file ?? null;
@@ -80,20 +84,41 @@
     plugins = await api.listPlugins(projects.map((p) => p.rootPath));
   }
 
+  function isImageFile(filePath = '') {
+    const cleanPath = filePath.split('?')[0].split('#')[0].toLowerCase();
+    const ext = cleanPath.includes('.') ? cleanPath.slice(cleanPath.lastIndexOf('.')) : '';
+    return imageExtensions.has(ext);
+  }
+
+  function closeWorkspace(index) {
+    const closing = projects[index];
+    if (!closing) return;
+    projects = projects.filter((_, itemIndex) => itemIndex !== index);
+    panes = panes.map((pane) => {
+      const tabs = pane.tabs.filter((tab) => !tab.file.path.startsWith(closing.rootPath));
+      return { ...pane, tabs, active: tabs.some((tab) => tab.id === pane.active) ? pane.active : tabs.at(-1)?.id ?? null };
+    });
+    const remainingCount = projects.length;
+    activeProjectIndex = remainingCount ? Math.max(0, Math.min(activeProjectIndex >= index ? activeProjectIndex - 1 : activeProjectIndex, remainingCount - 1)) : 0;
+    status = `Closed ${closing.rootPath}`;
+    refreshPlugins();
+  }
+
   async function selectFile(entry, paneIndex = activePane) {
     if (entry.type !== 'file' && entry.type !== 'symbol') return;
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
     if (owningProject >= 0) activeProjectIndex = owningProject;
 
+    const previewType = isImageFile(entry.path) ? 'image' : 'text';
     let content = '';
     try {
-      content = await api.readFile(entry.path);
+      content = previewType === 'image' ? await api.readFileDataUrl(entry.path) : await api.readFile(entry.path);
     } catch (error) {
       status = `Could not read ${entry.name}: ${error.message}`;
       return;
     }
 
-    const file = { name: entry.name ?? entry.label, path: entry.path, relativePath: entry.relativePath?.split('#')[0] ?? entry.label, type: 'file' };
+    const file = { name: entry.name ?? entry.label, path: entry.path, relativePath: entry.relativePath?.split('#')[0] ?? entry.label, type: 'file', previewType };
     const id = file.path;
     const pane = panes[paneIndex];
     const exists = pane.tabs.some((tab) => tab.id === id);
@@ -138,7 +163,7 @@
   async function saveFile() {
     const pane = panes[activePane];
     const tab = pane?.tabs.find((item) => item.id === pane.active);
-    if (!tab || !api) return;
+    if (!tab || !api || tab.file.previewType === 'image') return;
     await api.writeFile(tab.file.path, tab.content);
     panes = panes.map((p, index) => index === activePane ? { ...p, tabs: p.tabs.map((t) => t.id === tab.id ? { ...t, dirty: false } : t) } : p);
     status = `Saved ${tab.file.relativePath}`;
@@ -244,6 +269,30 @@
     }
   }
 
+  function startFloatingGraphDrag(event, type) {
+    if (!graphFloating) return;
+    event.preventDefault();
+    floatingDrag = { type, startX: event.clientX, startY: event.clientY, ...graphFloat };
+    window.addEventListener('pointermove', moveFloatingGraph);
+    window.addEventListener('pointerup', stopFloatingGraphDrag, { once: true });
+  }
+
+  function moveFloatingGraph(event) {
+    if (!floatingDrag) return;
+    const dx = event.clientX - floatingDrag.startX;
+    const dy = event.clientY - floatingDrag.startY;
+    if (floatingDrag.type === 'move') {
+      graphFloat = { ...graphFloat, x: Math.max(8, floatingDrag.x + dx), y: Math.max(56, floatingDrag.y + dy) };
+    } else {
+      graphFloat = { ...graphFloat, width: Math.max(360, floatingDrag.width + dx), height: Math.max(280, floatingDrag.height + dy) };
+    }
+  }
+
+  function stopFloatingGraphDrag() {
+    floatingDrag = null;
+    window.removeEventListener('pointermove', moveFloatingGraph);
+  }
+
   function flattenFiles(entry) {
     if (!entry) return [];
     const result = [];
@@ -253,7 +302,7 @@
   }
 </script>
 
-<div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible} class:graph-fullscreen={graphFullscreen}>
+<div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating}>
   <header class="topbar">
     <div class="brand">
       <div class="logo">N</div>
@@ -284,7 +333,10 @@
       {#if projects.length}
         <div class="workspace-tabs">
           {#each projects as item, index}
-            <button class:active={index === activeProjectIndex} on:click={() => (activeProjectIndex = index)}>{item.tree.name}</button>
+            <div class="workspace-tab" class:active={index === activeProjectIndex}>
+              <button class="workspace-select" on:click={() => (activeProjectIndex = index)}>{item.tree.name}</button>
+              <button class="workspace-close" aria-label="Close workspace" on:click={() => closeWorkspace(index)}>×</button>
+            </div>
           {/each}
         </div>
         <div class="panel-title small explorer-title">
@@ -313,21 +365,33 @@
               <div class="tab muted">No file selected</div>
             {/if}
           </div>
-          <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} on:change={(event) => updateTabContent(paneIndex, event.detail)} />
+          {#if getActiveTab(pane)?.file?.previewType === 'image'}
+            <div class="image-preview">
+              <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
+              <div>{getActiveTab(pane).file.relativePath}</div>
+            </div>
+          {:else}
+            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} on:change={(event) => updateTabContent(paneIndex, event.detail)} />
+          {/if}
         </div>
       {/each}
     </section>
 
     {#if graphVisible}
-      <aside class="graph-panel panel">
+      <aside class="graph-panel panel" style={graphFloating ? `left: ${graphFloat.x}px; top: ${graphFloat.y}px; width: ${graphFloat.width}px; height: ${graphFloat.height}px` : undefined}>
         <div class="panel-title graph-title">
-          <span>Project Graph</span>
+          <span role="button" tabindex="0" on:pointerdown={(event) => startFloatingGraphDrag(event, 'move')}>Project Graph</span>
+          <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock' : 'Float'}</button>
           <button on:click={() => (graphFullscreen = !graphFullscreen)}>{graphFullscreen ? 'Exit Full' : 'Full'}</button>
+          <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
         </div>
         {#if project}
           <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} />
         {:else}
           <div class="empty">Graph appears after opening a project.</div>
+        {/if}
+        {#if graphFloating}
+          <button class="float-resize" aria-label="Resize graph" on:pointerdown={(event) => startFloatingGraphDrag(event, 'resize')}>Resize</button>
         {/if}
       </aside>
     {/if}

@@ -239,6 +239,13 @@ export async function readTextFile(filePath) {
   return fs.readFile(filePath, 'utf8');
 }
 
+export async function readFileDataUrl(filePath) {
+  const buffer = await fs.readFile(filePath);
+  const ext = path.extname(filePath).toLowerCase().slice(1);
+  const mime = ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext || 'png'}`;
+  return `data:${mime};base64,${buffer.toString('base64')}`;
+}
+
 export async function writeTextFile(filePath, content) {
   await fs.writeFile(filePath, content, 'utf8');
   return { ok: true };
