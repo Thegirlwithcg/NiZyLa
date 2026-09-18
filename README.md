@@ -42,7 +42,7 @@ npm install -g nizyla@latest
 Install the newest development version directly from GitHub:
 
 ```bash
-npm install -g github:Thegirlwithcg/NiZyLa
+npm install -g https://github.com/Thegirlwithcg/NiZyLa/archive/refs/heads/master.tar.gz
 ```
 
 If the `nizyla` command is not found after installing, restart your terminal or make sure `C:\Users\User\AppData\Roaming\npm` is in your Windows `Path`.
