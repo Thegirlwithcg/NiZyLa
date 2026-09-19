@@ -41,6 +41,8 @@
   let graphDetached = false;
   let graphFloat = { x: 320, y: 90, width: 760, height: 560, maximized: false, zIndex: 12 };
   let graphFullscreen = false;
+  let graphFolderId = null;
+  let graphViewMode = 'folder';
 
   let terminalVisible = false;
   let terminalFloating = false;
@@ -92,6 +94,8 @@
       if (detachedState) {
         if (detachedState.theme) theme = detachedState.theme;
         if (detachedState.showLineNumbers !== undefined) showLineNumbers = detachedState.showLineNumbers;
+        if (detachedState.currentFolderId !== undefined) graphFolderId = detachedState.currentFolderId;
+        if (detachedState.viewMode !== undefined) graphViewMode = detachedState.viewMode;
         if (detachedState.pane) {
           panes = [{ ...detachedState.pane, floating: false, detached: false }];
           activePaneId = detachedState.pane.id;
@@ -454,7 +458,9 @@
       state: {
         graph: project?.graph,
         activePath: activeFile?.path,
-        theme
+        theme,
+        currentFolderId: graphFolderId,
+        viewMode: graphViewMode
       }
     });
     status = 'Detached Project Graph to separate window (move to any monitor)';
@@ -490,11 +496,18 @@
 
   function dockDetachedSelf() {
     if (!api?.dockDetachedWindow || !detachedWindowId) return;
-    api.dockDetachedWindow(detachedWindowId, {
-      pane: panes[0],
-      theme,
-      showLineNumbers
-    });
+    if (detachedWindowId === 'graph') {
+      api.dockDetachedWindow(detachedWindowId, {
+        currentFolderId: graphFolderId,
+        viewMode: graphViewMode
+      });
+    } else {
+      api.dockDetachedWindow(detachedWindowId, {
+        pane: panes[0],
+        theme,
+        showLineNumbers
+      });
+    }
   }
 
   function handleDetachedDockBack({ windowId, state }) {
@@ -516,6 +529,8 @@
       graphDetached = false;
       graphVisible = true;
       graphFloating = true;
+      if (state?.currentFolderId !== undefined) graphFolderId = state.currentFolderId;
+      if (state?.viewMode !== undefined) graphViewMode = state.viewMode;
       status = 'Docked Project Graph back to main window';
     } else if (windowId === 'terminal') {
       terminalDetached = false;
@@ -1027,6 +1042,8 @@
           graph={project?.graph ?? detachedState.graph}
           activePath={activeFile?.path ?? detachedState?.activePath}
           fullscreen={true}
+          bind:currentFolderId={graphFolderId}
+          bind:viewMode={graphViewMode}
           on:node={(event) => api?.openFileInMainWindow(event.detail)}
           on:move={moveEntry}
         />
@@ -1210,7 +1227,15 @@
             </div>
           </div>
           {#if project}
-            <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen || graphFloat.maximized} on:node={selectGraphNode} on:move={moveEntry} />
+            <GraphView
+              graph={project.graph}
+              activePath={activeFile?.path}
+              fullscreen={graphFullscreen || graphFloat.maximized}
+              bind:currentFolderId={graphFolderId}
+              bind:viewMode={graphViewMode}
+              on:node={selectGraphNode}
+              on:move={moveEntry}
+            />
           {:else}
             <div class="empty">Graph appears after opening a project.</div>
           {/if}

@@ -4,6 +4,8 @@
   export let graph;
   export let activePath = null;
   export let fullscreen = false;
+  export let currentFolderId = null;
+  export let viewMode = 'folder'; // 'folder' | 'all'
 
   const dispatch = createEventDispatcher();
   let zoom = 1;
@@ -11,21 +13,31 @@
   let panY = 0;
   let drag = null;
   let customPositions = new Map();
-  let currentFolderId = null;
+  let customEdgeOffsets = new Map(); // edge.id -> { dx, dy }
   let contextMenu = null;
-  let viewMode = 'folder'; // 'folder' | 'all'
 
-  $: layout = makeLayout(graph, customPositions, currentFolderId, viewMode);
+  $: layout = makeLayout(graph, customPositions, currentFolderId, viewMode, customEdgeOffsets);
 
   function toggleViewMode() {
     viewMode = viewMode === 'folder' ? 'all' : 'folder';
     customPositions = new Map();
+    customEdgeOffsets = new Map();
     panX = 0;
     panY = 0;
     zoom = 1;
+    dispatch('viewmode', viewMode);
   }
 
-  function makeLayout(input, positions, folderId, mode = 'folder') {
+  function isExternalRef(srcId, tgtId) {
+    if (!srcId || !tgtId) return false;
+    const s = srcId.replace(/\\/g, '/');
+    const t = tgtId.replace(/\\/g, '/');
+    const sDir = s.includes('/') ? s.slice(0, s.lastIndexOf('/')) : '';
+    const tDir = t.includes('/') ? t.slice(0, t.lastIndexOf('/')) : '';
+    return sDir !== tDir;
+  }
+
+  function makeLayout(input, positions, folderId, mode = 'folder', edgeOffsets = new Map()) {
     if (!input) return { nodes: [], edges: [], width: 640, height: 640, folder: null, parentId: null };
 
     const byId = new Map(input.nodes.map((node) => [node.id, node]));
@@ -36,13 +48,11 @@
 
     let visibleNodes;
     if (mode === 'all') {
-      // Show all files to display full project inter-file relationships
       visibleNodes = input.nodes.filter((node) => node.type === 'file');
       if (visibleNodes.length === 0) {
         visibleNodes = input.nodes.filter((node) => node.type === 'folder' || node.type === 'file');
       }
     } else {
-      // Drill-down view: show this folder's immediate contents
       visibleNodes = input.nodes.filter((node) => parentById.get(node.id) === activeFolderId && (node.type === 'folder' || node.type === 'file'));
     }
 
@@ -72,12 +82,14 @@
       const t = mode === 'all' ? edge.target : (visibleAncestor.get(edge.target) || edge.target);
       if (s && t && s !== t && nodeIds.has(s) && nodeIds.has(t)) {
         const dedupKey = `${s}->${t}:${edge.type}:${edge.label || ''}`;
+        const isExternal = isExternalRef(edge.source, edge.target);
         if (!seenEdgeKeys.has(dedupKey)) {
           seenEdgeKeys.add(dedupKey);
           visibleEdges.push({
             ...edge,
             source: s,
-            target: t
+            target: t,
+            isExternal
           });
         }
       }
@@ -106,8 +118,74 @@
     });
 
     const positionedById = new Map(nodes.map((node) => [node.id, node]));
+
+    // In folder mode, detect external relationships from/to outside this folder
+    // and create external dashed stubs pointing into the receiving nodes
+    if (mode === 'folder') {
+      const extIncomingByTarget = new Map();
+
+      for (const edge of input.edges) {
+        if (edge.type === 'contains' || edge.type === 'defines') continue;
+        if (!nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+          if (!extIncomingByTarget.has(edge.target)) extIncomingByTarget.set(edge.target, []);
+          extIncomingByTarget.get(edge.target).push(edge);
+        }
+      }
+
+      for (const [targetId, extEdges] of extIncomingByTarget.entries()) {
+        const targetNode = positionedById.get(targetId);
+        if (!targetNode) continue;
+
+        extEdges.forEach((edge, extIdx) => {
+          const sourceEntry = byId.get(edge.source);
+          const sourceName = sourceEntry?.label || (edge.source ? edge.source.replace(/\\/g, '/').split('/').pop() : 'External');
+          const stubId = `ext-stub:${edge.source}->${edge.target}:${edge.type}`;
+          const dedupKey = `${stubId}:${edge.label || ''}`;
+          if (seenEdgeKeys.has(dedupKey)) return;
+          seenEdgeKeys.add(dedupKey);
+
+          // Position the external stub node to the left, fanning out nicely
+          const stubX = targetNode.x - 175 - (extIdx % 2) * 20;
+          const stubY = targetNode.y - 40 + (extIdx - (extEdges.length - 1) / 2) * 54;
+
+          const stubNode = {
+            id: stubId,
+            label: `📁 ${sourceName}`,
+            type: 'external-stub',
+            path: edge.source,
+            x: stubX,
+            y: stubY,
+            vx: 0,
+            vy: 0,
+            z: 0,
+            pinned: true,
+            size: 14
+          };
+
+          nodes.push(stubNode);
+          positionedById.set(stubId, stubNode);
+
+          visibleEdges.push({
+            ...edge,
+            id: `ext:${edge.id || `${edge.source}->${edge.target}:${edge.type}`}`,
+            source: stubId,
+            target: targetId,
+            sourceNode: stubNode,
+            targetNode,
+            label: `${sourceName}: ${edge.label || edge.type}`,
+            isExternal: true,
+            isExternalStub: true
+          });
+        });
+      }
+    }
+
     const edges = visibleEdges
-      .map((edge) => ({ ...edge, sourceNode: positionedById.get(edge.source), targetNode: positionedById.get(edge.target) }))
+      .map((edge) => ({
+        ...edge,
+        sourceNode: edge.sourceNode || positionedById.get(edge.source),
+        targetNode: edge.targetNode || positionedById.get(edge.target)
+      }))
       .filter((edge) => edge.sourceNode && edge.targetNode);
 
     // Group edges between node pairs for curved rendering
@@ -145,7 +223,7 @@
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-        const target = edge.type === 'defines' ? 48 : 132;
+        const target = edge.type === 'defines' ? 48 : 140;
         const force = (distance - target) * 0.011;
         if (!a.pinned) { a.vx += (dx / distance) * force; a.vy += (dy / distance) * force; }
         if (!b.pinned) { b.vx -= (dx / distance) * force; b.vy -= (dy / distance) * force; }
@@ -171,10 +249,20 @@
     if (!a || !b) return '';
     const total = edge.groupTotal || 1;
     const index = edge.groupIndex || 0;
-    if (total <= 1) {
-      return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+    const targetRadius = (b.size || 14) + 6;
+    const customOffset = customEdgeOffsets.get(edge.id) || { dx: 0, dy: 0 };
+
+    if (total <= 1 && customOffset.dx === 0 && customOffset.dy === 0) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const endX = b.x - (dx / dist) * targetRadius;
+      const endY = b.y - (dy / dist) * targetRadius;
+      return `M ${a.x} ${a.y} L ${endX} ${endY}`;
     }
-    const offset = (index - (total - 1) / 2) * 22;
+
+    // Wide separation between parallel curves so labels never clash
+    const curveOffset = (index - (total - 1) / 2) * 52;
     const midX = (a.x + b.x) / 2;
     const midY = (a.y + b.y) / 2;
     const dx = b.x - a.x;
@@ -182,14 +270,68 @@
     const dist = Math.hypot(dx, dy) || 1;
     const nx = -dy / dist;
     const ny = dx / dist;
-    const cx = midX + nx * offset;
-    const cy = midY + ny * offset;
-    return `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`;
+
+    const cx = midX + nx * curveOffset + customOffset.dx;
+    const cy = midY + ny * curveOffset + customOffset.dy;
+
+    const endDx = b.x - cx;
+    const endDy = b.y - cy;
+    const endDist = Math.hypot(endDx, endDy) || 1;
+    const endX = b.x - (endDx / endDist) * targetRadius;
+    const endY = b.y - (endDy / endDist) * targetRadius;
+
+    return `M ${a.x} ${a.y} Q ${cx} ${cy} ${endX} ${endY}`;
+  }
+
+  function edgeMidpoint(edge) {
+    const a = edge.sourceNode;
+    const b = edge.targetNode;
+    if (!a || !b) return { x: 0, y: 0 };
+
+    const total = edge.groupTotal || 1;
+    const index = edge.groupIndex || 0;
+    const customOffset = customEdgeOffsets.get(edge.id) || { dx: 0, dy: 0 };
+
+    if (total <= 1 && customOffset.dx === 0 && customOffset.dy === 0) {
+      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+
+    const curveOffset = (index - (total - 1) / 2) * 52;
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = -dy / dist;
+    const ny = dx / dist;
+
+    const cx = midX + nx * curveOffset + customOffset.dx;
+    const cy = midY + ny * curveOffset + customOffset.dy;
+
+    // Stagger t along the curve so parallel badges are placed at different lengths along the path
+    let t = 0.5;
+    if (total === 2) {
+      t = index === 0 ? 0.35 : 0.65;
+    } else if (total > 2) {
+      t = 0.26 + (index / (total - 1)) * 0.48;
+    }
+
+    const oneMinusT = 1 - t;
+    const px = oneMinusT * oneMinusT * a.x + 2 * oneMinusT * t * cx + t * t * b.x;
+    const py = oneMinusT * oneMinusT * a.y + 2 * oneMinusT * t * cy + t * t * b.y;
+
+    return { x: px, y: py };
+  }
+
+  function badgeWidth(label) {
+    const text = String(label || '');
+    return Math.max(50, Math.min(220, text.length * 7.5 + 24));
   }
 
   function edgeTooltip(edge) {
     const typeLabel = edge.type === 'class' ? 'Class' : edge.type === 'function' ? 'Function' : edge.type === 'variable' ? 'Global Variable' : edge.type;
-    return `${typeLabel}: ${edge.label || edge.type} (${edge.sourceNode.label} ↔ ${edge.targetNode.label})`;
+    const extNotice = edge.isExternal ? ' [External Folder]' : '';
+    return `${typeLabel}${extNotice}: ${edge.label || edge.type}\nSender: ${edge.sourceNode.label} ➔ Receiver: ${edge.targetNode.label}\n(Drag badge or line to adjust curvature)`;
   }
 
   function colorFor(edge) {
@@ -209,9 +351,12 @@
     viewMode = 'folder';
     currentFolderId = node.id;
     customPositions = new Map();
+    customEdgeOffsets = new Map();
     panX = 0;
     panY = 0;
     zoom = 1;
+    dispatch('folder', currentFolderId);
+    dispatch('viewmode', viewMode);
   }
 
   function goUp() {
@@ -219,9 +364,12 @@
     viewMode = 'folder';
     currentFolderId = layout.parentId;
     customPositions = new Map();
+    customEdgeOffsets = new Map();
     panX = 0;
     panY = 0;
     zoom = 1;
+    dispatch('folder', currentFolderId);
+    dispatch('viewmode', viewMode);
   }
 
   function nodeKeydown(event, node) {
@@ -258,6 +406,21 @@
     drag = { type: 'node', id: node.id, dx: node.x - point.x, dy: node.y - point.y, z: node.z, startX: event.clientX, startY: event.clientY, moved: false };
   }
 
+  function startEdgeDrag(event, edge) {
+    event.stopPropagation();
+    event.preventDefault();
+    graphHost?.focus({ preventScroll: true });
+    const current = customEdgeOffsets.get(edge.id) || { dx: 0, dy: 0 };
+    drag = {
+      type: 'edge',
+      id: edge.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      initDx: current.dx,
+      initDy: current.dy
+    };
+  }
+
   function startPan(event) {
     contextMenu = null;
     graphHost?.focus({ preventScroll: true });
@@ -269,6 +432,15 @@
     if (drag.type === 'pan') {
       panX = drag.panX + event.clientX - drag.x;
       panY = drag.panY + event.clientY - drag.y;
+      return;
+    }
+    if (drag.type === 'edge') {
+      const mouseDx = (event.clientX - drag.startX) / zoom;
+      const mouseDy = (event.clientY - drag.startY) / zoom;
+      customEdgeOffsets = new Map(customEdgeOffsets).set(drag.id, {
+        dx: drag.initDx + mouseDx,
+        dy: drag.initDy + mouseDy
+      });
       return;
     }
     if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) drag.moved = true;
@@ -323,6 +495,7 @@
     panX = 0;
     panY = 0;
     customPositions = new Map();
+    customEdgeOffsets = new Map();
   }
 </script>
 
@@ -341,31 +514,123 @@
         <feGaussianBlur stdDeviation="3" result="coloredBlur" />
         <feMerge><feMergeNode in="coloredBlur" /><feMergeNode in="SourceGraphic" /></feMerge>
       </filter>
+
+      <!-- Arrow markers pointing to receiver node -->
+      <marker id="arrow-class" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 1 2 L 10 6 L 1 10 L 3 6 Z" fill="var(--graph-class)" />
+      </marker>
+      <marker id="arrow-function" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 1 2 L 10 6 L 1 10 L 3 6 Z" fill="var(--graph-function)" />
+      </marker>
+      <marker id="arrow-variable" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 1 2 L 10 6 L 1 10 L 3 6 Z" fill="var(--graph-variable)" />
+      </marker>
+      <marker id="arrow-imports" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 1 2 L 10 6 L 1 10 L 3 6 Z" fill="var(--graph-imports)" />
+      </marker>
+      <marker id="arrow-links" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 1 2 L 10 6 L 1 10 L 3 6 Z" fill="var(--graph-links)" />
+      </marker>
+      <marker id="arrow-defines" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+        <path d="M 1 2 L 10 6 L 1 10 L 3 6 Z" fill="var(--graph-defines)" />
+      </marker>
     </defs>
 
     <g class="graph-camera" transform="translate({panX}, {panY}) scale({zoom})">
       {#each layout.edges as edge (edge.id)}
+        {@const pathD = edgePath(edge)}
+        <!-- Base line: solid if internal, dashed with long tail if external folder -->
         <path
-          d={edgePath(edge)}
+          role="button"
+          tabindex="0"
+          aria-label={edgeTooltip(edge)}
+          d={pathD}
           fill="none"
           stroke={colorFor(edge)}
-          stroke-width={1.5 + ((edge.sourceNode.z + edge.targetNode.z + 96) / 192) * 1.2}
+          stroke-width={1.6 + ((edge.sourceNode.z + edge.targetNode.z + 96) / 192) * 1.2}
           stroke-opacity={0.6 + ((edge.sourceNode.z + edge.targetNode.z + 96) / 192) * 0.35}
+          stroke-dasharray={edge.isExternal ? '14 7' : 'none'}
+          marker-end="url(#arrow-{edge.type})"
           class="graph-edge edge-{edge.type}"
+          class:is-external={edge.isExternal}
+          on:pointerdown={(e) => startEdgeDrag(e, edge)}
+          on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && activateNode(edge.sourceNode)}
         >
           <title>{edgeTooltip(edge)}</title>
         </path>
+
+        <!-- Traveling arrow animation flowing towards receiver node -->
+        {#if edge.type === 'class' || edge.type === 'function' || edge.type === 'variable' || edge.type === 'imports'}
+          <path
+            d="M -5 -3 L 4 0 L -5 3 L -3 0 Z"
+            fill={colorFor(edge)}
+            class="traveling-arrow-head"
+            pointer-events="none"
+            opacity="0.9"
+          >
+            <animateMotion
+              path={pathD}
+              dur={edge.isExternal ? '3.0s' : '1.8s'}
+              repeatCount="indefinite"
+              rotate="auto"
+            />
+          </path>
+        {/if}
+
+        <!-- Label showing Class / Function / Variable name on edge (draggable) -->
+        {#if edge.label}
+          {@const mid = edgeMidpoint(edge)}
+          {@const bw = badgeWidth(edge.label)}
+          <g
+            role="button"
+            tabindex="0"
+            aria-label={edgeTooltip(edge)}
+            class="edge-badge"
+            transform="translate({mid.x}, {mid.y})"
+            on:pointerdown={(e) => startEdgeDrag(e, edge)}
+            on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && activateNode(edge.sourceNode)}
+          >
+            <rect
+              x={-bw / 2}
+              y="-10"
+              width={bw}
+              height="20"
+              rx="4"
+              class="edge-badge-rect edge-badge-{edge.type}"
+              class:is-external={edge.isExternal}
+              stroke={colorFor(edge)}
+            />
+            <text
+              x="0"
+              y="3.8"
+              text-anchor="middle"
+              class="edge-badge-text edge-badge-{edge.type}"
+              fill={colorFor(edge)}
+            >
+              {edge.label} {edge.isExternal ? '⇥' : '→'}
+            </text>
+            <title>{edgeTooltip(edge)}</title>
+          </g>
+        {/if}
       {/each}
 
       {#each layout.nodes as node (node.id)}
-        <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} class:folder={node.type === 'folder'} class:kind-class={node.kind === 'class'} class:kind-function={node.kind === 'function'} class:kind-variable={node.kind === 'variable'} transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:contextmenu={(event) => openNodeMenu(event, node)} on:dblclick={() => node.type !== 'folder' && activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
-          {#if node.type === 'folder'}
-            <text class="folder-icon" x="0" y="1" text-anchor="middle" aria-hidden="true">📁</text>
-          {:else}
-            <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
-          {/if}
-          <text x={node.size + 6} y="4">{node.label}</text>
-        </g>
+        {#if node.type === 'external-stub'}
+          <!-- External Folder Origin Stub -->
+          <g class="graph-node external-stub-node" transform="translate({node.x}, {node.y})" role="button" tabindex="0" on:dblclick={() => activateNode(node)} on:mousedown={(event) => startNodeDrag(event, node)}>
+            <rect x="-65" y="-12" width="130" height="24" rx="5" class="external-stub-rect" />
+            <text x="0" y="4" text-anchor="middle" class="external-stub-text">{node.label}</text>
+          </g>
+        {:else}
+          <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} class:folder={node.type === 'folder'} class:kind-class={node.kind === 'class'} class:kind-function={node.kind === 'function'} class:kind-variable={node.kind === 'variable'} transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:contextmenu={(event) => openNodeMenu(event, node)} on:dblclick={() => node.type !== 'folder' && activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
+            {#if node.type === 'folder'}
+              <text class="folder-icon" x="0" y="1" text-anchor="middle" aria-hidden="true">📁</text>
+            {:else}
+              <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
+            {/if}
+            <text x={node.size + 6} y="4">{node.label}</text>
+          </g>
+        {/if}
       {/each}
     </g>
   </svg>
@@ -385,6 +650,7 @@
     <span><i class="function"></i> Function</span>
     <span><i class="variable"></i> Variable</span>
     <span><i class="imports"></i> Imports</span>
+    <span><i class="external-legend"></i> External Folder (Dashed ⇥)</span>
     <span><i class="links"></i> Markdown</span>
   </div>
 </div>
