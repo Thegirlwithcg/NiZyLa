@@ -48,11 +48,13 @@
 
     let visibleNodes;
     if (mode === 'all') {
+      // Show all files to display full project inter-file relationships
       visibleNodes = input.nodes.filter((node) => node.type === 'file');
       if (visibleNodes.length === 0) {
         visibleNodes = input.nodes.filter((node) => node.type === 'folder' || node.type === 'file');
       }
     } else {
+      // Drill-down view: show this folder's immediate contents
       visibleNodes = input.nodes.filter((node) => parentById.get(node.id) === activeFolderId && (node.type === 'folder' || node.type === 'file'));
     }
 
@@ -113,13 +115,13 @@
         vy: 0,
         z: saved?.z ?? Math.sin(index * 2.399) * 48,
         pinned: Boolean(saved),
-        size: node.type === 'folder' ? 18 : Math.min(18, 7 + relCount * 2)
+        size: node.type === 'folder' ? 20 : Math.min(18, 7 + relCount * 2)
       };
     });
 
     const positionedById = new Map(nodes.map((node) => [node.id, node]));
 
-    // In folder mode, detect external relationships from/to outside this folder
+    // In folder mode, detect external relationships from outside this folder
     // and create external dashed stubs pointing into the receiving nodes
     if (mode === 'folder') {
       const extIncomingByTarget = new Map();
@@ -145,8 +147,9 @@
           seenEdgeKeys.add(dedupKey);
 
           // Position the external stub node to the left, fanning out nicely
-          const stubX = targetNode.x - 175 - (extIdx % 2) * 20;
-          const stubY = targetNode.y - 40 + (extIdx - (extEdges.length - 1) / 2) * 54;
+          const savedStub = positions.get(stubId);
+          const stubX = savedStub?.x ?? (targetNode.x - 175 - (extIdx % 2) * 20);
+          const stubY = savedStub?.y ?? (targetNode.y - 40 + (extIdx - (extEdges.length - 1) / 2) * 54);
 
           const stubNode = {
             id: stubId,
@@ -158,7 +161,7 @@
             vx: 0,
             vy: 0,
             z: 0,
-            pinned: true,
+            pinned: Boolean(savedStub) || true,
             size: 14
           };
 
@@ -400,13 +403,27 @@
   }
 
   function startNodeDrag(event, node) {
+    if (event.button !== 0) return; // Only left click drags
     event.stopPropagation();
     graphHost?.focus({ preventScroll: true });
     const point = svgPoint(event);
-    drag = { type: 'node', id: node.id, dx: node.x - point.x, dy: node.y - point.y, z: node.z, startX: event.clientX, startY: event.clientY, moved: false };
+    drag = {
+      type: 'node',
+      id: node.id,
+      node,
+      dx: node.x - point.x,
+      dy: node.y - point.y,
+      z: node.z,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false
+    };
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('pointerup', onWindowPointerUp, { once: true });
   }
 
   function startEdgeDrag(event, edge) {
+    if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
     graphHost?.focus({ preventScroll: true });
@@ -419,21 +436,12 @@
       initDx: current.dx,
       initDy: current.dy
     };
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('pointerup', onWindowPointerUp, { once: true });
   }
 
-  function startPan(event) {
-    contextMenu = null;
-    graphHost?.focus({ preventScroll: true });
-    drag = { type: 'pan', x: event.clientX, y: event.clientY, panX, panY };
-  }
-
-  function move(event) {
+  function onWindowPointerMove(event) {
     if (!drag) return;
-    if (drag.type === 'pan') {
-      panX = drag.panX + event.clientX - drag.x;
-      panY = drag.panY + event.clientY - drag.y;
-      return;
-    }
     if (drag.type === 'edge') {
       const mouseDx = (event.clientX - drag.startX) / zoom;
       const mouseDy = (event.clientY - drag.startY) / zoom;
@@ -443,23 +451,55 @@
       });
       return;
     }
-    if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) drag.moved = true;
-    const point = svgPoint(event);
-    customPositions = new Map(customPositions).set(drag.id, { x: point.x + drag.dx, y: point.y + drag.dy, z: drag.z });
+    if (drag.type === 'node') {
+      const dist = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (dist > 5) {
+        drag.moved = true;
+      }
+      const point = svgPoint(event);
+      customPositions = new Map(customPositions).set(drag.id, {
+        x: point.x + drag.dx,
+        y: point.y + drag.dy,
+        z: drag.z
+      });
+    }
   }
 
-  function endDrag(event) {
+  function onWindowPointerUp(event) {
+    window.removeEventListener('pointermove', onWindowPointerMove);
     const finishedDrag = drag;
     drag = null;
+
     if (finishedDrag?.type === 'node' && event) {
-      const source = layout.nodes.find((node) => node.id === finishedDrag.id);
-      if (!finishedDrag.moved && source?.type === 'folder') enterFolder(source);
-      if (finishedDrag.moved) {
-        const point = svgPoint(event);
-        const target = layout.nodes.find((node) => node.type === 'folder' && node.id !== finishedDrag.id && Math.hypot(node.x - point.x, node.y - point.y) < node.size + 18);
-        if (source && target && source.type === 'file') dispatch('move', { source, target });
+      if (!finishedDrag.moved) {
+        if (finishedDrag.node.type === 'folder') {
+          enterFolder(finishedDrag.node);
+        } else if (finishedDrag.node.type === 'file' || finishedDrag.node.type === 'symbol' || finishedDrag.node.type === 'external-stub') {
+          activateNode(finishedDrag.node);
+        }
       }
     }
+  }
+
+  function startPan(event) {
+    if (event.button !== 0) return;
+    if (event.target.closest('.graph-node') || event.target.closest('.edge-badge') || event.target.closest('.graph-tools')) return;
+    contextMenu = null;
+    graphHost?.focus({ preventScroll: true });
+    drag = { type: 'pan', x: event.clientX, y: event.clientY, panX, panY };
+    window.addEventListener('pointermove', onPanMove);
+    window.addEventListener('pointerup', onPanUp, { once: true });
+  }
+
+  function onPanMove(event) {
+    if (drag?.type !== 'pan') return;
+    panX = drag.panX + event.clientX - drag.x;
+    panY = drag.panY + event.clientY - drag.y;
+  }
+
+  function onPanUp() {
+    window.removeEventListener('pointermove', onPanMove);
+    if (drag?.type === 'pan') drag = null;
   }
 
   function openNodeMenu(event, node) {
@@ -499,7 +539,7 @@
   }
 </script>
 
-<div class="graph-wrap" class:fullscreen role="button" tabindex="0" aria-label="Interactive project graph. Click a folder to enter it; press Backspace to go up." bind:this={graphHost} on:mousedown={startPan} on:mousemove={move} on:mouseup={endDrag} on:mouseleave={endDrag} on:wheel={wheel} on:keydown={graphKeydown}>
+<div class="graph-wrap" class:fullscreen role="button" tabindex="0" aria-label="Interactive project graph. Double-click a folder to enter it; click and hold to drag nodes and expand layout." bind:this={graphHost} on:mousedown={startPan} on:wheel={wheel} on:keydown={graphKeydown}>
   <div class="graph-tools">
     {#if layout.parentId && viewMode === 'folder'}<button on:click={goUp} aria-label="Go to parent folder">↑</button>{/if}
     <button class:active={viewMode === 'all'} on:click={toggleViewMode} title="Toggle between All Files and Folder view">{viewMode === 'all' ? 'All Files' : 'Folder'}</button>
@@ -616,14 +656,41 @@
 
       {#each layout.nodes as node (node.id)}
         {#if node.type === 'external-stub'}
-          <!-- External Folder Origin Stub -->
-          <g class="graph-node external-stub-node" transform="translate({node.x}, {node.y})" role="button" tabindex="0" on:dblclick={() => activateNode(node)} on:mousedown={(event) => startNodeDrag(event, node)}>
+          <!-- External Folder Origin Stub (Click and hold to drag, double click to open) -->
+          <g
+            class="graph-node external-stub-node"
+            transform="translate({node.x}, {node.y})"
+            role="button"
+            tabindex="0"
+            on:dblclick={() => activateNode(node)}
+            on:pointerdown={(event) => startNodeDrag(event, node)}
+          >
             <rect x="-65" y="-12" width="130" height="24" rx="5" class="external-stub-rect" />
             <text x="0" y="4" text-anchor="middle" class="external-stub-text">{node.label}</text>
           </g>
         {:else}
-          <g class="graph-node" class:active={activePath === node.path} class:symbol={node.type === 'symbol'} class:folder={node.type === 'folder'} class:kind-class={node.kind === 'class'} class:kind-function={node.kind === 'function'} class:kind-variable={node.kind === 'variable'} transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})" role="button" tabindex="0" on:mousedown={(event) => startNodeDrag(event, node)} on:contextmenu={(event) => openNodeMenu(event, node)} on:dblclick={() => node.type !== 'folder' && activateNode(node)} on:keydown={(event) => nodeKeydown(event, node)}>
+          <!-- Node: Folder or File (Click and hold to drag anywhere; Double-click to enter folder or open file) -->
+          <g
+            class="graph-node"
+            class:active={activePath === node.path}
+            class:symbol={node.type === 'symbol'}
+            class:folder={node.type === 'folder'}
+            class:kind-class={node.kind === 'class'}
+            class:kind-function={node.kind === 'function'}
+            class:kind-variable={node.kind === 'variable'}
+            transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})"
+            role="button"
+            tabindex="0"
+            on:pointerdown={(event) => startNodeDrag(event, node)}
+            on:contextmenu={(event) => openNodeMenu(event, node)}
+            on:dblclick={() => {
+              if (node.type === 'folder') enterFolder(node);
+              else activateNode(node);
+            }}
+            on:keydown={(event) => nodeKeydown(event, node)}
+          >
             {#if node.type === 'folder'}
+              <circle r={node.size + 4} fill="transparent" />
               <text class="folder-icon" x="0" y="1" text-anchor="middle" aria-hidden="true">📁</text>
             {:else}
               <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
@@ -640,7 +707,7 @@
       {#if contextMenu.node.type === 'folder'}
         <button on:click={openFolderFromMenu}>Open folder</button>
       {:else}
-        <span>Drag this file onto a folder to move it</span>
+        <span>Double-click to open file; drag to reposition</span>
       {/if}
     </div>
   {/if}

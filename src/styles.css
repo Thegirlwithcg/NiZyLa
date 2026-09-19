@@ -625,8 +625,9 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .graph-node.symbol.kind-class circle { fill: var(--graph-class); }
 .graph-node.symbol.kind-function circle { fill: var(--graph-function); }
 .graph-node.symbol.kind-variable circle { fill: var(--graph-variable); }
-.graph-node.folder { cursor: pointer; }
-.graph-node .folder-icon { fill: initial; font-family: "Segoe UI Emoji", sans-serif; font-size: 32px; pointer-events: all; filter: drop-shadow(0 2px 3px #0005); transition: filter 220ms ease; }
+.graph-node.folder { cursor: grab; }
+.graph-node.folder:active { cursor: grabbing; }
+.graph-node .folder-icon { fill: initial; font-family: "Segoe UI Emoji", sans-serif; font-size: 32px; pointer-events: none; filter: drop-shadow(0 2px 3px #0005); transition: filter 220ms ease; }
 .graph-node.folder:hover .folder-icon { filter: drop-shadow(0 5px 7px #0008); }
 .graph-node.active circle { fill: var(--accent-2); stroke: var(--text); }
 .graph-edge { transition: stroke-width 180ms ease, stroke-opacity 180ms ease; cursor: grab; }
