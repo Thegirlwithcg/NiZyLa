@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('nizyla', {
   getDetachedState: (windowId) => ipcRenderer.invoke('detached:get-state', windowId),
   updateDetachedState: (windowId, state) => ipcRenderer.send('detached:update-state', windowId, state),
   dockDetachedWindow: (windowId, state) => ipcRenderer.send('detached:dock', windowId, state),
+  closeDetachedWindow: (windowId) => ipcRenderer.invoke('detached:close-window', windowId),
   openFileInMainWindow: (file) => ipcRenderer.send('detached:open-file-in-main', file),
   onDetachedDockBack: (callback) => {
     const handler = (_event, data) => callback(data);

@@ -13,6 +13,7 @@
   const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const detachedMode = urlParams?.get('detached') ?? null;
   const detachedWindowId = urlParams?.get('windowId') ?? null;
+  const detachedCwdParam = urlParams?.get('cwd') ?? '';
   let detachedState = null;
 
   let projects = [];
@@ -110,9 +111,9 @@
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'p') { event.preventDefault(); openPalette(); query = ''; }
       if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); saveFile(); }
-      if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); graphVisible = !graphVisible; }
+      if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
       if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
-      if (mod && event.key === '`') { event.preventDefault(); terminalVisible = !terminalVisible; }
+      if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
       if (event.key === 'Escape') paletteOpen = false;
     };
     window.addEventListener('keydown', keydown);
@@ -522,6 +523,34 @@
     }
   }
 
+  async function toggleTerminal() {
+    if (terminalDetached) {
+      if (api?.closeDetachedWindow) {
+        await api.closeDetachedWindow('terminal');
+      }
+      terminalDetached = false;
+      terminalVisible = true;
+      terminalFloating = false;
+      status = 'Terminal restored to main window';
+      return;
+    }
+    terminalVisible = !terminalVisible;
+  }
+
+  async function toggleGraph() {
+    if (graphDetached) {
+      if (api?.closeDetachedWindow) {
+        await api.closeDetachedWindow('graph');
+      }
+      graphDetached = false;
+      graphVisible = true;
+      graphFloating = false;
+      status = 'Project Graph restored to main window';
+      return;
+    }
+    graphVisible = !graphVisible;
+  }
+
   function handleDetachedClosed({ windowId, state }) {
     if (windowId.startsWith('editor-')) {
       const paneId = Number(windowId.replace('editor-', ''));
@@ -536,8 +565,14 @@
       });
     } else if (windowId === 'graph') {
       graphDetached = false;
+      graphVisible = true;
+      graphFloating = false;
+      status = 'Project Graph restored to main window';
     } else if (windowId === 'terminal') {
       terminalDetached = false;
+      terminalVisible = true;
+      terminalFloating = false;
+      status = 'Terminal restored to main window';
     }
   }
 
@@ -1005,7 +1040,7 @@
       </div>
     </header>
     <main class="detached-content terminal-detached">
-      <TerminalPanel api={api} cwd={detachedState?.cwd ?? project?.rootPath ?? ''} />
+      <TerminalPanel api={api} cwd={detachedCwdParam || detachedState?.cwd || project?.rootPath || ''} />
     </main>
     <footer class="statusbar">Integrated Terminal · Detached Multi-Monitor Window</footer>
   </div>
@@ -1040,13 +1075,13 @@
         <button on:click={() => addPane(false)} title="Add a new editor window">+ Editor</button>
         <button on:click={() => addPane(true)} title="Add a floating editor window">+ Float Editor</button>
         <button on:click={toggleSplit} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
-        <button on:click={() => (terminalVisible = !terminalVisible)} class:active={terminalVisible}>Terminal{terminalVisible && terminalFloating ? ' (Float)' : ''}</button>
+        <button on:click={toggleTerminal} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
         <button on:click={() => (vimMode = !vimMode)} class:active={vimMode}>Vim {vimMode ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
         {/if}
-        <button on:click={() => (graphVisible = !graphVisible)}>Graph {graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show'}</button>
+        <button on:click={toggleGraph}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
         <button class="primary" on:click={saveFile} disabled={!activeTab || !activeTab.dirty}>Save</button>
       </div>
     </header>
@@ -1330,7 +1365,7 @@
       <div class="palette-backdrop" role="presentation" on:click={closePalette} on:keydown={(event) => event.key === 'Escape' && closePalette()}>
         <div class="palette" role="dialog" tabindex="-1" aria-label="Command palette" on:click|stopPropagation on:keydown|stopPropagation>
           <input bind:this={paletteInput} bind:value={query} placeholder="Search files or type a command..." />
-          <button on:click={() => (graphVisible = !graphVisible)}>Toggle graph</button>
+          <button on:click={toggleGraph}>Toggle graph</button>
           <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock graph' : 'Float graph'}</button>
           <button on:click={detachGraph}>Detach graph to separate window</button>
           <button on:click={() => addPane(false)}>Add editor window</button>
@@ -1338,7 +1373,7 @@
           <button on:click={() => detachPane(activePaneId)}>Detach active editor to separate window</button>
           <button on:click={toggleSplit}>Toggle split editor</button>
           <button on:click={() => togglePaneFloat(activePaneId)}>Float / Dock current editor</button>
-          <button on:click={() => (terminalVisible = !terminalVisible)}>Toggle terminal</button>
+          <button on:click={toggleTerminal}>Toggle terminal</button>
           <button on:click={() => (terminalFloating = !terminalFloating)}>{terminalFloating ? 'Dock terminal' : 'Float terminal'}</button>
           <button on:click={detachTerminal}>Detach terminal to separate window</button>
           <button on:click={() => (vimMode = !vimMode)}>Toggle Vim mode</button>

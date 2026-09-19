@@ -189,25 +189,31 @@ function createDetachedWindow({ windowId, type, title, bounds, state }) {
     win.focus();
   });
 
-  win.on('closed', () => {
-    detachedWindows.delete(windowId);
+  win.on('close', () => {
     const lastState = detachedStates.get(windowId);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('detached:closed', { windowId, type, state: lastState });
     }
+  });
+
+  win.on('closed', () => {
+    detachedWindows.delete(windowId);
     detachedStates.delete(windowId);
   });
 
-  const queryParams = new URLSearchParams({
+  const queryObj = {
     detached: type,
-    windowId: windowId
-  }).toString();
+    windowId: windowId,
+    cwd: (state?.cwd || state?.project?.rootPath || '')
+  };
+
+  const queryParams = new URLSearchParams(queryObj).toString();
 
   if (isDev) {
     win.loadURL(`http://127.0.0.1:5174?${queryParams}`);
   } else {
     win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
-      query: { detached: type, windowId: windowId }
+      query: queryObj
     });
   }
 
@@ -295,18 +301,25 @@ ipcMain.handle('terminal:create', async (event, cwd) => {
 
   const id = randomUUID();
   const { shell, args } = getShellConfig();
+  const targetCwd = (cwd && typeof cwd === 'string' && cwd.trim()) ? cwd.trim() : (app.getPath('home') || process.cwd());
   const terminal = pty.spawn(shell, args, {
     name: 'xterm-256color',
     cols: 100,
     rows: 24,
-    cwd,
+    cwd: targetCwd,
     env: { ...process.env, TERM: 'xterm-256color' }
   });
   terminals.set(id, terminal);
-  terminal.onData((data) => event.sender.send('terminal:data', id, data));
+  terminal.onData((data) => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('terminal:data', id, data);
+    }
+  });
   terminal.onExit(() => {
     terminals.delete(id);
-    event.sender.send('terminal:exit', id);
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('terminal:exit', id);
+    }
   });
   return id;
 });
@@ -355,4 +368,14 @@ ipcMain.on('detached:open-file-in-main', (_event, file) => {
     mainWindow.webContents.send('main:open-file', file);
     mainWindow.focus();
   }
+});
+
+ipcMain.handle('detached:close-window', async (_event, windowId) => {
+  const win = detachedWindows.get(windowId);
+  if (win && !win.isDestroyed()) {
+    win.close();
+  }
+  detachedWindows.delete(windowId);
+  detachedStates.delete(windowId);
+  return true;
 });

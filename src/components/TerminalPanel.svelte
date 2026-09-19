@@ -12,6 +12,41 @@
   let resizeObserver;
   let removeDataListener;
   let removeExitListener;
+  let isStarting = false;
+  let sessionActive = false;
+
+  async function startTerminal() {
+    if (!api || !terminal || isStarting || sessionActive) return;
+    isStarting = true;
+    try {
+      terminalId = await api.createTerminal(cwd || '');
+      sessionActive = true;
+      terminal.writeln(cwd ? `\x1b[90mNiZyLa terminal · ${cwd}\x1b[0m` : '\x1b[90mNiZyLa terminal\x1b[0m');
+
+      removeDataListener?.();
+      removeExitListener?.();
+
+      removeDataListener = api.onTerminalData((id, data) => {
+        if (id === terminalId) terminal.write(data);
+      });
+      removeExitListener = api.onTerminalExit((id) => {
+        if (id === terminalId) {
+          terminal.writeln('\r\n\x1b[90mTerminal session ended.\x1b[0m');
+          sessionActive = false;
+        }
+      });
+      terminal.onData((data) => {
+        if (terminalId) api.terminalInput(terminalId, data);
+      });
+
+      resize();
+      terminal.focus();
+    } catch (error) {
+      terminal.writeln(`\r\n\x1b[31m${error.message}\x1b[0m`);
+    } finally {
+      isStarting = false;
+    }
+  }
 
   onMount(async () => {
     terminal = new Terminal({
@@ -31,28 +66,18 @@
       }
     });
     terminal.open(host);
-    terminal.writeln(cwd ? `\x1b[90mNiZyLa terminal · ${cwd}\x1b[0m` : '\x1b[33mOpen a workspace to start the terminal.\x1b[0m');
 
-    if (!api || !cwd) return;
-    try {
-      terminalId = await api.createTerminal(cwd);
-    } catch (error) {
-      terminal.writeln(`\r\n\x1b[31m${error.message}\x1b[0m`);
-      return;
-    }
-    removeDataListener = api.onTerminalData((id, data) => {
-      if (id === terminalId) terminal.write(data);
-    });
-    removeExitListener = api.onTerminalExit((id) => {
-      if (id === terminalId) terminal.writeln('\r\n\x1b[90mTerminal session ended.\x1b[0m');
-    });
-    terminal.onData((data) => api.terminalInput(terminalId, data));
+    await startTerminal();
 
     resizeObserver = new ResizeObserver(() => resize());
     resizeObserver.observe(host);
     resize();
     terminal.focus();
   });
+
+  $: if (terminal && !sessionActive && !isStarting && api) {
+    startTerminal();
+  }
 
   onDestroy(() => {
     resizeObserver?.disconnect();
