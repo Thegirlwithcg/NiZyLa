@@ -3,11 +3,23 @@
 
   export let entry;
   export let activeFile = null;
+  export let activeFolderPath = null;
   export let depth = 0;
 
   const dispatch = createEventDispatcher();
   let expanded = depth < 2;
   let dragOver = false;
+
+  function normalizePath(p) {
+    return p ? p.replace(/\\/g, '/').toLowerCase() : '';
+  }
+
+  $: isFolderActive = entry.type === 'folder' && activeFolderPath && normalizePath(entry.path) === normalizePath(activeFolderPath);
+  $: isDescendantActive = entry.type === 'folder' && activeFolderPath && normalizePath(activeFolderPath).startsWith(normalizePath(entry.path) + '/');
+
+  $: if (isFolderActive || isDescendantActive) {
+    expanded = true;
+  }
 
   function select() {
     if (entry.type === 'folder') {
@@ -56,7 +68,23 @@
   }
 </script>
 
-<div class="tree-row {entry.type} {activeFile?.path === entry.path ? 'active' : ''}" class:drag-over={dragOver} style="padding-left: {depth * 14 + 8}px" role="button" tabindex="0" draggable={entry.type === 'file' || (entry.type === 'folder' && depth > 0)} on:click={select} on:contextmenu={onContextMenu} on:keydown={onKeydown} on:dragstart={startDrag} on:dragover={dragOverFolder} on:dragleave={() => (dragOver = false)} on:drop={dropOnFolder}>
+<div
+  class="tree-row {entry.type}"
+  class:active={activeFile?.path === entry.path || isFolderActive}
+  class:folder-highlight={isFolderActive}
+  class:drag-over={dragOver}
+  style="padding-left: {depth * 14 + 8}px"
+  role="button"
+  tabindex="0"
+  draggable={entry.type === 'file' || (entry.type === 'folder' && depth > 0)}
+  on:click={select}
+  on:contextmenu={onContextMenu}
+  on:keydown={onKeydown}
+  on:dragstart={startDrag}
+  on:dragover={dragOverFolder}
+  on:dragleave={() => (dragOver = false)}
+  on:drop={dropOnFolder}
+>
   <span class="twisty">{entry.type === 'folder' ? (expanded ? '▾' : '▸') : '·'}</span>
   <span class="icon">{entry.type === 'folder' ? '📁' : '📄'}</span>
   <span class="name">{entry.name}</span>
@@ -64,6 +92,14 @@
 
 {#if entry.type === 'folder' && expanded}
   {#each entry.children as child (child.path)}
-    <svelte:self entry={child} {activeFile} depth={depth + 1} on:select={(event) => dispatch('select', event.detail)} on:context={(event) => dispatch('context', event.detail)} on:move={(event) => dispatch('move', event.detail)} />
+    <svelte:self
+      entry={child}
+      {activeFile}
+      {activeFolderPath}
+      depth={depth + 1}
+      on:select={(event) => dispatch('select', event.detail)}
+      on:context={(event) => dispatch('context', event.detail)}
+      on:move={(event) => dispatch('move', event.detail)}
+    />
   {/each}
 {/if}

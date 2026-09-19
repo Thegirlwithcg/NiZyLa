@@ -30,6 +30,12 @@ const IGNORED_WORDS = new Set([
   'std', 'console', 'print', 'printf', 'cout', 'cin', 'endl', 'main', 'id', 'obj', 'item', 'key'
 ]);
 
+function toPascalCase(str) {
+  return str
+    .replace(/[_-]+(\w)/g, (_, c) => c.toUpperCase())
+    .replace(/^\w/, (c) => c.toUpperCase());
+}
+
 export async function scanProject(rootPath) {
   const root = path.resolve(rootPath);
   const tree = await readDirectory(root, root);
@@ -157,12 +163,20 @@ export async function scanProject(rootPath) {
   }
 
   // Pairwise relationships between code files
-  const pairEdges = new Map(); // `${src}->${tgt}` -> { classes: Set, functions: Set, variables: Set, imports: boolean }
+  const pairEdges = new Map(); // `${src}->${tgt}` -> { classes: Set, functions: Set, variables: Set, importedClasses: Set, imports: boolean }
 
   function getPair(src, tgt) {
     const key = `${src}->${tgt}`;
     if (!pairEdges.has(key)) {
-      pairEdges.set(key, { source: src, target: tgt, classes: new Set(), functions: new Set(), variables: new Set(), imports: false });
+      pairEdges.set(key, {
+        source: src,
+        target: tgt,
+        classes: new Set(),
+        functions: new Set(),
+        variables: new Set(),
+        importedClasses: new Set(),
+        imports: false
+      });
     }
     return pairEdges.get(key);
   }
@@ -172,7 +186,21 @@ export async function scanProject(rootPath) {
     for (const raw of rawImports) {
       const targetPath = resolveProjectReference(file.relativePath, raw, pathByRelative, pathByRelativeNoExt, flatFiles);
       if (targetPath && targetPath !== file.path) {
-        getPair(file.path, targetPath).imports = true;
+        const pair = getPair(file.path, targetPath);
+        pair.imports = true;
+
+        const targetData = fileDataMap.get(targetPath);
+        if (targetData) {
+          if (targetData.classes.size > 0) {
+            for (const cls of targetData.classes) {
+              pair.importedClasses.add(cls);
+            }
+          } else {
+            const base = stripExtension(path.basename(targetData.file.path));
+            const pascal = toPascalCase(base);
+            pair.importedClasses.add(pascal);
+          }
+        }
       }
     }
   }
@@ -225,7 +253,7 @@ export async function scanProject(rootPath) {
 
   // Emit consolidated edges with proper types and labels
   for (const pair of pairEdges.values()) {
-    const { source, target, classes, functions, variables, imports } = pair;
+    const { source, target, classes, functions, variables, imports, importedClasses = new Set() } = pair;
 
     // Class edge (Blue)
     if (classes.size > 0) {
@@ -272,13 +300,30 @@ export async function scanProject(rootPath) {
       });
     }
 
-    // Generic import edge (Purple) if no specific class/function/variable edge was emitted
+    // Import edge (Purple) with Class / symbol name
     if (imports && classes.size === 0 && functions.size === 0 && variables.size === 0) {
+      const targetData = fileDataMap.get(target);
+      const classList = [...importedClasses];
+
+      let importLabel = '';
+      if (classList.length > 0) {
+        importLabel = `Import: ${classList.slice(0, 2).join(', ')}${classList.length > 2 ? ` (+${classList.length - 2})` : ''}`;
+      } else if (targetData?.functions?.size > 0) {
+        const fns = [...targetData.functions].slice(0, 2);
+        importLabel = `Import: ${fns.map((f) => `${f}()`).join(', ')}`;
+      } else {
+        const targetFileName = path.basename(target);
+        importLabel = `Import: ${targetFileName}`;
+      }
+
       edges.push({
         id: `${source}->${target}:imports`,
         source,
         target,
-        type: 'imports'
+        type: 'imports',
+        label: importLabel,
+        symbolKind: 'class',
+        symbols: classList
       });
     }
   }

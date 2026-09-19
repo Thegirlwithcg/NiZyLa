@@ -370,6 +370,12 @@ ipcMain.on('detached:open-file-in-main', (_event, file) => {
   }
 });
 
+ipcMain.on('detached:sync-folder-to-main', (_event, folderPath) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('main:sync-folder', folderPath);
+  }
+});
+
 ipcMain.handle('detached:close-window', async (_event, windowId) => {
   const win = detachedWindows.get(windowId);
   if (win && !win.isDestroyed()) {

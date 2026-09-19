@@ -101,7 +101,7 @@
     const height = fullscreen ? 900 : 680;
     const centerX = width / 2;
     const centerY = height / 2;
-    const radius = Math.min(width, height) * 0.34;
+    const radius = Math.min(width, height) * 0.44;
 
     const nodes = visibleNodes.map((node, index) => {
       const saved = positions.get(node.id);
@@ -109,13 +109,13 @@
       const relCount = visibleEdges.filter((edge) => edge.source === node.id || edge.target === node.id).length;
       return {
         ...node,
-        x: saved?.x ?? centerX + Math.cos(angle) * (radius + relCount * 5),
-        y: saved?.y ?? centerY + Math.sin(angle) * (radius + relCount * 5),
+        x: saved?.x ?? centerX + Math.cos(angle) * (radius + relCount * 6),
+        y: saved?.y ?? centerY + Math.sin(angle) * (radius + relCount * 6),
         vx: 0,
         vy: 0,
         z: saved?.z ?? Math.sin(index * 2.399) * 48,
         pinned: Boolean(saved),
-        size: node.type === 'folder' ? 20 : Math.min(18, 7 + relCount * 2)
+        size: node.type === 'folder' ? 22 : Math.min(18, 7 + relCount * 2)
       };
     });
 
@@ -206,17 +206,52 @@
       });
     }
 
-    for (let step = 0; step < 70; step += 1) {
+    function nodeWidth(node) {
+      if (node.type === 'folder') return 36;
+      if (node.type === 'external-stub') return 140;
+      return (node.size || 14) + 12 + (node.label?.length || 8) * 8;
+    }
+
+    for (let step = 0; step < 85; step += 1) {
       for (let i = 0; i < nodes.length; i += 1) {
         for (let j = i + 1; j < nodes.length; j += 1) {
           const a = nodes[i];
           const b = nodes[j];
           const dx = a.x - b.x || 0.01;
           const dy = a.y - b.y || 0.01;
-          const distSq = dx * dx + dy * dy;
-          const force = Math.min(4, 1900 / distSq);
-          if (!a.pinned) { a.vx += dx * force * 0.01; a.vy += dy * force * 0.01; }
-          if (!b.pinned) { b.vx -= dx * force * 0.01; b.vy -= dy * force * 0.01; }
+
+          const wA = nodeWidth(a);
+          const wB = nodeWidth(b);
+          const minClearanceX = (wA + wB) * 0.52 + 32;
+          const minClearanceY = 46;
+
+          const absDx = Math.abs(dx);
+          const absDy = Math.abs(dy);
+
+          if (absDx < minClearanceX && absDy < minClearanceY) {
+            // Label-aware collision avoidance: push nodes apart so text never overlaps
+            const overlapX = (minClearanceX - absDx) / minClearanceX;
+            const overlapY = (minClearanceY - absDy) / minClearanceY;
+            const push = (overlapX * 1.5 + overlapY) * 3.0;
+
+            const signX = dx > 0 ? 1 : -1;
+            const signY = dy > 0 ? 1 : -1;
+
+            if (!a.pinned) {
+              a.vx += signX * push * 1.2;
+              a.vy += signY * push * 0.9;
+            }
+            if (!b.pinned) {
+              b.vx -= signX * push * 1.2;
+              b.vy -= signY * push * 0.9;
+            }
+          } else {
+            const distSq = dx * dx + dy * dy;
+            const dist = Math.sqrt(distSq) || 1;
+            const force = Math.min(6, 6000 / (distSq + 200));
+            if (!a.pinned) { a.vx += (dx / dist) * force; a.vy += (dy / dist) * force; }
+            if (!b.pinned) { b.vx -= (dx / dist) * force; b.vy -= (dy / dist) * force; }
+          }
         }
       }
 
@@ -226,8 +261,10 @@
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-        const target = edge.type === 'defines' ? 48 : 140;
-        const force = (distance - target) * 0.011;
+        const lenA = a.label?.length || 8;
+        const lenB = b.label?.length || 8;
+        const target = edge.type === 'defines' ? 60 : Math.max(220, 160 + (lenA + lenB) * 3);
+        const force = (distance - target) * 0.009;
         if (!a.pinned) { a.vx += (dx / distance) * force; a.vy += (dy / distance) * force; }
         if (!b.pinned) { b.vx -= (dx / distance) * force; b.vy -= (dy / distance) * force; }
       }
@@ -238,8 +275,8 @@
         node.vy += (centerY - node.y) * 0.0008;
         node.x += node.vx;
         node.y += node.vy;
-        node.vx *= 0.84;
-        node.vy *= 0.84;
+        node.vx *= 0.82;
+        node.vy *= 0.82;
       }
     }
 
@@ -540,6 +577,17 @@
 </script>
 
 <div class="graph-wrap" class:fullscreen role="button" tabindex="0" aria-label="Interactive project graph. Double-click a folder to enter it; click and hold to drag nodes and expand layout." bind:this={graphHost} on:mousedown={startPan} on:wheel={wheel} on:keydown={graphKeydown}>
+  <!-- Current Folder Breadcrumb Bar (Top Left) -->
+  <div class="graph-current-folder-bar" role="status" aria-label="Current folder">
+    {#if viewMode === 'all'}
+      <span class="folder-badge">VIEW</span>
+      <strong class="folder-name-title">🌐 All Files (Project Overview)</strong>
+    {:else}
+      <span class="folder-badge">CURRENT FOLDER</span>
+      <strong class="folder-name-title">📁 {layout.folder?.relativePath || layout.folder?.name || 'Project Root'}</strong>
+    {/if}
+  </div>
+
   <div class="graph-tools">
     {#if layout.parentId && viewMode === 'folder'}<button on:click={goUp} aria-label="Go to parent folder">↑</button>{/if}
     <button class:active={viewMode === 'all'} on:click={toggleViewMode} title="Toggle between All Files and Folder view">{viewMode === 'all' ? 'All Files' : 'Folder'}</button>
@@ -662,40 +710,55 @@
             transform="translate({node.x}, {node.y})"
             role="button"
             tabindex="0"
+            aria-label={node.label}
             on:dblclick={() => activateNode(node)}
             on:pointerdown={(event) => startNodeDrag(event, node)}
           >
             <rect x="-65" y="-12" width="130" height="24" rx="5" class="external-stub-rect" />
             <text x="0" y="4" text-anchor="middle" class="external-stub-text">{node.label}</text>
+            <title>{node.label} (Double-click to open file)</title>
+          </g>
+        {:else if node.type === 'folder'}
+          <!-- Node Folder: Yellow folder icon with transparent hitbox and name below -->
+          <g
+            class="graph-node folder-node"
+            transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})"
+            role="button"
+            tabindex="0"
+            aria-label={node.label}
+            on:pointerdown={(event) => startNodeDrag(event, node)}
+            on:contextmenu={(event) => openNodeMenu(event, node)}
+            on:click|stopPropagation={() => { if (!drag?.moved) enterFolder(node); }}
+            on:dblclick|stopPropagation={() => enterFolder(node)}
+            on:keydown={(event) => nodeKeydown(event, node)}
+          >
+            <!-- Transparent hitbox circle so mouse clicks are 100% reliable without showing any cyan circle -->
+            <circle class="folder-hitbox" r={node.size + 14} />
+            <text class="folder-icon" x="0" y="2" text-anchor="middle" aria-hidden="true">📁</text>
+            <text class="folder-name-label" x="0" y="24" text-anchor="middle">{node.label}</text>
+            <title>{node.label} (Click to open folder)</title>
           </g>
         {:else}
-          <!-- Node: Folder or File (Click and hold to drag anywhere; Double-click to enter folder or open file) -->
+          <!-- Node File / Symbol (with label text) -->
           <g
-            class="graph-node"
+            class="graph-node file-node"
             class:active={activePath === node.path}
             class:symbol={node.type === 'symbol'}
-            class:folder={node.type === 'folder'}
             class:kind-class={node.kind === 'class'}
             class:kind-function={node.kind === 'function'}
             class:kind-variable={node.kind === 'variable'}
             transform="translate({node.x}, {node.y}) scale({1 + node.z * 0.0012})"
             role="button"
             tabindex="0"
+            aria-label={node.label}
             on:pointerdown={(event) => startNodeDrag(event, node)}
             on:contextmenu={(event) => openNodeMenu(event, node)}
-            on:dblclick={() => {
-              if (node.type === 'folder') enterFolder(node);
-              else activateNode(node);
-            }}
+            on:dblclick={() => activateNode(node)}
             on:keydown={(event) => nodeKeydown(event, node)}
           >
-            {#if node.type === 'folder'}
-              <circle r={node.size + 4} fill="transparent" />
-              <text class="folder-icon" x="0" y="1" text-anchor="middle" aria-hidden="true">📁</text>
-            {:else}
-              <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
-            {/if}
+            <circle r={node.type === 'symbol' ? Math.max(4, node.size - 3) : node.size} filter="url(#glow)" />
             <text x={node.size + 6} y="4">{node.label}</text>
+            <title>{node.label}</title>
           </g>
         {/if}
       {/each}

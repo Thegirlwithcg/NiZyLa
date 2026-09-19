@@ -158,3 +158,22 @@ test('detects shared global variables between multiple files and connects them',
   }
 });
 
+test('sets imported Class names on import edges when files are imported', async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'nizyla-import-lbl-'));
+  try {
+    const fileA = path.join(temp, 'WeaponStage3D.gd');
+    const fileB = path.join(temp, 'WeaponSelectUI.gd');
+
+    await fs.writeFile(fileA, 'class_name WeaponStage3D\nextends Node3D\n');
+    await fs.writeFile(fileB, 'extends Control\nconst Stage = preload("res://WeaponStage3D.gd")\n');
+
+    const result = await scanProject(temp);
+    const edge = result.graph.edges.find((e) => e.type === 'imports' || e.type === 'class');
+    assert.ok(edge, 'Should create edge between WeaponSelectUI and WeaponStage3D');
+    assert.match(edge.label, /WeaponStage3D/, 'Edge should display imported class name WeaponStage3D');
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+});
+
+

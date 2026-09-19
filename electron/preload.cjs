@@ -46,5 +46,11 @@ contextBridge.exposeInMainWorld('nizyla', {
     const handler = (_event, file) => callback(file);
     ipcRenderer.on('main:open-file', handler);
     return () => ipcRenderer.removeListener('main:open-file', handler);
+  },
+  syncFolderToMainWindow: (folderPath) => ipcRenderer.send('detached:sync-folder-to-main', folderPath),
+  onMainSyncFolder: (callback) => {
+    const handler = (_event, folderPath) => callback(folderPath);
+    ipcRenderer.on('main:sync-folder', handler);
+    return () => ipcRenderer.removeListener('main:sync-folder', handler);
   }
 });

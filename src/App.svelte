@@ -137,6 +137,7 @@
     const unlistenDock = api?.onDetachedDockBack?.((data) => handleDetachedDockBack(data));
     const unlistenClosed = api?.onDetachedClosed?.((data) => handleDetachedClosed(data));
     const unlistenOpenFile = api?.onMainOpenFile?.((file) => selectFile(file));
+    const unlistenSyncFolder = api?.onMainSyncFolder?.((folderPath) => { graphFolderId = folderPath; });
 
     const closeContextMenuOnOutsideClick = (event) => {
       if (contextMenu && !event.target.closest('.context-menu')) contextMenu = null;
@@ -160,6 +161,7 @@
       unlistenDock?.();
       unlistenClosed?.();
       unlistenOpenFile?.();
+      unlistenSyncFolder?.();
     };
   });
 
@@ -1072,6 +1074,7 @@
           fullscreen={true}
           bind:currentFolderId={graphFolderId}
           bind:viewMode={graphViewMode}
+          on:folder={(e) => api?.syncFolderToMainWindow?.(e.detail)}
           on:node={(event) => api?.openFileInMainWindow(event.detail)}
           on:move={moveEntry}
         />
@@ -1160,7 +1163,7 @@
             <span>Explorer</span>
           </div>
           <div class="explorer-tree" role="presentation" on:contextmenu={openExplorerContextMenu}>
-            <FileTree entry={project.tree} {activeFile} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} on:move={moveEntry} />
+            <FileTree entry={project.tree} {activeFile} activeFolderPath={graphFolderId} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} on:move={moveEntry} />
           </div>
         {:else}
           <div class="empty">No folder open.</div>
