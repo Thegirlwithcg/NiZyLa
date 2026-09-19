@@ -75,7 +75,16 @@
       markdownMenu = { x: event.clientX, y: event.clientY, section: null }; 
     };
     const closeMenu = () => { markdownMenu = null; tablePicker = false; }; 
+    const onWheel = (event) => {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = event.deltaY < 0 ? 1 : -1;
+        dispatch('zoom', delta);
+      }
+    };
     host.addEventListener('contextmenu', onContextMenu);
+    host.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('pointerdown', closeMenu);
     lastFilePath = file?.path ?? null;
     lastShowLineNumbers = showLineNumbers;
@@ -85,6 +94,7 @@
     });
     return () => {
       host?.removeEventListener('contextmenu', onContextMenu);
+      host?.removeEventListener('wheel', onWheel);
       window.removeEventListener('pointerdown', closeMenu);
     };
   });

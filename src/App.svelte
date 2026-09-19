@@ -72,6 +72,31 @@
   let workspaceEl;
   let layoutDrag = null;
   let layoutSize = { sidebar: 270, graph: 390, terminal: 190 };
+  let sidebarEl;
+  let explorerFontSize = Number(localStorage.getItem('nizyla.explorerFontSize')) || 13;
+
+  function handleExplorerWheel(event) {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      const delta = event.deltaY < 0 ? 1 : -1;
+      explorerFontSize = Math.max(10, Math.min(26, explorerFontSize + delta));
+      localStorage.setItem('nizyla.explorerFontSize', String(explorerFontSize));
+      document.documentElement.style.setProperty('--explorer-font-size', `${explorerFontSize}px`);
+      status = `Explorer Font Size: ${explorerFontSize}px (Ctrl+Scroll to adjust)`;
+    }
+  }
+
+  function handleEditorZoom(event) {
+    const delta = event.detail;
+    const current = preferences.fontSize || 14;
+    const next = Math.max(10, Math.min(36, current + delta));
+    if (next !== current) {
+      preferences.fontSize = next;
+      savePreferences(preferences);
+      status = `Editor Font Size: ${next}px (Ctrl+Scroll to adjust)`;
+    }
+  }
 
   let actionsEl;
   let isMiddleDragging = false;
@@ -89,6 +114,8 @@
 
   onMount(async () => {
     applyPreferences(preferences);
+    document.documentElement.style.setProperty('--explorer-font-size', `${explorerFontSize}px`);
+    sidebarEl?.addEventListener('wheel', handleExplorerWheel, { passive: false });
     if (detachedMode && api?.getDetachedState) {
       detachedState = await api.getDetachedState(detachedWindowId);
       if (detachedState) {
@@ -129,6 +156,7 @@
     return () => {
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('pointerdown', closeContextMenuOnOutsideClick);
+      sidebarEl?.removeEventListener('wheel', handleExplorerWheel);
       unlistenDock?.();
       unlistenClosed?.();
       unlistenOpenFile?.();
@@ -1016,7 +1044,7 @@
         {:else if activeTab?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
           <MarkdownPreview content={activeTab.content} title={activeTab.file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
         {:else}
-          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(panes[0].id, event.detail)} />
+          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(panes[0].id, event.detail)} on:zoom={handleEditorZoom} />
         {/if}
       </div>
     </main>
@@ -1095,7 +1123,6 @@
       >
         <button on:click={openProject}>Open Folder</button>
         <button on:click={refreshProject} disabled={!project}>Refresh</button>
-        <button on:click={openPalette}>Command / Search</button>
         <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
           <option value="structs">Structs Teal (Indie)</option>
           <option value="obsidian">Obsidian Dark</option>
@@ -1118,7 +1145,7 @@
     </header>
 
     <main class="workspace" bind:this={workspaceEl}>
-      <aside class="sidebar panel">
+      <aside class="sidebar panel" bind:this={sidebarEl}>
         <div class="panel-title">Workspaces</div>
         {#if projects.length}
           <div class="workspace-tabs">
@@ -1184,7 +1211,7 @@
               {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
                 <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
               {:else}
-                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} on:zoom={handleEditorZoom} />
               {/if}
             </div>
           {/each}
@@ -1300,7 +1327,7 @@
           {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
             <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}
-            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} on:zoom={handleEditorZoom} />
           {/if}
         </div>
 

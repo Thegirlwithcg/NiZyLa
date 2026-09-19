@@ -3,6 +3,7 @@
   --mono-font: 'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-family: var(--mono-font);
   font-size: 14px;
+  --explorer-font-size: 13px;
   background: #f7f0df;
   color: #14110c;
 }
@@ -63,7 +64,7 @@
 .theme-obsidian .topbar, .theme-obsidian .statusbar { background: #202020; }
 .theme-obsidian button, .theme-obsidian select { border-color: #454545; border-radius: 5px; }
 .theme-obsidian .sidebar { background: #202020; }
-.theme-obsidian .tree-row { font-size: 13px; }
+.theme-obsidian .tree-row { font-size: var(--explorer-font-size, 13px); }
 .theme-obsidian .tabbar { background: #1e1e1e; }
 .theme-obsidian .tab { border-radius: 5px 5px 0 0; background: #252525; }
 .theme-obsidian .tab.active { background: #202020; border-color: #4f4f4f; }
@@ -299,14 +300,15 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .workspace-close:hover { color: white; background: #b63b32 !important; }
 .empty { padding: 14px; color: var(--muted); font-size: 14px; }
 .tree-row {
-  height: 28px;
+  height: calc(var(--explorer-font-size, 13px) * 2.15);
+  min-height: calc(var(--explorer-font-size, 13px) * 2.15);
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--text);
   cursor: pointer;
   user-select: none;
-  font-size: 13px;
+  font-size: var(--explorer-font-size, 13px);
 }
 .tree-row:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .tree-row.active { background: color-mix(in srgb, var(--accent) 24%, var(--panel-solid)); color: var(--text); }
@@ -314,7 +316,7 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .tree-row.drag-over { outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 20%, var(--panel-solid)); }
 .tree-row.folder { color: var(--accent); }
 .twisty { width: 14px; color: var(--muted); }
-.icon { font-size: 13px; opacity: 0.9; }
+.icon { font-size: var(--explorer-font-size, 13px); opacity: 0.9; }
 .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .editors { min-height: 0; display: grid; gap: 10px; }
