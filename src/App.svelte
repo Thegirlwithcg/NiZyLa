@@ -9,12 +9,34 @@
 
   let projects = [];
   let activeProjectIndex = 0;
-  let panes = [{ id: 0, tabs: [], active: null }, { id: 1, tabs: [], active: null }];
-  let activePane = 0;
+
+  let nextPaneId = 2;
+  let panes = [
+    {
+      id: 1,
+      tabs: [],
+      active: null,
+      floating: false,
+      floatRect: { x: 300, y: 90, width: 740, height: 540, maximized: false },
+      zIndex: 10
+    }
+  ];
+  let activePaneId = 1;
+
   let status = 'Open a project folder to begin.';
   let graphVisible = true;
+  let graphFloating = false;
+  let graphFloat = { x: 320, y: 90, width: 760, height: 560, maximized: false, zIndex: 12 };
+  let graphFullscreen = false;
+
   let terminalVisible = false;
-  let splitMode = false;
+  let terminalFloating = false;
+  let terminalFloat = { x: 260, y: 380, width: 800, height: 360, maximized: false, zIndex: 13 };
+
+  let topZIndex = 20;
+  let activeFloatingWindow = null;
+  let floatingDrag = null;
+
   let vimMode = false;
   let markdownPreview = false;
   let paletteOpen = false;
@@ -23,16 +45,12 @@
   let plugins = [];
   let theme = localStorage.getItem('nizyla.theme') || 'obsidian';
   let showLineNumbers = localStorage.getItem('nizyla.lineNumbers') !== 'false';
-  let graphFullscreen = false;
   let createDialog = null;
   let createPath = '';
   let createParent = null;
   let createInput;
   let contextMenu = null;
   let deleteTarget = null;
-  let graphFloating = false;
-  let graphFloat = { x: 320, y: 90, width: 760, height: 560 };
-  let floatingDrag = null;
   let workspaceEl;
   let layoutDrag = null;
   let layoutSize = { sidebar: 270, graph: 390, terminal: 190 };
@@ -40,8 +58,11 @@
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
   $: project = projects[activeProjectIndex] ?? null;
-  $: activeTab = panes[activePane]?.tabs.find((tab) => tab.id === panes[activePane]?.active) ?? null;
+  $: currentPane = panes.find((p) => p.id === activePaneId) ?? panes[0] ?? null;
+  $: activeTab = currentPane?.tabs.find((tab) => tab.id === currentPane?.active) ?? null;
   $: activeFile = activeTab?.file ?? null;
+  $: dockedPanes = panes.filter((p) => !p.floating);
+  $: floatingPanes = panes.filter((p) => p.floating);
   $: files = projects.flatMap((p) => flattenFiles(p.tree).map((f) => ({ ...f, projectRoot: p.rootPath })));
   $: filteredFiles = query ? files.filter((file) => file.relativePath.toLowerCase().includes(query.toLowerCase())).slice(0, 40) : files.slice(0, 40);
 
@@ -54,7 +75,7 @@
       if (mod && event.key.toLowerCase() === 'p') { event.preventDefault(); openPalette(); query = ''; }
       if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); saveFile(); }
       if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); graphVisible = !graphVisible; }
-      if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); splitMode = !splitMode; }
+      if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
       if (mod && event.key === '`') { event.preventDefault(); terminalVisible = !terminalVisible; }
       if (event.key === 'Escape') paletteOpen = false;
     };
@@ -114,7 +135,7 @@
     refreshPlugins();
   }
 
-  async function selectFile(entry, paneIndex = activePane) {
+  async function selectFile(entry, targetPaneId = activePaneId) {
     if (entry.type !== 'file' && entry.type !== 'symbol') return;
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
     if (owningProject >= 0) activeProjectIndex = owningProject;
@@ -122,7 +143,6 @@
     const previewType = previewTypeFor(entry.path);
     let content = '';
     try {
-      // ponytail: reuse the existing data-URL bridge; switch to a local protocol only if large PDFs become a measured bottleneck.
       content = previewType === 'text' ? await api.readFile(entry.path) : await api.readFileDataUrl(entry.path);
     } catch (error) {
       status = `Could not read ${entry.name}: ${error.message}`;
@@ -132,14 +152,18 @@
     const file = { name: entry.name ?? entry.label, path: entry.path, relativePath: entry.relativePath?.split('#')[0] ?? entry.label, type: 'file', previewType };
     markdownPreview = file.name.toLowerCase().endsWith('.md');
     const id = file.path;
-    const pane = panes[paneIndex];
-    const exists = pane.tabs.some((tab) => tab.id === id);
-    panes = panes.map((p, index) => index === paneIndex ? {
+
+    const targetPane = panes.find((p) => p.id === targetPaneId) ?? panes[0];
+    if (!targetPane) return;
+    const paneId = targetPane.id;
+    const exists = targetPane.tabs.some((tab) => tab.id === id);
+
+    panes = panes.map((p) => p.id === paneId ? {
       ...p,
       active: id,
       tabs: exists ? p.tabs.map((tab) => tab.id === id ? { ...tab, file, content } : tab) : [...p.tabs, { id, file, content, dirty: false }]
     } : p);
-    activePane = paneIndex;
+    activePaneId = paneId;
     paletteOpen = false;
     status = entry.type === 'symbol' ? `${entry.relativePath} line ${entry.line}` : file.relativePath;
   }
@@ -186,36 +210,119 @@
     else status = `Note not found: ${target}`;
   }
 
-  function updateTabContent(paneIndex, content) {
-    const pane = panes[paneIndex];
-    panes = panes.map((p, index) => index === paneIndex ? {
+  function updateTabContent(paneId, content) {
+    panes = panes.map((p) => p.id === paneId ? {
       ...p,
-      tabs: p.tabs.map((tab) => tab.id === pane.active ? { ...tab, content, dirty: true } : tab)
+      tabs: p.tabs.map((tab) => tab.id === p.active ? { ...tab, content, dirty: true } : tab)
     } : p);
   }
 
   function getActiveTab(pane) {
-    return pane.tabs.find((item) => item.id === pane.active) ?? null;
+    return pane?.tabs.find((item) => item.id === pane?.active) ?? null;
   }
 
-  function activateTab(paneIndex, tabId) {
-    activePane = paneIndex;
-    panes = panes.map((pane, index) => index === paneIndex ? { ...pane, active: tabId } : pane);
+  function activateTab(paneId, tabId) {
+    activePaneId = paneId;
+    panes = panes.map((pane) => pane.id === paneId ? { ...pane, active: tabId } : pane);
   }
 
-  function closeTab(paneIndex, tabId) {
-    const pane = panes[paneIndex];
-    const nextTabs = pane.tabs.filter((tab) => tab.id !== tabId);
-    const nextActive = pane.active === tabId ? nextTabs.at(-1)?.id ?? null : pane.active;
-    panes = panes.map((p, index) => index === paneIndex ? { ...p, tabs: nextTabs, active: nextActive } : p);
+  function closeTab(paneId, tabId) {
+    panes = panes.map((p) => {
+      if (p.id !== paneId) return p;
+      const nextTabs = p.tabs.filter((tab) => tab.id !== tabId);
+      const nextActive = p.active === tabId ? nextTabs.at(-1)?.id ?? null : p.active;
+      return { ...p, tabs: nextTabs, active: nextActive };
+    });
+  }
+
+  function addPane(floating = false) {
+    const newId = nextPaneId++;
+    const currentActiveTab = activeTab;
+    const initialTabs = currentActiveTab ? [{ ...currentActiveTab, dirty: false }] : [];
+    const offset = (panes.length % 6) * 32;
+    const newPane = {
+      id: newId,
+      tabs: initialTabs,
+      active: currentActiveTab?.id ?? null,
+      floating,
+      floatRect: {
+        x: Math.max(40, 260 + offset),
+        y: Math.max(60, 90 + offset),
+        width: 720,
+        height: 520,
+        maximized: false
+      },
+      zIndex: ++topZIndex
+    };
+    panes = [...panes, newPane];
+    activePaneId = newId;
+    if (floating) {
+      activeFloatingWindow = `editor-${newId}`;
+    }
+    status = `Added editor window #${newId}${floating ? ' (floating)' : ''}`;
+    return newPane;
+  }
+
+  function closePane(paneId) {
+    if (panes.length <= 1) return;
+    const paneToClose = panes.find((p) => p.id === paneId);
+    const remaining = panes.filter((p) => p.id !== paneId);
+    const targetPane = remaining.find((p) => p.id === activePaneId) || remaining[0];
+    if (paneToClose && targetPane) {
+      for (const tab of paneToClose.tabs) {
+        if (!targetPane.tabs.some((t) => t.id === tab.id)) {
+          targetPane.tabs.push(tab);
+        }
+      }
+      if (!targetPane.active && targetPane.tabs.length) {
+        targetPane.active = targetPane.tabs[0].id;
+      }
+    }
+    panes = [...remaining];
+    if (activePaneId === paneId) {
+      activePaneId = targetPane?.id ?? remaining[0]?.id;
+    }
+    status = `Closed editor window #${paneId}`;
+  }
+
+  function togglePaneFloat(paneId) {
+    panes = panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const nextFloating = !pane.floating;
+      if (nextFloating) {
+        topZIndex += 1;
+        activeFloatingWindow = `editor-${paneId}`;
+      }
+      return {
+        ...pane,
+        floating: nextFloating,
+        zIndex: nextFloating ? topZIndex : pane.zIndex
+      };
+    });
+    activePaneId = paneId;
+  }
+
+  function dockAllEditors() {
+    panes = panes.map((p) => ({ ...p, floating: false }));
+  }
+
+  function toggleSplit() {
+    if (dockedPanes.length <= 1) {
+      addPane(false);
+    } else {
+      const [first, ...rest] = dockedPanes;
+      for (const p of rest) {
+        closePane(p.id);
+      }
+    }
   }
 
   async function saveFile() {
-    const pane = panes[activePane];
-    const tab = pane?.tabs.find((item) => item.id === pane.active);
+    const pane = panes.find((p) => p.id === activePaneId) ?? panes[0];
+    const tab = pane?.tabs.find((item) => item.id === pane?.active);
     if (!tab || !api || tab.file.previewType !== 'text') return;
     await api.writeFile(tab.file.path, tab.content);
-    panes = panes.map((p, index) => index === activePane ? { ...p, tabs: p.tabs.map((t) => t.id === tab.id ? { ...t, dirty: false } : t) } : p);
+    panes = panes.map((p) => p.id === pane.id ? { ...p, tabs: p.tabs.map((t) => t.id === tab.id ? { ...t, dirty: false } : t) } : p);
     status = `Saved ${tab.file.relativePath}`;
     await refreshProject();
   }
@@ -342,40 +449,166 @@
     }
   }
 
-  function startFloatingGraphDrag(event, type) {
-    if (!graphFloating) return;
-    event.preventDefault();
-    floatingDrag = { type, startX: event.clientX, startY: event.clientY, ...graphFloat };
-    window.addEventListener('pointermove', moveFloatingGraph);
-    window.addEventListener('pointerup', stopFloatingGraphDrag, { once: true });
-  }
-
-  function startFloatingGraphMove(event) {
-    if (!event.target.closest('button')) startFloatingGraphDrag(event, 'move');
-  }
-
-  function moveFloatingGraph(event) {
-    if (!floatingDrag) return;
-    const dx = event.clientX - floatingDrag.startX;
-    const dy = event.clientY - floatingDrag.startY;
-    if (floatingDrag.type === 'move') {
-      graphFloat = {
-        ...graphFloat,
-        x: Math.max(8, Math.min(window.innerWidth - floatingDrag.width - 8, floatingDrag.x + dx)),
-        y: Math.max(56, Math.min(window.innerHeight - floatingDrag.height - 32, floatingDrag.y + dy))
-      };
-    } else {
-      graphFloat = {
-        ...graphFloat,
-        width: Math.max(360, Math.min(window.innerWidth - floatingDrag.x - 8, floatingDrag.width + dx)),
-        height: Math.max(280, Math.min(window.innerHeight - floatingDrag.y - 32, floatingDrag.height + dy))
-      };
+  function focusFloatingWindow(windowType, paneId = null) {
+    topZIndex += 1;
+    if (windowType === 'graph') {
+      activeFloatingWindow = 'graph';
+      graphFloat = { ...graphFloat, zIndex: topZIndex };
+    } else if (windowType === 'terminal') {
+      activeFloatingWindow = 'terminal';
+      terminalFloat = { ...terminalFloat, zIndex: topZIndex };
+    } else if (windowType === 'editor' && paneId !== null) {
+      activeFloatingWindow = `editor-${paneId}`;
+      activePaneId = paneId;
+      panes = panes.map((p) => p.id === paneId ? { ...p, zIndex: topZIndex } : p);
     }
   }
 
-  function stopFloatingGraphDrag() {
+  function toggleMaximizeFloatingWindow(windowType, paneId = null) {
+    focusFloatingWindow(windowType, paneId);
+    if (windowType === 'graph') {
+      graphFloat = { ...graphFloat, maximized: !graphFloat.maximized };
+    } else if (windowType === 'terminal') {
+      terminalFloat = { ...terminalFloat, maximized: !terminalFloat.maximized };
+    } else if (windowType === 'editor' && paneId !== null) {
+      panes = panes.map((p) => p.id === paneId ? {
+        ...p,
+        floatRect: { ...p.floatRect, maximized: !p.floatRect?.maximized }
+      } : p);
+    }
+  }
+
+  function startFloatingMove(event, windowType, paneId = null) {
+    if (event.target.closest('button, select, input, .tab-close, .tab')) return;
+    event.preventDefault();
+    focusFloatingWindow(windowType, paneId);
+
+    let initialRect;
+    if (windowType === 'graph') {
+      if (graphFloat.maximized || graphFullscreen) return;
+      initialRect = { ...graphFloat };
+    } else if (windowType === 'terminal') {
+      if (terminalFloat.maximized) return;
+      initialRect = { ...terminalFloat };
+    } else if (windowType === 'editor') {
+      const pane = panes.find((p) => p.id === paneId);
+      if (!pane || pane.floatRect?.maximized) return;
+      initialRect = { ...pane.floatRect };
+    }
+    if (!initialRect) return;
+
+    floatingDrag = {
+      action: 'move',
+      windowType,
+      paneId,
+      startX: event.clientX,
+      startY: event.clientY,
+      ...initialRect
+    };
+
+    window.addEventListener('pointermove', onFloatingPointerMove);
+    window.addEventListener('pointerup', stopFloatingDrag, { once: true });
+  }
+
+  function startFloatingResize(event, windowType, paneId = null) {
+    event.preventDefault();
+    event.stopPropagation();
+    focusFloatingWindow(windowType, paneId);
+
+    let initialRect;
+    if (windowType === 'graph') {
+      if (graphFloat.maximized || graphFullscreen) return;
+      initialRect = { ...graphFloat };
+    } else if (windowType === 'terminal') {
+      if (terminalFloat.maximized) return;
+      initialRect = { ...terminalFloat };
+    } else if (windowType === 'editor') {
+      const pane = panes.find((p) => p.id === paneId);
+      if (!pane || pane.floatRect?.maximized) return;
+      initialRect = { ...pane.floatRect };
+    }
+    if (!initialRect) return;
+
+    floatingDrag = {
+      action: 'resize',
+      windowType,
+      paneId,
+      startX: event.clientX,
+      startY: event.clientY,
+      ...initialRect
+    };
+
+    window.addEventListener('pointermove', onFloatingPointerMove);
+    window.addEventListener('pointerup', stopFloatingDrag, { once: true });
+  }
+
+  function onFloatingPointerMove(event) {
+    if (!floatingDrag) return;
+    const dx = event.clientX - floatingDrag.startX;
+    const dy = event.clientY - floatingDrag.startY;
+    const minW = floatingDrag.windowType === 'terminal' ? 360 : 340;
+    const minH = floatingDrag.windowType === 'terminal' ? 180 : 240;
+
+    if (floatingDrag.action === 'move') {
+      const nextX = Math.max(8, Math.min(window.innerWidth - floatingDrag.width - 8, floatingDrag.x + dx));
+      const nextY = Math.max(52, Math.min(window.innerHeight - floatingDrag.height - 30, floatingDrag.y + dy));
+
+      if (floatingDrag.windowType === 'graph') {
+        graphFloat = { ...graphFloat, x: nextX, y: nextY };
+      } else if (floatingDrag.windowType === 'terminal') {
+        terminalFloat = { ...terminalFloat, x: nextX, y: nextY };
+      } else if (floatingDrag.windowType === 'editor') {
+        panes = panes.map((p) => p.id === floatingDrag.paneId ? { ...p, floatRect: { ...p.floatRect, x: nextX, y: nextY } } : p);
+      }
+    } else if (floatingDrag.action === 'resize') {
+      const nextW = Math.max(minW, Math.min(window.innerWidth - floatingDrag.x - 8, floatingDrag.width + dx));
+      const nextH = Math.max(minH, Math.min(window.innerHeight - floatingDrag.y - 30, floatingDrag.height + dy));
+
+      if (floatingDrag.windowType === 'graph') {
+        graphFloat = { ...graphFloat, width: nextW, height: nextH };
+      } else if (floatingDrag.windowType === 'terminal') {
+        terminalFloat = { ...terminalFloat, width: nextW, height: nextH };
+      } else if (floatingDrag.windowType === 'editor') {
+        panes = panes.map((p) => p.id === floatingDrag.paneId ? { ...p, floatRect: { ...p.floatRect, width: nextW, height: nextH } } : p);
+      }
+    }
+  }
+
+  function stopFloatingDrag() {
     floatingDrag = null;
-    window.removeEventListener('pointermove', moveFloatingGraph);
+    window.removeEventListener('pointermove', onFloatingPointerMove);
+  }
+
+  function getTerminalStyle(floating, rect) {
+    if (!floating) return undefined;
+    if (rect.maximized) {
+      return `left: 8px; top: 58px; width: calc(100vw - 16px); height: calc(100vh - 90px); z-index: ${rect.zIndex};`;
+    }
+    return `left: ${rect.x}px; top: ${rect.y}px; width: ${rect.width}px; height: ${rect.height}px; z-index: ${rect.zIndex};`;
+  }
+
+  function getGraphStyle(floating, rect, fullscreen) {
+    if (fullscreen) return undefined;
+    if (!floating) return undefined;
+    if (rect.maximized) {
+      return `left: 8px; top: 58px; width: calc(100vw - 16px); height: calc(100vh - 90px); z-index: ${rect.zIndex};`;
+    }
+    return `left: ${rect.x}px; top: ${rect.y}px; width: ${rect.width}px; height: ${rect.height}px; z-index: ${rect.zIndex};`;
+  }
+
+  function getFloatingPaneStyle(pane) {
+    const rect = pane.floatRect;
+    if (rect?.maximized) {
+      return `left: 8px; top: 58px; width: calc(100vw - 16px); height: calc(100vh - 90px); z-index: ${pane.zIndex};`;
+    }
+    return `left: ${rect.x}px; top: ${rect.y}px; width: ${rect.width}px; height: ${rect.height}px; z-index: ${pane.zIndex};`;
+  }
+
+  function getEditorsGridStyle(count) {
+    if (count <= 1) return 'grid-template-columns: 1fr;';
+    if (count === 2) return 'grid-template-columns: 1fr 1fr;';
+    if (count === 3) return 'grid-template-columns: 1fr 1fr 1fr;';
+    return 'grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr);';
   }
 
   function startLayoutResize(event, type) {
@@ -413,7 +646,7 @@
   }
 </script>
 
-<div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
+<div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible} class:terminal-open={terminalVisible && !terminalFloating} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
   <header class="topbar">
     <div class="brand">
       <img class="logo" src={logoUrl} alt="NiZyLa logo" />
@@ -430,14 +663,16 @@
         <option value="obsidian">Obsidian Dark</option>
         <option value="cream">Cream Light</option>
       </select>
-      <button on:click={() => (splitMode = !splitMode)} class:active={splitMode}>Split</button>
-      <button on:click={() => (terminalVisible = !terminalVisible)} class:active={terminalVisible}>Terminal</button>
+      <button on:click={() => addPane(false)} title="Add a new editor window">+ Editor</button>
+      <button on:click={() => addPane(true)} title="Add a floating editor window">+ Float Editor</button>
+      <button on:click={toggleSplit} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
+      <button on:click={() => (terminalVisible = !terminalVisible)} class:active={terminalVisible}>Terminal{terminalVisible && terminalFloating ? ' (Float)' : ''}</button>
       <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
       <button on:click={() => (vimMode = !vimMode)} class:active={vimMode}>Vim {vimMode ? 'On' : 'Off'}</button>
       {#if activeFile?.name?.toLowerCase().endsWith('.md')}
         <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
       {/if}
-      <button on:click={() => (graphVisible = !graphVisible)}>Graph {graphVisible ? 'Hide' : 'Show'}</button>
+      <button on:click={() => (graphVisible = !graphVisible)}>Graph {graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show'}</button>
       <button class="primary" on:click={saveFile} disabled={!activeTab || !activeTab.dirty}>Save</button>
     </div>
   </header>
@@ -468,64 +703,192 @@
       <div class="pane-resizer sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" on:pointerdown={(event) => startLayoutResize(event, 'sidebar')}></div>
     {/if}
 
-    <section class="editors" class:split={splitMode}>
-      {#each panes.slice(0, splitMode ? 2 : 1) as pane, paneIndex}
-        <div class="editor-area panel" class:focused={activePane === paneIndex} on:click={() => (activePane = paneIndex)} role="presentation">
-          <div class="tabbar">
-            {#if pane.tabs.length}
-              {#each pane.tabs as tab (tab.id)}
-                <div class="tab tab-wrap" class:active={tab.id === pane.active}>
-                  <button on:click|stopPropagation={() => activateTab(paneIndex, tab.id)}>{tab.file.name}{tab.dirty ? ' •' : ''}</button>
-                  <button class="tab-close" aria-label="Close tab" on:click|stopPropagation={() => closeTab(paneIndex, tab.id)}>×</button>
-                </div>
-              {/each}
+    <section class="editors" style={getEditorsGridStyle(dockedPanes.length)}>
+      {#if dockedPanes.length}
+        {#each dockedPanes as pane (pane.id)}
+          <div
+            class="editor-area panel"
+            class:focused={activePaneId === pane.id}
+            on:click={() => (activePaneId = pane.id)}
+            role="presentation"
+          >
+            <div class="tabbar">
+              <div class="tabs-scroll">
+                {#if pane.tabs.length}
+                  {#each pane.tabs as tab (tab.id)}
+                    <div class="tab tab-wrap" class:active={tab.id === pane.active}>
+                      <button on:click|stopPropagation={() => activateTab(pane.id, tab.id)}>{tab.file.name}{tab.dirty ? ' •' : ''}</button>
+                      <button class="tab-close" aria-label="Close tab" on:click|stopPropagation={() => closeTab(pane.id, tab.id)}>×</button>
+                    </div>
+                  {/each}
+                {:else}
+                  <div class="tab muted">No file selected</div>
+                {/if}
+              </div>
+              <div class="editor-pane-controls">
+                <button class="pane-btn" title="Add editor window" on:click|stopPropagation={() => addPane(false)}>+</button>
+                <button class="pane-btn" title="Float this editor window" on:click|stopPropagation={() => togglePaneFloat(pane.id)}>Float</button>
+                {#if panes.length > 1}
+                  <button class="pane-btn pane-close" title="Close editor window" on:click|stopPropagation={() => closePane(pane.id)}>×</button>
+                {/if}
+              </div>
+            </div>
+            {#if getActiveTab(pane)?.file?.previewType === 'image'}
+              <div class="image-preview">
+                <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
+                <div>{getActiveTab(pane).file.relativePath}</div>
+              </div>
+            {:else if getActiveTab(pane)?.file?.previewType === 'pdf'}
+              <iframe class="pdf-preview" src={getActiveTab(pane).content} title={`PDF preview: ${getActiveTab(pane).file.relativePath}`}></iframe>
+            {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
+              <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
             {:else}
-              <div class="tab muted">No file selected</div>
+              <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
             {/if}
           </div>
-          {#if getActiveTab(pane)?.file?.previewType === 'image'}
-            <div class="image-preview">
-              <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
-              <div>{getActiveTab(pane).file.relativePath}</div>
-            </div>
-          {:else if getActiveTab(pane)?.file?.previewType === 'pdf'}
-            <iframe class="pdf-preview" src={getActiveTab(pane).content} title={`PDF preview: ${getActiveTab(pane).file.relativePath}`}></iframe>
-          {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
-            <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
-          {:else}
-            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(paneIndex, event.detail)} />
-          {/if}
+        {/each}
+      {:else}
+        <div class="empty-editors panel">
+          <div class="empty-title">All editor windows are floating</div>
+          <div class="empty-actions">
+            <button on:click={() => addPane(false)}>+ Add Docked Editor</button>
+            <button on:click={dockAllEditors}>Dock All Editors</button>
+          </div>
         </div>
-      {/each}
+      {/if}
     </section>
 
     {#if graphVisible}
       {#if !graphFloating && !graphFullscreen}
         <div class="pane-resizer graph-resizer" role="separator" aria-label="Resize graph panel" aria-orientation="vertical" on:pointerdown={(event) => startLayoutResize(event, 'graph')}></div>
       {/if}
-      <aside class="graph-panel panel" style={graphFloating ? `left: ${graphFloat.x}px; top: ${graphFloat.y}px; width: ${graphFloat.width}px; height: ${graphFloat.height}px` : undefined}>
-        <div class="panel-title graph-title" role="toolbar" tabindex="-1" aria-label="Project graph controls" on:pointerdown={startFloatingGraphMove}>
+      <aside
+        class="graph-panel panel"
+        class:floating-window={graphFloating}
+        class:graph-floating={graphFloating}
+        class:focused={activeFloatingWindow === 'graph'}
+        style={getGraphStyle(graphFloating, graphFloat, graphFullscreen)}
+        on:pointerdown={() => graphFloating && focusFloatingWindow('graph')}
+      >
+        <div class="panel-title graph-title window-title" role="toolbar" tabindex="-1" aria-label="Project graph controls" on:pointerdown={(e) => graphFloating && startFloatingMove(e, 'graph')}>
           <span>Project Graph</span>
-          <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock' : 'Float'}</button>
-          <button on:click={() => (graphFullscreen = !graphFullscreen)}>{graphFullscreen ? 'Exit Full' : 'Full'}</button>
-          <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
+          <div class="window-actions">
+            <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock' : 'Float'}</button>
+            <button on:click={() => toggleMaximizeFloatingWindow('graph')}>
+              {graphFloat.maximized || graphFullscreen ? 'Restore' : 'Full'}
+            </button>
+            <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
+          </div>
         </div>
         {#if project}
-          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen} on:node={selectGraphNode} on:move={moveEntry} />
+          <GraphView graph={project.graph} activePath={activeFile?.path} fullscreen={graphFullscreen || graphFloat.maximized} on:node={selectGraphNode} on:move={moveEntry} />
         {:else}
           <div class="empty">Graph appears after opening a project.</div>
         {/if}
-        {#if graphFloating}
-          <button class="float-resize" aria-label="Resize graph" on:pointerdown={(event) => startFloatingGraphDrag(event, 'resize')}>Resize</button>
+        {#if graphFloating && !graphFloat.maximized}
+          <button class="float-resize" aria-label="Resize graph" on:pointerdown={(event) => startFloatingResize(event, 'graph')}>Resize</button>
         {/if}
       </aside>
     {/if}
   </main>
 
+  {#each floatingPanes as pane (pane.id)}
+    <aside
+      class="floating-window editor-floating panel"
+      class:focused={activeFloatingWindow === `editor-${pane.id}`}
+      style={getFloatingPaneStyle(pane)}
+      role="region"
+      aria-label={`Floating Editor ${pane.id}`}
+      on:pointerdown={() => focusFloatingWindow('editor', pane.id)}
+    >
+      <div class="window-title" role="toolbar" tabindex="-1" aria-label={`Editor ${pane.id} controls`} on:pointerdown={(e) => startFloatingMove(e, 'editor', pane.id)}>
+        <span class="window-title-text">Editor #{pane.id}{getActiveTab(pane) ? ` · ${getActiveTab(pane).file.name}` : ''}</span>
+        <div class="window-actions">
+          <button on:click={() => togglePaneFloat(pane.id)}>Dock</button>
+          <button on:click={() => toggleMaximizeFloatingWindow('editor', pane.id)}>
+            {pane.floatRect?.maximized ? 'Restore' : 'Full'}
+          </button>
+          <button title="Add another editor window" on:click={() => addPane(false)}>+</button>
+          {#if panes.length > 1}
+            <button class="tab-close" aria-label="Close editor window" on:click={() => closePane(pane.id)}>×</button>
+          {/if}
+        </div>
+      </div>
+
+      <div class="tabbar">
+        <div class="tabs-scroll">
+          {#if pane.tabs.length}
+            {#each pane.tabs as tab (tab.id)}
+              <div class="tab tab-wrap" class:active={tab.id === pane.active}>
+                <button on:click|stopPropagation={() => activateTab(pane.id, tab.id)}>{tab.file.name}{tab.dirty ? ' •' : ''}</button>
+                <button class="tab-close" aria-label="Close tab" on:click|stopPropagation={() => closeTab(pane.id, tab.id)}>×</button>
+              </div>
+            {/each}
+          {:else}
+            <div class="tab muted">No file selected</div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="editor-body">
+        {#if getActiveTab(pane)?.file?.previewType === 'image'}
+          <div class="image-preview">
+            <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
+            <div>{getActiveTab(pane).file.relativePath}</div>
+          </div>
+        {:else if getActiveTab(pane)?.file?.previewType === 'pdf'}
+          <iframe class="pdf-preview" src={getActiveTab(pane).content} title={`PDF preview: ${getActiveTab(pane).file.relativePath}`}></iframe>
+        {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
+          <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
+        {:else}
+          <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+        {/if}
+      </div>
+
+      {#if !pane.floatRect?.maximized}
+        <button class="float-resize" aria-label="Resize editor window" on:pointerdown={(e) => startFloatingResize(e, 'editor', pane.id)}>Resize</button>
+      {/if}
+    </aside>
+  {/each}
+
   {#if terminalVisible}
-    <section class="terminal-slot">
-      <div class="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" on:pointerdown={(event) => startLayoutResize(event, 'terminal')}></div>
-      <TerminalPanel api={api} cwd={project?.rootPath ?? ''} />
+    <section
+      class="terminal-host"
+      class:terminal-slot={!terminalFloating}
+      class:floating-window={terminalFloating}
+      class:terminal-floating={terminalFloating}
+      class:focused={activeFloatingWindow === 'terminal'}
+      style={getTerminalStyle(terminalFloating, terminalFloat)}
+      aria-label="Integrated Terminal"
+      on:pointerdown={() => terminalFloating && focusFloatingWindow('terminal')}
+    >
+      {#if !terminalFloating}
+        <div class="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" on:pointerdown={(event) => startLayoutResize(event, 'terminal')}></div>
+        <div class="terminal-bar">
+          <span class="terminal-bar-title">Terminal</span>
+          <div class="terminal-bar-actions">
+            <button on:click={() => (terminalFloating = true)}>Float</button>
+            <button aria-label="Close terminal" on:click={() => (terminalVisible = false)}>×</button>
+          </div>
+        </div>
+      {:else}
+        <div class="window-title" role="toolbar" tabindex="-1" aria-label="Terminal controls" on:pointerdown={(e) => startFloatingMove(e, 'terminal')}>
+          <span>Integrated Terminal</span>
+          <div class="window-actions">
+            <button on:click={() => (terminalFloating = false)}>Dock</button>
+            <button on:click={() => toggleMaximizeFloatingWindow('terminal')}>
+              {terminalFloat.maximized ? 'Restore' : 'Full'}
+            </button>
+            <button aria-label="Close terminal" on:click={() => (terminalVisible = false)}>×</button>
+          </div>
+        </div>
+      {/if}
+      <div class="terminal-shell-wrap">
+        <TerminalPanel api={api} cwd={project?.rootPath ?? ''} />
+      </div>
+      {#if terminalFloating && !terminalFloat.maximized}
+        <button class="float-resize" aria-label="Resize terminal" on:pointerdown={(e) => startFloatingResize(e, 'terminal')}>Resize</button>
+      {/if}
     </section>
   {/if}
 
@@ -577,8 +940,13 @@
       <div class="palette" role="dialog" tabindex="-1" aria-label="Command palette" on:click|stopPropagation on:keydown|stopPropagation>
         <input bind:this={paletteInput} bind:value={query} placeholder="Search files or type a command..." />
         <button on:click={() => (graphVisible = !graphVisible)}>Toggle graph</button>
-        <button on:click={() => (splitMode = !splitMode)}>Toggle split editor</button>
+        <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock graph' : 'Float graph'}</button>
+        <button on:click={() => addPane(false)}>Add editor window</button>
+        <button on:click={() => addPane(true)}>Add floating editor window</button>
+        <button on:click={toggleSplit}>Toggle split editor</button>
+        <button on:click={() => togglePaneFloat(activePaneId)}>Float / Dock current editor</button>
         <button on:click={() => (terminalVisible = !terminalVisible)}>Toggle terminal</button>
+        <button on:click={() => (terminalFloating = !terminalFloating)}>{terminalFloating ? 'Dock terminal' : 'Float terminal'}</button>
         <button on:click={() => (vimMode = !vimMode)}>Toggle Vim mode</button>
         <button on:click={() => setTheme(theme === 'cream' ? 'obsidian' : 'cream')}>Toggle theme</button>
         {#each filteredFiles as file (file.path)}
