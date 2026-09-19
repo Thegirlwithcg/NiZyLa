@@ -7,20 +7,17 @@
   import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
   import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
   import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput } from '@codemirror/language';
-  import { vim } from '@replit/codemirror-vim';
   import { languageExtension } from '../core/languages.js';
   import logoUrl from '../../resource/Logo NiZyLa.svg';
 
   export let file = null;
   export let content = '';
-  export let vimMode = false;
   export let showLineNumbers = true;
 
   const dispatch = createEventDispatcher();
   let host;
   let view;
   let lastFilePath = null;
-  let lastVimMode = false;
   let lastShowLineNumbers = true;
   let markdownMenu = null;
   let tablePicker = false;
@@ -28,9 +25,8 @@
   let insertingTableDivider = false;
   $: isMarkdown = file?.name?.toLowerCase().endsWith('.md');
 
-  $: if (view && (file?.path !== lastFilePath || vimMode !== lastVimMode || showLineNumbers !== lastShowLineNumbers)) {
+  $: if (view && (file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers)) {
     lastFilePath = file?.path ?? null;
-    lastVimMode = vimMode;
     lastShowLineNumbers = showLineNumbers;
     view.setState(createState(content));
   } else if (view && content !== view.state.doc.toString()) {
@@ -50,7 +46,6 @@
     host.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('pointerdown', closeMenu);
     lastFilePath = file?.path ?? null;
-    lastVimMode = vimMode;
     lastShowLineNumbers = showLineNumbers;
     view = new EditorView({
       parent: host,
@@ -136,7 +131,6 @@
         highlightSelectionMatches(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         languageExtension(file?.name),
-        vimMode ? vim() : [],
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...completionKeymap]),
         EditorView.lineWrapping,
         EditorView.theme({

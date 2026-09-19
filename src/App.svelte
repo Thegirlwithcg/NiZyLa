@@ -50,7 +50,6 @@
   let floatingDrag = null;
   let dragNearEdge = false;
 
-  let vimMode = false;
   let markdownPreview = false;
   let paletteOpen = false;
   let query = '';
@@ -87,7 +86,6 @@
       detachedState = await api.getDetachedState(detachedWindowId);
       if (detachedState) {
         if (detachedState.theme) theme = detachedState.theme;
-        if (detachedState.vimMode !== undefined) vimMode = detachedState.vimMode;
         if (detachedState.showLineNumbers !== undefined) showLineNumbers = detachedState.showLineNumbers;
         if (detachedState.pane) {
           panes = [{ ...detachedState.pane, floating: false, detached: false }];
@@ -421,7 +419,6 @@
         pane,
         project,
         theme,
-        vimMode,
         showLineNumbers
       }
     });
@@ -490,7 +487,6 @@
     api.dockDetachedWindow(detachedWindowId, {
       pane: panes[0],
       theme,
-      vimMode,
       showLineNumbers
     });
   }
@@ -956,7 +952,6 @@
           <option value="cream">Cream Light</option>
         </select>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
-        <button on:click={() => (vimMode = !vimMode)} class:active={vimMode}>Vim {vimMode ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
         {/if}
@@ -990,7 +985,7 @@
         {:else if activeTab?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
           <MarkdownPreview content={activeTab.content} title={activeTab.file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
         {:else}
-          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(panes[0].id, event.detail)} />
+          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} on:change={(event) => updateTabContent(panes[0].id, event.detail)} />
         {/if}
       </div>
     </main>
@@ -1077,7 +1072,6 @@
         <button on:click={toggleSplit} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
         <button on:click={toggleTerminal} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
-        <button on:click={() => (vimMode = !vimMode)} class:active={vimMode}>Vim {vimMode ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
         {/if}
@@ -1153,7 +1147,7 @@
               {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
                 <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
               {:else}
-                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
               {/if}
             </div>
           {/each}
@@ -1261,7 +1255,7 @@
           {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
             <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}
-            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {vimMode} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
           {/if}
         </div>
 
@@ -1376,7 +1370,6 @@
           <button on:click={toggleTerminal}>Toggle terminal</button>
           <button on:click={() => (terminalFloating = !terminalFloating)}>{terminalFloating ? 'Dock terminal' : 'Float terminal'}</button>
           <button on:click={detachTerminal}>Detach terminal to separate window</button>
-          <button on:click={() => (vimMode = !vimMode)}>Toggle Vim mode</button>
           <button on:click={() => setTheme(theme === 'cream' ? 'obsidian' : 'cream')}>Toggle theme</button>
           {#each filteredFiles as file (file.path)}
             <button class="result" on:click={() => selectFile(file)}>{file.relativePath}</button>
