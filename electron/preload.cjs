@@ -25,5 +25,25 @@ contextBridge.exposeInMainWorld('nizyla', {
     return () => ipcRenderer.removeListener('terminal:exit', handler);
   },
   runCommand: (command, cwd) => ipcRenderer.invoke('terminal:run', command, cwd),
-  listPlugins: (rootPaths) => ipcRenderer.invoke('plugins:list', rootPaths)
+  listPlugins: (rootPaths) => ipcRenderer.invoke('plugins:list', rootPaths),
+  openDetachedWindow: (config) => ipcRenderer.invoke('detached:open', config),
+  getDetachedState: (windowId) => ipcRenderer.invoke('detached:get-state', windowId),
+  updateDetachedState: (windowId, state) => ipcRenderer.send('detached:update-state', windowId, state),
+  dockDetachedWindow: (windowId, state) => ipcRenderer.send('detached:dock', windowId, state),
+  openFileInMainWindow: (file) => ipcRenderer.send('detached:open-file-in-main', file),
+  onDetachedDockBack: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('detached:dock-back', handler);
+    return () => ipcRenderer.removeListener('detached:dock-back', handler);
+  },
+  onDetachedClosed: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('detached:closed', handler);
+    return () => ipcRenderer.removeListener('detached:closed', handler);
+  },
+  onMainOpenFile: (callback) => {
+    const handler = (_event, file) => callback(file);
+    ipcRenderer.on('main:open-file', handler);
+    return () => ipcRenderer.removeListener('main:open-file', handler);
+  }
 });

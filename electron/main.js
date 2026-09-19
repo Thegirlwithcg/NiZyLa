@@ -21,6 +21,8 @@ const appIconPath = isDev
   : path.join(process.resourcesPath, 'resource', iconFile);
 
 let mainWindow;
+const detachedWindows = new Map();
+const detachedStates = new Map();
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -132,11 +134,84 @@ function createWindow() {
     mainWindow.focus();
   });
 
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    for (const win of detachedWindows.values()) {
+      if (!win.isDestroyed()) win.close();
+    }
+    detachedWindows.clear();
+    detachedStates.clear();
+  });
+
   if (isDev) {
     mainWindow.loadURL('http://127.0.0.1:5174');
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
+}
+
+function createDetachedWindow({ windowId, type, title, bounds, state }) {
+  if (detachedWindows.has(windowId)) {
+    const existing = detachedWindows.get(windowId);
+    if (!existing.isDestroyed()) {
+      if (existing.isMinimized()) existing.restore();
+      existing.show();
+      existing.focus();
+      return windowId;
+    }
+  }
+
+  detachedStates.set(windowId, state);
+
+  const win = new BrowserWindow({
+    width: Math.max(480, Math.round(bounds?.width || 800)),
+    height: Math.max(360, Math.round(bounds?.height || 600)),
+    x: bounds?.x !== undefined ? Math.round(bounds.x) : undefined,
+    y: bounds?.y !== undefined ? Math.round(bounds.y) : undefined,
+    minWidth: 400,
+    minHeight: 280,
+    title: title || `NiZyLa - ${type}`,
+    icon: appIconPath,
+    backgroundColor: '#15141b',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      plugins: true
+    }
+  });
+
+  detachedWindows.set(windowId, win);
+
+  win.once('ready-to-show', () => {
+    win.show();
+    win.focus();
+  });
+
+  win.on('closed', () => {
+    detachedWindows.delete(windowId);
+    const lastState = detachedStates.get(windowId);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('detached:closed', { windowId, type, state: lastState });
+    }
+    detachedStates.delete(windowId);
+  });
+
+  const queryParams = new URLSearchParams({
+    detached: type,
+    windowId: windowId
+  }).toString();
+
+  if (isDev) {
+    win.loadURL(`http://127.0.0.1:5174?${queryParams}`);
+  } else {
+    win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
+      query: { detached: type, windowId: windowId }
+    });
+  }
+
+  return windowId;
 }
 
 app.whenReady().then(() => {
@@ -248,3 +323,36 @@ ipcMain.handle('terminal:run', async (_event, command, cwd) => {
   }
 });
 ipcMain.handle('plugins:list', async (_event, rootPaths) => discoverPlugins(rootPaths));
+
+ipcMain.handle('detached:open', async (_event, config) => {
+  const windowId = config.windowId || randomUUID();
+  return createDetachedWindow({ ...config, windowId });
+});
+
+ipcMain.handle('detached:get-state', async (_event, windowId) => {
+  return detachedStates.get(windowId) || null;
+});
+
+ipcMain.on('detached:update-state', (_event, windowId, state) => {
+  detachedStates.set(windowId, state);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('detached:state-updated', { windowId, state });
+  }
+});
+
+ipcMain.on('detached:dock', (_event, windowId, state) => {
+  const win = detachedWindows.get(windowId);
+  if (win && !win.isDestroyed()) {
+    win.close();
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('detached:dock-back', { windowId, state });
+  }
+});
+
+ipcMain.on('detached:open-file-in-main', (_event, file) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('main:open-file', file);
+    mainWindow.focus();
+  }
+});

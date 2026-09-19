@@ -84,16 +84,16 @@ button, input, select { font: inherit; }
 
 .topbar {
   -webkit-app-region: drag;
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   padding: 0 14px 0 76px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-soft) 86%, transparent);
   backdrop-filter: blur(16px);
+  min-width: 0;
 }
-.brand { display: flex; gap: 10px; align-items: center; min-width: 220px; }
+.brand { display: flex; gap: 10px; align-items: center; min-width: 220px; flex: 0 0 auto; }
 .logo {
   width: 32px;
   height: 32px;
@@ -107,14 +107,31 @@ button, input, select { font: inherit; }
   -webkit-app-region: no-drag;
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   gap: 6px;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: nowrap;
   overflow-x: auto;
-  scrollbar-width: none;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  cursor: grab;
+  user-select: none;
 }
-.actions::-webkit-scrollbar { display: none; }
+.actions.middle-dragging {
+  cursor: col-resize !important;
+}
+.actions::-webkit-scrollbar {
+  height: 3px;
+}
+.actions::-webkit-scrollbar-track {
+  background: transparent;
+}
+.actions::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
 .actions button, .actions select { flex: 0 0 auto; }
 .actions button { padding: 6px 9px; font-size: 12px; }
 
@@ -347,7 +364,58 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .graph-floating .graph-title { cursor: move; }
 .graph-floating .graph-title button { cursor: pointer; }
 
-/* Floating Windows */
+/* Detached Window Shell */
+.detached-shell {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 50px 1fr 24px;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+.detached-topbar {
+  padding: 0 14px 0 14px !important;
+}
+.detached-content {
+  min-height: 0;
+  padding: 8px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.detached-content > .panel,
+.detached-content > .editor-area {
+  height: 100%;
+  flex: 1;
+}
+.detached-content.terminal-detached {
+  padding: 0;
+}
+.detached-content.terminal-detached .terminal-panel {
+  height: 100%;
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+}
+.float-drag-cue {
+  outline: 2px dashed var(--accent) !important;
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 50%, transparent) !important;
+}
+.float-edge-notice {
+  position: absolute;
+  top: 4px;
+  right: 120px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  pointer-events: none;
+  animation: pulse 1s infinite alternate;
+}
+@keyframes pulse { from { opacity: 0.7; } to { opacity: 1; } }
+
 .floating-window {
   position: fixed;
   display: grid;
