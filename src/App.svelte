@@ -6,6 +6,8 @@
   import TerminalPanel from './components/TerminalPanel.svelte';
   import logoUrl from '../resource/Logo NiZyLa.svg';
   import MarkdownPreview from './components/MarkdownPreview.svelte';
+  import PreferencesModal from './components/PreferencesModal.svelte';
+  import { loadPreferences, applyPreferences, savePreferences } from './core/preferences.js';
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -55,7 +57,9 @@
   let query = '';
   let paletteInput;
   let plugins = [];
-  let theme = localStorage.getItem('nizyla.theme') || 'obsidian';
+  let preferences = loadPreferences();
+  let theme = preferences.theme || 'structs';
+  let showPreferences = false;
   let showLineNumbers = localStorage.getItem('nizyla.lineNumbers') !== 'false';
   let createDialog = null;
   let createPath = '';
@@ -82,6 +86,7 @@
   $: filteredFiles = query ? files.filter((file) => file.relativePath.toLowerCase().includes(query.toLowerCase())).slice(0, 40) : files.slice(0, 40);
 
   onMount(async () => {
+    applyPreferences(preferences);
     if (detachedMode && api?.getDetachedState) {
       detachedState = await api.getDetachedState(detachedWindowId);
       if (detachedState) {
@@ -112,7 +117,8 @@
       if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
       if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
       if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
-      if (event.key === 'Escape') paletteOpen = false;
+      if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
+      if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; }
     };
     window.addEventListener('keydown', keydown);
     window.addEventListener('pointerdown', closeContextMenuOnOutsideClick);
@@ -592,7 +598,13 @@
 
   function setTheme(nextTheme) {
     theme = nextTheme;
-    localStorage.setItem('nizyla.theme', nextTheme);
+    preferences.theme = nextTheme;
+    savePreferences(preferences);
+  }
+
+  function onPreferencesUpdate(updated) {
+    preferences = updated;
+    theme = updated.theme;
   }
 
   function toggleLineNumbers() {
@@ -948,9 +960,13 @@
       >
         <button class="primary" on:click={dockDetachedSelf}>Dock to Main Window</button>
         <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
+          <option value="structs">Structs Teal (Indie)</option>
           <option value="obsidian">Obsidian Dark</option>
           <option value="cream">Cream Light</option>
+          <option value="cyberpunk">Cyberpunk Neon</option>
+          <option value="custom">Custom Theme</option>
         </select>
+        <button on:click={() => (showPreferences = true)} title="Preferences: Theme, Fonts, Syntax">⚙ Preferences</button>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
@@ -985,7 +1001,7 @@
         {:else if activeTab?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
           <MarkdownPreview content={activeTab.content} title={activeTab.file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
         {:else}
-          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} on:change={(event) => updateTabContent(panes[0].id, event.detail)} />
+          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(panes[0].id, event.detail)} />
         {/if}
       </div>
     </main>
@@ -1064,9 +1080,13 @@
         <button on:click={refreshProject} disabled={!project}>Refresh</button>
         <button on:click={openPalette}>Command / Search</button>
         <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
+          <option value="structs">Structs Teal (Indie)</option>
           <option value="obsidian">Obsidian Dark</option>
           <option value="cream">Cream Light</option>
+          <option value="cyberpunk">Cyberpunk Neon</option>
+          <option value="custom">Custom Theme</option>
         </select>
+        <button on:click={() => (showPreferences = true)} title="Preferences: Theme, Fonts, Syntax (Ctrl+,)">⚙ Preferences</button>
         <button on:click={() => addPane(false)} title="Add a new editor window">+ Editor</button>
         <button on:click={() => addPane(true)} title="Add a floating editor window">+ Float Editor</button>
         <button on:click={toggleSplit} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
@@ -1147,7 +1167,7 @@
               {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
                 <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
               {:else}
-                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} />
               {/if}
             </div>
           {/each}
@@ -1255,7 +1275,7 @@
           {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
             <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}
-            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} on:change={(event) => updateTabContent(pane.id, event.detail)} />
+            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} />
           {/if}
         </div>
 
@@ -1359,6 +1379,11 @@
       <div class="palette-backdrop" role="presentation" on:click={closePalette} on:keydown={(event) => event.key === 'Escape' && closePalette()}>
         <div class="palette" role="dialog" tabindex="-1" aria-label="Command palette" on:click|stopPropagation on:keydown|stopPropagation>
           <input bind:this={paletteInput} bind:value={query} placeholder="Search files or type a command..." />
+          <button on:click={() => { paletteOpen = false; showPreferences = true; }}>⚙ Preferences: Color Theme, Fonts & Syntax</button>
+          <button on:click={() => { paletteOpen = false; setTheme('structs'); }}>Theme: Structs Teal (Indie Sci-Fi)</button>
+          <button on:click={() => { paletteOpen = false; setTheme('obsidian'); }}>Theme: Obsidian Dark</button>
+          <button on:click={() => { paletteOpen = false; setTheme('cream'); }}>Theme: Cream Light</button>
+          <button on:click={() => { paletteOpen = false; setTheme('cyberpunk'); }}>Theme: Cyberpunk Neon</button>
           <button on:click={toggleGraph}>Toggle graph</button>
           <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock graph' : 'Float graph'}</button>
           <button on:click={detachGraph}>Detach graph to separate window</button>
@@ -1376,6 +1401,9 @@
           {/each}
         </div>
       </div>
+    {/if}
+    {#if showPreferences}
+      <PreferencesModal {preferences} currentTheme={theme} on:update={(e) => onPreferencesUpdate(e.detail)} on:close={() => (showPreferences = false)} />
     {/if}
   </div>
 {/if}

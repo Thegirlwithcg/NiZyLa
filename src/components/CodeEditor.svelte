@@ -6,13 +6,17 @@
   import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
   import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
   import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
-  import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput } from '@codemirror/language';
+  import { HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput } from '@codemirror/language';
+  import { tags } from '@lezer/highlight';
   import { languageExtension } from '../core/languages.js';
+  import { getLanguageFromFile, getSyntaxStyleString } from '../core/preferences.js';
   import logoUrl from '../../resource/Logo NiZyLa.svg';
 
   export let file = null;
   export let content = '';
   export let showLineNumbers = true;
+  export let theme = 'structs';
+  export let preferences = null;
 
   const dispatch = createEventDispatcher();
   let host;
@@ -23,7 +27,10 @@
   let tablePicker = false;
   let tableSize = { columns: 2, rows: 2 };
   let insertingTableDivider = false;
+
   $: isMarkdown = file?.name?.toLowerCase().endsWith('.md');
+  $: currentLang = getLanguageFromFile(file?.name);
+  $: syntaxStyle = getSyntaxStyleString(currentLang, theme, preferences);
 
   $: if (view && (file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers)) {
     lastFilePath = file?.path ?? null;
@@ -34,6 +41,31 @@
       changes: { from: 0, to: view.state.doc.length, insert: content }
     });
   }
+
+  const customHighlightStyle = HighlightStyle.define([
+    { tag: tags.keyword, color: 'var(--syntax-keyword)' },
+    { tag: tags.controlKeyword, color: 'var(--syntax-keyword)' },
+    { tag: tags.definitionKeyword, color: 'var(--syntax-keyword)' },
+    { tag: tags.moduleKeyword, color: 'var(--syntax-keyword)' },
+    { tag: tags.operatorKeyword, color: 'var(--syntax-keyword)' },
+    { tag: tags.function(tags.variableName), color: 'var(--syntax-function)' },
+    { tag: tags.function(tags.propertyName), color: 'var(--syntax-function)' },
+    { tag: tags.className, color: 'var(--syntax-class)' },
+    { tag: tags.typeName, color: 'var(--syntax-class)' },
+    { tag: tags.definition(tags.typeName), color: 'var(--syntax-class)' },
+    { tag: tags.definition(tags.className), color: 'var(--syntax-class)' },
+    { tag: tags.variableName, color: 'var(--syntax-variable)' },
+    { tag: tags.definition(tags.variableName), color: 'var(--syntax-variable)' },
+    { tag: tags.string, color: 'var(--syntax-string)' },
+    { tag: tags.special(tags.string), color: 'var(--syntax-string)' },
+    { tag: tags.number, color: 'var(--syntax-number)' },
+    { tag: tags.bool, color: 'var(--syntax-number)' },
+    { tag: tags.comment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+    { tag: tags.lineComment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+    { tag: tags.blockComment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+    { tag: tags.meta, color: 'var(--syntax-class)' },
+    { tag: tags.heading, color: 'var(--accent)', fontWeight: 'bold' }
+  ]);
 
   onMount(() => {
     const onContextMenu = (event) => {
@@ -129,13 +161,13 @@
         bracketMatching(),
         autocompletion(),
         highlightSelectionMatches(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(customHighlightStyle, { fallback: true }),
         languageExtension(file?.name),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...completionKeymap]),
         EditorView.lineWrapping,
         EditorView.theme({
           '&': { height: '100%', backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
-          '.cm-scroller': { fontFamily: 'var(--mono-font)', fontSize: '14px' },
+          '.cm-scroller': { fontFamily: 'var(--mono-font)', fontSize: 'var(--editor-font-size, 14px)' },
           '.cm-gutters': { backgroundColor: 'var(--editor-bg)', color: 'var(--muted)', border: 'none' },
           '.cm-activeLine': { backgroundColor: 'var(--active-line)' },
           '.cm-activeLineGutter': { backgroundColor: 'var(--active-line)' },
@@ -153,7 +185,7 @@
 
 </script>
 
-<div class="editor-host" class:hidden={!file} bind:this={host}></div>
+<div class="editor-host" class:hidden={!file} style="{syntaxStyle}" bind:this={host}></div>
 {#if markdownMenu}
   <div class="markdown-context-menu" role="menu" tabindex="-1" style="left: {markdownMenu.x}px; top: {markdownMenu.y}px" on:pointerdown|stopPropagation>
     <button on:click={() => insertSnippet(`[${selectedText()}](url)`)}>Add link</button>

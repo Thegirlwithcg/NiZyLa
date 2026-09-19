@@ -71,9 +71,98 @@
 .theme-obsidian .markdown-preview h1, .theme-obsidian .markdown-preview h2 { color: #e8e8e8; }
 .theme-obsidian .markdown-preview .document-title { font-size: 2.05em; margin-bottom: 2em; }
 
+.theme-structs {
+  color-scheme: dark;
+  --bg: #0f1d24;
+  --bg-soft: #13252e;
+  --panel: #162832;
+  --panel-solid: #162832;
+  --editor-bg: #11212a;
+  --text: #5ce1e6;
+  --muted: #4d7b88;
+  --border: #23424d;
+  --border-strong: #386777;
+  --button: #19313d;
+  --button-hover: #214353;
+  --accent: #47d8d8;
+  --accent-2: #9d72ff;
+  --active-line: #182f3b;
+  --selection: #47d8d833;
+  --graph-bg: radial-gradient(circle at center, #18313d, #0b161c 78%);
+  --graph-class: #38bdf8;
+  --graph-function: #34d399;
+  --graph-variable: #f87171;
+  --graph-imports: #c084fc;
+  --graph-links: #67e8f9;
+  --graph-defines: #f472b6;
+  --syntax-keyword: #e879f9;
+  --syntax-function: #38bdf8;
+  --syntax-class: #fbbf24;
+  --syntax-variable: #5ce1e6;
+  --syntax-string: #34d399;
+  --syntax-number: #f97316;
+  --syntax-comment: #4d7b88;
+  --shadow: #00000066;
+}
+.theme-structs .topbar, .theme-structs .statusbar { background: #12232c; border-color: #23424d; }
+.theme-structs button, .theme-structs select { border: 1.5px solid #2d5a67; border-radius: 4px; background: #19313d; color: #5ce1e6; font-weight: 500; }
+.theme-structs button:hover, .theme-structs select:hover { background: #214353; border-color: #47d8d8; color: #a5f9f6; }
+.theme-structs button.primary { background: #47d8d8; color: #0b1a20; border-color: #47d8d8; font-weight: bold; }
+.theme-structs button.active { background: #224657; border-color: #47d8d8; color: #7ef2ed; box-shadow: 0 0 8px #47d8d833; }
+.theme-structs .tabbar { background: #11212a; border-color: #23424d; }
+.theme-structs .tab { border-radius: 4px 4px 0 0; background: #162832; border: 1px solid #23424d; border-bottom: none; color: #4d7b88; }
+.theme-structs .tab.active { background: #1c3542; border-color: #386777; border-bottom: 2px solid #47d8d8; color: #7ef2ed; }
+.theme-structs .panel-title { border-color: #23424d; letter-spacing: 0.06em; color: #7ef2ed; }
+.theme-structs .sidebar { background: #14252e; }
+.theme-structs .tree-row:hover { background: #1b3542; color: #a5f9f6; }
+.theme-structs .tree-row.active { background: #214353; color: #47d8d8; border-left: 2px solid #47d8d8; }
+
+.theme-cyberpunk {
+  color-scheme: dark;
+  --bg: #0b0c15;
+  --bg-soft: #111220;
+  --panel: #141628;
+  --panel-solid: #141628;
+  --editor-bg: #0e0f1d;
+  --text: #00f0ff;
+  --muted: #6e749c;
+  --border: #282a4a;
+  --border-strong: #424675;
+  --button: #1c1e36;
+  --button-hover: #292d4f;
+  --accent: #ff0055;
+  --accent-2: #ffe600;
+  --active-line: #191b32;
+  --selection: #ff005533;
+  --graph-bg: radial-gradient(circle at center, #1b1736, #090814 78%);
+  --graph-class: #00f0ff;
+  --graph-function: #00ff88;
+  --graph-variable: #ff0055;
+  --graph-imports: #ffe600;
+  --graph-links: #38bdf8;
+  --graph-defines: #ff7700;
+  --syntax-keyword: #ff0055;
+  --syntax-function: #00f0ff;
+  --syntax-class: #ffe600;
+  --syntax-variable: #e2e8f0;
+  --syntax-string: #00ff88;
+  --syntax-number: #ff9900;
+  --syntax-comment: #5f658b;
+  --shadow: #00000099;
+}
+.theme-cyberpunk .topbar, .theme-cyberpunk .statusbar { background: #111220; border-color: #282a4a; }
+.theme-cyberpunk button, .theme-cyberpunk select { border: 1px solid #424675; border-radius: 4px; background: #1c1e36; color: #00f0ff; }
+.theme-cyberpunk button:hover { border-color: #ff0055; color: #fff; background: #292d4f; }
+.theme-cyberpunk button.primary { background: #ff0055; color: #fff; border-color: #ff0055; }
+.theme-cyberpunk .tab.active { background: #191b32; border-bottom: 2px solid #ff0055; color: #00f0ff; }
+
+.theme-custom {
+  color-scheme: dark;
+}
+
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; overflow: hidden; }
-body { background: var(--bg); color: var(--text); }
+body { background: var(--bg); color: var(--text); font-family: var(--ui-font, var(--mono-font)); }
 button, input, select { font: inherit; }
 
 .app-shell {
