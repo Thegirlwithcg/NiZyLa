@@ -232,14 +232,27 @@ in the same transaction; type mismatches from retyping are kept and reported.
 Code preview uses `generateGeometryCode`; with errors or an invalid input draft
 the preview is cleared and Copy Code is disabled. `CodeEditor` got `readOnly`.
 
+Close/reload guard: a prevented `beforeunload` is followed by a confirm (browsers
+suppress `confirm()` inside `beforeunload`). Cancel keeps the page and data. There is
+no IPC to tell reload from close, so a reload key (F5/Ctrl+R) pressed just before means
+reload; anything else (Alt+F4, taskbar, the X button) means close. The app has no
+reload command or menu, so a reload started outside the page (DevTools/CDP) is treated
+as a close; a reliable fix needs a `will-prevent-unload` handler in `electron/main.js`.
+
+Stage 4 (next): Open/Save `.gcn` and Export `.py`/`.gd`. Run is not part of stage 4.
+It needs: `document`/`documentKey` from a real file, `onchange` marking that file
+dirty, `parse/serializeGeometryDocument`, a save prompt replacing the discard prompt,
+a Code-tab route for `.gcn`, and Export via `generateGeometryCode`.
+
 ### Test status
-Automated: `npm test` = 72 tests, 71 pass, 1 skipped (Godot runtime not installed).
+Automated: `npm test` (see the last run in the delivery report). New editor tests cover
+iterative Math-chain inference (6,000 nodes in reverse order, cycles, codegen refusal),
+and Undo/live-edit/revert history for drags and typing.
 Checked by hand in real Electron (dev build and installed exe) through the debug
 port, screenshots in `docs/geometry-stage3-shots/`: Shift+A/menu/placement after
 pan+zoom, typing guards, drafts, 5/2 -> Print and For 0..4 in both languages,
-wire/node delete + Undo/Redo, drag undo, rejected wires, variables (rename, retype,
-delete+confirm+Undo, Missing variable), And -> Not + Undo, mode switching, Ctrl+S,
-read-only preview, close/reload Cancel, 4 themes at 1000x680 (emulated size),
-installed exe (build, wire, both previews, close Cancel and discard).
-Not verified: real GDScript run (no Godot), light theme by eye beyond cream,
-multi-selection drag, the Copy Code clipboard result, a real window resize.
+wire/node delete + Undo/Redo, drag and multi-node drag undo, rejected wires, variables,
+And -> Not + Undo, mode switching, Ctrl+S, read-only preview, Copy Code (clipboard read
+back; Windows stores CRLF), library deletion disabled (`deleteKey={[]}`), Fit View moves
+only the viewport, close/reload Cancel/Accept, four themes at a real 1000x680 window.
+Not verified: real GDScript run (no Godot).

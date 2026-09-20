@@ -24,13 +24,14 @@ export function createEditorState(doc) {
 export function endEdit(state) {
   if (!state.pending) return state;
   const changed = !sameContent(state.pending, state.present);
-  return { ...state, pending: null, past: changed ? [...state.past, state.pending].slice(-HISTORY_LIMIT) : state.past };
+  return { ...state, pending: null, past: changed ? [...state.past, state.pending].slice(-HISTORY_LIMIT) : state.past, future: changed ? [] : state.future };
 }
 
 /** live=true groups repeated edits into a single transaction until endEdit(). */
 export function applyEdit(state, next, live = false) {
   if (sameContent(next, state.present)) return next.viewport === state.present.viewport ? state : { ...state, present: next };
-  if (live) return { ...state, present: next, future: [], pending: state.pending ?? state.present };
+  // A live edit keeps Redo until it ends with a real change (endEdit), so Undo -> edit -> revert keeps Redo.
+  if (live) return { ...state, present: next, pending: state.pending ?? state.present };
   const base = endEdit(state);
   return { ...base, past: [...base.past, base.present].slice(-HISTORY_LIMIT), present: next, future: [], pending: null };
 }
@@ -212,4 +213,53 @@ export const setTarget = (doc, target) => doc.target === target ? null : { ...do
 /** Svelte Flow view state -> .gcn positions. Only position is read back; everything else comes from the document. */
 export function positionsFromFlow(flowNodes) {
   return Object.fromEntries(flowNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }]));
+}
+
+// ---- ports for display ------------------------------------------------------------------------
+
+/**
+ * Ports of every node with inferred Math output types, via getNodePorts (no second type system).
+ * Only Math nodes depend on their inputs, so an explicit stack walks Math chains of any length.
+ */
+export function computePorts(doc) {
+  const nodeMap = new Map(doc.nodes.map((n) => [n.id, n]));
+  const incoming = new Map();
+  for (const e of doc.edges) {
+    if (!incoming.has(e.target)) incoming.set(e.target, new Map());
+    incoming.get(e.target).set(e.targetHandle, e.source);
+  }
+  const outType = (ports) => ports.find((p) => p.direction === 'out' && p.kind === 'value')?.valueType ?? 'unknown';
+  const memo = new Map();
+  const sourceType = (id) => {
+    if (memo.has(id)) return memo.get(id);
+    const node = nodeMap.get(id);
+    return node && node.type !== 'binary' ? outType(getNodePorts(node, doc.variables)) : 'unknown';
+  };
+  const inputTypes = (id) => {
+    const types = {};
+    for (const handle of ['a', 'b']) {
+      const source = incoming.get(id)?.get(handle);
+      if (source) types[handle] = sourceType(source);
+    }
+    return types;
+  };
+  const visiting = new Set();
+  for (const root of doc.nodes) {
+    if (root.type !== 'binary' || memo.has(root.id)) continue;
+    const stack = [root.id];
+    while (stack.length) {
+      const id = stack.at(-1);
+      if (memo.has(id)) { stack.pop(); continue; }
+      if (!visiting.has(id)) {
+        visiting.add(id);
+        const pending = ['a', 'b'].map((h) => incoming.get(id)?.get(h))
+          .filter((s) => s && nodeMap.get(s)?.type === 'binary' && !memo.has(s) && !visiting.has(s));
+        if (pending.length) { stack.push(...pending); continue; }
+      }
+      // Sources still unresolved here are part of a cycle: they stay 'unknown'.
+      memo.set(id, outType(getNodePorts(nodeMap.get(id), doc.variables, inputTypes(id))));
+      stack.pop();
+    }
+  }
+  return new Map(doc.nodes.map((n) => [n.id, getNodePorts(n, doc.variables, n.type === 'binary' ? inputTypes(n.id) : {})]));
 }

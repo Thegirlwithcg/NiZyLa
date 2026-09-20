@@ -2,10 +2,10 @@
   import { onDestroy, setContext, tick, untrack } from 'svelte';
   import { Background, MarkerType, SvelteFlow, useSvelteFlow, useUpdateNodeInternals } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
-  import { getNodePorts, nodeDefinitions } from '../core/geometry.js';
+  import { nodeDefinitions } from '../core/geometry.js';
   import { generateGeometryCode } from '../core/geometry-codegen.js';
   import {
-    addEdge, addNode, addVariable, applyEdit, checkConnection, createEditorState, deleteVariable, endEdit, moveNodes,
+    addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable, endEdit, moveNodes,
     positionsFromFlow, redo, removeItems, setLiteralType, setNodeData, setTarget, setViewport, undo, updateVariable,
     variableUsage
   } from '../core/geometry-editor.js';
@@ -56,37 +56,6 @@
 
   // ---- derived view (rebuilt only when the program changes, not on pan/zoom/selection) ---------
 
-  function portsFor(d) {
-    const nodeMap = new Map(d.nodes.map((n) => [n.id, n]));
-    const incoming = new Map();
-    for (const e of d.edges) {
-      if (!incoming.has(e.target)) incoming.set(e.target, new Map());
-      incoming.get(e.target).set(e.targetHandle, e.source);
-    }
-    const memo = new Map();
-    const visiting = new Set();
-    // Only Math nodes infer their output type from inputs. ponytail: recursion depth = length of a Math chain.
-    const inputTypes = (id) => {
-      const types = {};
-      if (nodeMap.get(id)?.type !== 'binary' || visiting.has(id)) return types;
-      visiting.add(id);
-      for (const handle of ['a', 'b']) {
-        const source = incoming.get(id)?.get(handle);
-        if (source) types[handle] = outputType(source);
-      }
-      visiting.delete(id);
-      return types;
-    };
-    const outputType = (id) => {
-      if (memo.has(id)) return memo.get(id);
-      const node = nodeMap.get(id);
-      const type = node ? getNodePorts(node, d.variables, inputTypes(id)).find((p) => p.direction === 'out' && p.kind === 'value')?.valueType ?? 'unknown' : 'unknown';
-      memo.set(id, type);
-      return type;
-    };
-    return new Map(d.nodes.map((n) => [n.id, getNodePorts(n, d.variables, inputTypes(n.id))]));
-  }
-
   function refresh() {
     const d = editor.present;
     let result;
@@ -103,7 +72,7 @@
       if (item.nodeId) diagnostics.set(item.nodeId, [...(diagnostics.get(item.nodeId) ?? []), item]);
       if (item.edgeId) edgeDiagnostics.add(item.edgeId);
     }
-    view = { nodes: new Map(d.nodes.map((n) => [n.id, n])), ports: portsFor(d), diagnostics, edgeDiagnostics, variables: d.variables };
+    view = { nodes: new Map(d.nodes.map((n) => [n.id, n])), ports: computePorts(d), diagnostics, edgeDiagnostics, variables: d.variables };
     syncFlow();
   }
 
@@ -255,7 +224,7 @@
 
   // ---- keyboard --------------------------------------------------------------------------------
 
-  // deleteKey above is parked on an unused key: Delete/Backspace are handled here, only when the graph has focus.
+  // deleteKey={[]} disables the library's own deletion: Delete/Backspace are handled here, only when the graph has focus.
   const typing = (target) => target instanceof Element
     && !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], .cm-editor');
 
@@ -345,7 +314,7 @@
       onpointermove={(e) => (pointer = { x: e.clientX, y: e.clientY })}
       onpointerleave={() => (pointer = null)}>
       <SvelteFlow bind:nodes bind:edges {nodeTypes} initialViewport={startViewport} colorMode={theme === 'cream' ? 'light' : 'dark'}
-        deleteKey="F24" minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}
+        deleteKey={[]} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}
         isValidConnection={(c) => checkConnection(editor.present, c).ok} onbeforeconnect={connect} onconnectend={connectEnd}
         onnodedragstop={({ nodes: dragged }) => commitPositions(dragged)}
         onselectiondragstop={(_e, dragged) => commitPositions(dragged)}

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
-  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, checkConnection, createEditorState, deleteVariable,
+  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable,
   endEdit, moveNodes, positionsFromFlow, redo, removeItems, sameContent, setLiteralType, setNodeData, setTarget,
   setViewport, undo, updateVariable, variableUsage
 } from '../src/core/geometry-editor.js';
@@ -273,4 +273,58 @@ test('graph built through the editor ops generates the expected code (5 / 2 -> P
   assert.match(generateGeometryCode(doc, 'gdscript').code, /print\(\(float\(5\) \/ 2\)\)/);
   const removed = removeItems(doc, { edgeIds: [doc.edges.find((e) => e.targetHandle === 'b').id] });
   assert.equal(generateGeometryCode(removed, 'python').code, null);
+});
+
+test('computePorts infers Math chains iteratively: 6000 nodes in reverse order, cycles, and codegen refuses cleanly', () => {
+  const n = 6000;
+  const nodes = [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+    { id: 'lit', type: 'literal', position: { x: 0, y: 0 }, data: { valueType: 'int', value: 1 } },
+    { id: 'print', type: 'print', position: { x: 0, y: 0 }, data: {} }];
+  const edges = [{ id: 'e-s', source: 'start', sourceHandle: 'next', target: 'print', targetHandle: 'in' },
+    { id: 'e-p', source: `m${n - 1}`, sourceHandle: 'value', target: 'print', targetHandle: 'value' }];
+  const chain = [];
+  for (let i = 0; i < n; i++) {
+    chain.push({ id: `m${i}`, type: 'binary', position: { x: i, y: 0 }, data: { operator: '+' } });
+    edges.push({ id: `a${i}`, source: i ? `m${i - 1}` : 'lit', sourceHandle: 'value', target: `m${i}`, targetHandle: 'a' },
+      { id: `b${i}`, source: 'lit', sourceHandle: 'value', target: `m${i}`, targetHandle: 'b' });
+  }
+  const doc = { ...createGeometryDocument(), nodes: [...nodes, ...chain.reverse()], edges };
+  const ports = computePorts(doc);
+  const out = (id) => ports.get(id).find((p) => p.direction === 'out').valueType;
+  assert.equal(out('m0'), 'int');
+  assert.equal(out(`m${n - 1}`), 'int');
+  const result = generateGeometryCode(doc, 'python');
+  assert.equal(result.code, null);
+  assert.ok(result.diagnostics.some((d) => d.code === 'expression-too-deep'));
+
+  // float somewhere in the chain propagates; a Math cycle does not hang or throw
+  const small = { ...createGeometryDocument(), nodes: [
+    { id: 'f', type: 'literal', position: { x: 0, y: 0 }, data: { valueType: 'float', value: 1 } },
+    { id: 'x', type: 'binary', position: { x: 0, y: 0 }, data: { operator: '+' } },
+    { id: 'y', type: 'binary', position: { x: 0, y: 0 }, data: { operator: '*' } }],
+  edges: [{ id: '1', source: 'f', sourceHandle: 'value', target: 'x', targetHandle: 'a' },
+    { id: '2', source: 'x', sourceHandle: 'value', target: 'y', targetHandle: 'a' },
+    { id: '3', source: 'y', sourceHandle: 'value', target: 'x', targetHandle: 'b' }] };
+  assert.doesNotThrow(() => computePorts(small));
+  assert.equal(computePorts(small).get('x').find((p) => p.direction === 'out').valueType, 'unknown');
+});
+
+test('Undo -> live edit -> revert -> end keeps Redo and adds no history; a real change clears Redo', () => {
+  const lit = add(createGeometryDocument(), 'int', 5, 5);
+  const drag = (state, x) => applyEdit(state, moveNodes(state.present, { [lit.nodeId]: { x, y: 5 } }), true);
+  const type = (state, value) => applyEdit(state, setNodeData(state.present, lit.nodeId, { value }).doc, true);
+  for (const [name, edit, start, changed] of [['drag', drag, 5, 60], ['typing', type, 0, 9]]) {
+    let state = createEditorState(lit.doc);
+    state = applyEdit(state, add(state.present, 'print', 200, 0).doc);   // something to undo/redo
+    state = undo(state);
+    assert.equal(state.future.length, 1, name);
+    const past = state.past.length;
+    let reverted = endEdit(edit(edit(state, changed), start));            // change then revert to the original
+    assert.equal(reverted.past.length, past, `${name}: no history entry`);
+    assert.equal(reverted.future.length, 1, `${name}: Redo kept`);
+    assert.equal(redo(reverted).present.nodes.length, 3, `${name}: Redo still works`);
+    let real = endEdit(edit(state, changed));                             // a real change ends the edit
+    assert.equal(real.past.length, past + 1, `${name}: one entry`);
+    assert.equal(real.future.length, 0, `${name}: Redo cleared`);
+  }
 });

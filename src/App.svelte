@@ -199,21 +199,32 @@
       if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
       if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; }
     };
-    // Closing or reloading with an edited scratch graph: cancel, then ask (no new IPC; accepting closes via the existing control).
+    // Closing or reloading with an edited scratch graph: block, then ask. There is no IPC to learn which one it was,
+    // so a reload key just pressed means reload; anything else (Alt+F4, taskbar) is a close. Confirming repeats it.
+    let reloadKeyAt = -Infinity;
+    const noteReloadKey = (event) => {
+      if (event.key === 'F5' || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r')) reloadKeyAt = performance.now();
+    };
     const beforeUnload = (event) => {
       if (!geometryChanged || discardGeometry) return;
       event.preventDefault();
       event.returnValue = '';
+      const wasReload = performance.now() - reloadKeyAt < 1500;
+      // Deferred: browsers suppress confirm() inside beforeunload.
       setTimeout(() => {
-        if (confirm(geometryDiscard)) { discardGeometry = true; windowControl('close'); }
-      }, 0);
+        if (!confirm(geometryDiscard)) return;
+        discardGeometry = true;
+        if (wasReload) location.reload(); else windowControl('close');
+      }, 100);
     };
+    window.addEventListener('keydown', noteReloadKey, true);
     window.addEventListener('keydown', keydown);
     window.addEventListener('beforeunload', beforeUnload);
     window.addEventListener('pointerdown', closeContextMenuOnOutsideClick);
     return () => {
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('beforeunload', beforeUnload);
+      window.removeEventListener('keydown', noteReloadKey, true);
       window.removeEventListener('pointerdown', closeContextMenuOnOutsideClick);
       sidebarEl?.removeEventListener('wheel', handleExplorerWheel);
       unlistenDock?.();
