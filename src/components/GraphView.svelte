@@ -153,7 +153,7 @@
 
           const stubNode = {
             id: stubId,
-            label: `📁 ${sourceName}`,
+            label: sourceName,
             type: 'external-stub',
             path: edge.source,
             x: stubX,
@@ -584,7 +584,7 @@
       <strong class="folder-name-title">🌐 All Files (Project Overview)</strong>
     {:else}
       <span class="folder-badge">CURRENT FOLDER</span>
-      <strong class="folder-name-title">📁 {layout.folder?.relativePath || layout.folder?.name || 'Project Root'}</strong>
+      <strong class="folder-name-title"><span class="graph-inline-folder-icon" aria-hidden="true"></span>{layout.folder?.relativePath || layout.folder?.name || 'Project Root'}</strong>
     {/if}
   </div>
 
@@ -715,7 +715,11 @@
             on:pointerdown={(event) => startNodeDrag(event, node)}
           >
             <rect x="-65" y="-12" width="130" height="24" rx="5" class="external-stub-rect" />
-            <text x="0" y="4" text-anchor="middle" class="external-stub-text">{node.label}</text>
+            <g class="graph-folder-glyph small" transform="translate(-54,-7) scale(.58)" aria-hidden="true">
+              <path class="graph-folder-tab" d="M3 5 h7 l2 3 h15 a3 3 0 0 1 3 3 v1 H1 V8 a3 3 0 0 1 3 -3 Z" />
+              <path class="graph-folder-body" d="M1 10 h30 v16 a3 3 0 0 1 -3 3 H4 a3 3 0 0 1 -3 -3 Z" />
+            </g>
+            <text x="8" y="4" text-anchor="middle" class="external-stub-text">{node.label}</text>
             <title>{node.label} (Double-click to open file)</title>
           </g>
         {:else if node.type === 'folder'}
@@ -734,8 +738,11 @@
           >
             <!-- Transparent hitbox circle so mouse clicks are 100% reliable without showing any cyan circle -->
             <circle class="folder-hitbox" r={node.size + 14} />
-            <text class="folder-icon" x="0" y="2" text-anchor="middle" aria-hidden="true">📁</text>
-            <text class="folder-name-label" x="0" y="24" text-anchor="middle">{node.label}</text>
+            <g class="graph-folder-glyph" transform="translate(-18,-16)" aria-hidden="true">
+              <path class="graph-folder-tab" d="M3 5 h8 l3 4 h19 a3 3 0 0 1 3 3 v2 H0 V8 a3 3 0 0 1 3 -3 Z" />
+              <path class="graph-folder-body" d="M0 12 h37 v19 a3 3 0 0 1 -3 3 H3 a3 3 0 0 1 -3 -3 Z" />
+            </g>
+            <text class="folder-name-label" x="0" y="28" text-anchor="middle">{node.label}</text>
             <title>{node.label} (Click to open folder)</title>
           </g>
         {:else}

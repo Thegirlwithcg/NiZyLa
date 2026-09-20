@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { EditorState } from '@codemirror/state';
-  import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
+  import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, Decoration, ViewPlugin, MatchDecorator } from '@codemirror/view';
   import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
   import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
   import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
@@ -17,12 +17,16 @@
   export let showLineNumbers = true;
   export let theme = 'structs';
   export let preferences = null;
+  export let searchHighlight = '';
+  export let searchLine = null;
 
   const dispatch = createEventDispatcher();
   let host;
   let view;
   let lastFilePath = null;
   let lastShowLineNumbers = true;
+  let lastSearchHighlight = '';
+  let lastSearchLine = null;
   let markdownMenu = null;
   let tablePicker = false;
   let tableSize = { columns: 2, rows: 2 };
@@ -32,10 +36,13 @@
   $: currentLang = getLanguageFromFile(file?.name);
   $: syntaxStyle = getSyntaxStyleString(currentLang, theme, preferences);
 
-  $: if (view && (file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers)) {
+  $: if (view && (file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers || searchHighlight !== lastSearchHighlight || searchLine !== lastSearchLine)) {
     lastFilePath = file?.path ?? null;
     lastShowLineNumbers = showLineNumbers;
+    lastSearchHighlight = searchHighlight;
+    lastSearchLine = searchLine;
     view.setState(createState(content));
+    revealSearchTarget();
   } else if (view && content !== view.state.doc.toString()) {
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: content }
@@ -75,6 +82,9 @@
       markdownMenu = { x: event.clientX, y: event.clientY, section: null }; 
     };
     const closeMenu = () => { markdownMenu = null; tablePicker = false; }; 
+    const clearSearchHighlightOnPointer = () => {
+      if (searchHighlight) dispatch('clearSearchHighlight');
+    };
     const onWheel = (event) => {
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
@@ -84,6 +94,7 @@
       }
     };
     host.addEventListener('contextmenu', onContextMenu);
+    host.addEventListener('pointerdown', clearSearchHighlightOnPointer);
     host.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('pointerdown', closeMenu);
     lastFilePath = file?.path ?? null;
@@ -94,6 +105,7 @@
     });
     return () => {
       host?.removeEventListener('contextmenu', onContextMenu);
+      host?.removeEventListener('pointerdown', clearSearchHighlightOnPointer);
       host?.removeEventListener('wheel', onWheel);
       window.removeEventListener('pointerdown', closeMenu);
     };
@@ -161,6 +173,54 @@
     replaceSelection(`${'#'.repeat(level)} ${value}`);
   }
 
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function searchHighlightExtension(term) {
+    const value = term?.trim();
+    if (!value) return [];
+    const matcher = new MatchDecorator({
+      regexp: new RegExp(escapeRegExp(value), 'gi'),
+      decoration: Decoration.mark({ class: 'cm-search-hit' })
+    });
+    return ViewPlugin.fromClass(class {
+      constructor(view) { this.decorations = matcher.createDeco(view); }
+      update(update) { this.decorations = matcher.updateDeco(update, this.decorations); }
+    }, {
+      decorations: (plugin) => plugin.decorations
+    });
+  }
+
+  function revealSearchTarget() {
+    if (!view) return;
+    const value = searchHighlight?.trim();
+    const doc = view.state.doc;
+    const targetLine = Number(searchLine);
+    let index = -1;
+
+    if (Number.isFinite(targetLine) && targetLine > 0 && targetLine <= doc.lines) {
+      const line = doc.line(targetLine);
+      if (value) {
+        const local = line.text.toLowerCase().indexOf(value.toLowerCase());
+        index = local >= 0 ? line.from + local : line.from;
+      } else {
+        index = line.from;
+      }
+    } else if (value) {
+      index = doc.toString().toLowerCase().indexOf(value.toLowerCase());
+    }
+
+    if (index < 0) return;
+    const head = value && doc.sliceString(index, Math.min(doc.length, index + value.length)).toLowerCase() === value.toLowerCase()
+      ? index + value.length
+      : index;
+    view.dispatch({
+      selection: { anchor: index, head },
+      effects: EditorView.scrollIntoView(index, { y: 'center' })
+    });
+  }
+
   function createState(doc) {
     return EditorState.create({
       doc,
@@ -173,6 +233,7 @@
         highlightSelectionMatches(),
         syntaxHighlighting(customHighlightStyle, { fallback: true }),
         languageExtension(file?.name),
+        searchHighlightExtension(searchHighlight),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...completionKeymap]),
         EditorView.lineWrapping,
         EditorView.theme({
@@ -182,6 +243,7 @@
           '.cm-activeLine': { backgroundColor: 'var(--active-line)' },
           '.cm-activeLineGutter': { backgroundColor: 'var(--active-line)' },
           '.cm-selectionBackground': { backgroundColor: 'var(--selection) !important' },
+          '.cm-search-hit': { backgroundColor: 'color-mix(in srgb, var(--accent) 45%, transparent)', outline: '1px solid var(--accent)', borderRadius: '2px' },
           '.cm-cursor': { borderLeftColor: 'var(--accent)' }
         }),
         EditorView.updateListener.of((update) => {

@@ -24,6 +24,7 @@
   function select() {
     if (entry.type === 'folder') {
       expanded = !expanded;
+      dispatch('folder', entry);
     } else {
       dispatch('select', entry);
     }
@@ -98,6 +99,7 @@
       {activeFolderPath}
       depth={depth + 1}
       on:select={(event) => dispatch('select', event.detail)}
+      on:folder={(event) => dispatch('folder', event.detail)}
       on:context={(event) => dispatch('context', event.detail)}
       on:move={(event) => dispatch('move', event.detail)}
     />

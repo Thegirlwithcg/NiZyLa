@@ -18,6 +18,14 @@ export const THEME_PRESETS = {
     accent2: '#9d72ff',
     activeLine: '#182f3b',
     selection: '#47d8d833',
+    folderIcon: '#47d8d8',
+    fileIcon: '#6aa4b0',
+    graphClass: '#38bdf8',
+    graphFunction: '#34d399',
+    graphVariable: '#f87171',
+    graphImports: '#c084fc',
+    graphLinks: '#67e8f9',
+    graphDefines: '#f472b6',
     font: "'Pixelify Sans', 'Silkscreen', 'JetBrains Mono', monospace",
     syntax: {
       keyword: '#e879f9',
@@ -46,6 +54,14 @@ export const THEME_PRESETS = {
     accent2: '#a7c7ff',
     activeLine: '#2a2a2a',
     selection: '#5d55a766',
+    folderIcon: '#caa6ff',
+    fileIcon: '#8f9bad',
+    graphClass: '#38bdf8',
+    graphFunction: '#4ade80',
+    graphVariable: '#f87171',
+    graphImports: '#a78bfa',
+    graphLinks: '#7dd3fc',
+    graphDefines: '#f0abfc',
     font: "'JetBrains Mono', monospace",
     syntax: {
       keyword: '#c678dd',
@@ -74,6 +90,14 @@ export const THEME_PRESETS = {
     accent2: '#0f766e',
     activeLine: '#f2e7d1',
     selection: '#d8b56f66',
+    folderIcon: '#b7791f',
+    fileIcon: '#8a7d69',
+    graphClass: '#0284c7',
+    graphFunction: '#16a34a',
+    graphVariable: '#dc2626',
+    graphImports: '#7c3aed',
+    graphLinks: '#0e7490',
+    graphDefines: '#be185d',
     font: "'JetBrains Mono', monospace",
     syntax: {
       keyword: '#a626a4',
@@ -102,6 +126,14 @@ export const THEME_PRESETS = {
     accent2: '#ffe600',
     activeLine: '#191b32',
     selection: '#ff005533',
+    folderIcon: '#ffe600',
+    fileIcon: '#7f86b6',
+    graphClass: '#00f0ff',
+    graphFunction: '#00ff88',
+    graphVariable: '#ff0055',
+    graphImports: '#ffe600',
+    graphLinks: '#38bdf8',
+    graphDefines: '#ff7700',
     font: "'Space Mono', 'Pixelify Sans', monospace",
     syntax: {
       keyword: '#ff0055',
@@ -339,12 +371,22 @@ export function applyPreferences(prefs) {
     if (c.accent) root.style.setProperty('--accent', c.accent);
     if (c.accent2) root.style.setProperty('--accent-2', c.accent2);
     if (c.activeLine) root.style.setProperty('--active-line', c.activeLine);
+    const fallback = THEME_PRESETS.structs;
+    root.style.setProperty('--folder-icon', c.folderIcon || fallback.folderIcon);
+    root.style.setProperty('--file-icon', c.fileIcon || fallback.fileIcon);
+    root.style.setProperty('--graph-class', c.graphClass || fallback.graphClass);
+    root.style.setProperty('--graph-function', c.graphFunction || fallback.graphFunction);
+    root.style.setProperty('--graph-variable', c.graphVariable || fallback.graphVariable);
+    root.style.setProperty('--graph-imports', c.graphImports || fallback.graphImports);
+    root.style.setProperty('--graph-links', c.graphLinks || fallback.graphLinks);
+    root.style.setProperty('--graph-defines', c.graphDefines || fallback.graphDefines);
   } else {
     // Clean custom overrides so preset CSS classes work cleanly
     for (const prop of [
       '--bg', '--bg-soft', '--panel', '--panel-solid', '--editor-bg',
       '--text', '--muted', '--border', '--border-strong', '--button',
-      '--button-hover', '--accent', '--accent-2', '--active-line'
+      '--button-hover', '--accent', '--accent-2', '--active-line', '--folder-icon', '--file-icon',
+      '--graph-class', '--graph-function', '--graph-variable', '--graph-imports', '--graph-links', '--graph-defines'
     ]) {
       root.style.removeProperty(prop);
     }

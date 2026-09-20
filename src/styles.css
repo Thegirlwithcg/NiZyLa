@@ -4,6 +4,14 @@
   font-family: var(--mono-font);
   font-size: 14px;
   --explorer-font-size: 13px;
+  --graph-class: #38bdf8;
+  --graph-function: #34d399;
+  --graph-variable: #f87171;
+  --graph-imports: #c084fc;
+  --graph-links: #67e8f9;
+  --graph-defines: #f472b6;
+  --folder-icon: #47d8d8;
+  --file-icon: #6aa4b0;
   background: #f7f0df;
   color: #14110c;
 }
@@ -360,19 +368,22 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
   top: 4px;
   width: 14px;
   height: 9px;
-  border-radius: 2px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--folder-icon) 92%, #fff 8%), var(--folder-icon));
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, #000 18%, transparent);
+  border: 1.5px solid var(--folder-icon);
+  border-radius: 3px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--folder-icon) 18%, transparent), color-mix(in srgb, var(--folder-icon) 8%, transparent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--folder-icon) 8%, transparent), inset 0 -3px 6px color-mix(in srgb, var(--folder-icon) 12%, transparent);
 }
 .folder-icon::after {
   content: '';
   position: absolute;
-  left: 2px;
+  left: 3px;
   top: 2px;
   width: 7px;
   height: 4px;
-  border-radius: 2px 2px 0 0;
-  background: color-mix(in srgb, var(--folder-icon) 82%, #fff 18%);
+  border: 1.5px solid var(--folder-icon);
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+  background: color-mix(in srgb, var(--folder-icon) 16%, var(--panel-solid));
 }
 .file-icon::before {
   content: '';
@@ -713,21 +724,56 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .graph-node.symbol.kind-class circle { fill: var(--graph-class); }
 .graph-node.symbol.kind-function circle { fill: var(--graph-function); }
 .graph-node.symbol.kind-variable circle { fill: var(--graph-variable); }
-.graph-node.folder { cursor: pointer; pointer-events: all; }
-.graph-node.folder:active { cursor: grabbing; }
-.graph-node .folder-icon {
-  fill: initial;
-  font-family: "Segoe UI Emoji", sans-serif;
-  font-size: 32px;
+.graph-node.folder-node { cursor: pointer; pointer-events: all; }
+.graph-node.folder-node:active { cursor: grabbing; }
+.graph-folder-glyph {
   pointer-events: all;
   cursor: pointer;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+  filter: drop-shadow(0 3px 8px color-mix(in srgb, #000 55%, transparent));
   transition: transform 200ms ease, filter 200ms ease;
-  user-select: none;
 }
-.graph-node.folder:hover .folder-icon {
-  filter: drop-shadow(0 0 10px var(--accent));
-  transform: scale(1.15);
+.graph-folder-glyph .graph-folder-tab,
+.graph-folder-glyph .graph-folder-body {
+  stroke: var(--folder-icon);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.graph-folder-glyph .graph-folder-tab { fill: color-mix(in srgb, var(--folder-icon) 24%, var(--panel-solid)); }
+.graph-folder-glyph .graph-folder-body { fill: color-mix(in srgb, var(--folder-icon) 12%, var(--panel-solid)); }
+.graph-node.folder-node:hover .graph-folder-glyph {
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--folder-icon) 70%, transparent));
+  transform: scale(1.12);
+}
+.graph-inline-folder-icon {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 13px;
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+.graph-inline-folder-icon::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 5px;
+  width: 14px;
+  height: 8px;
+  border: 1.5px solid var(--folder-icon);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--folder-icon) 10%, transparent);
+}
+.graph-inline-folder-icon::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 7px;
+  height: 4px;
+  border: 1.5px solid var(--folder-icon);
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+  background: color-mix(in srgb, var(--folder-icon) 16%, var(--panel-solid));
 }
 .graph-node.active circle { fill: var(--accent-2); stroke: var(--text); }
 .graph-edge { transition: stroke-width 180ms ease, stroke-opacity 180ms ease; cursor: grab; }
@@ -771,6 +817,7 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
   fill: var(--text);
   pointer-events: none;
 }
+.external-stub-node .graph-folder-glyph { pointer-events: none; filter: none; }
 .graph-node text {
   fill: var(--text);
   font-size: 11px;
@@ -813,6 +860,8 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
   border: 1px solid var(--accent);
 }
 .graph-current-folder-bar .folder-name-title {
+  display: inline-flex;
+  align-items: center;
   font-family: var(--mono-font);
   font-size: 12px;
   color: var(--text);
@@ -1172,9 +1221,42 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
   font-size: 16px;
 }
 .activity-bar button:hover, .activity-bar button.active { background: var(--activity-hover); color: var(--activity-icon-active); }
-.document-search { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; height: 100%; padding: 10px; gap: 10px; }
-.search-row { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 8px; }
-.search-row input, .search-row select {
+.nav-folder-icon {
+  position: relative;
+  width: 17px;
+  height: 14px;
+  display: inline-block;
+}
+.nav-folder-icon::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 5px;
+  width: 15px;
+  height: 9px;
+  border: 1.5px solid var(--folder-icon);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--folder-icon) 10%, transparent);
+}
+.nav-folder-icon::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 7px;
+  height: 4px;
+  border: 1.5px solid var(--folder-icon);
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+  background: color-mix(in srgb, var(--folder-icon) 16%, var(--activity-bg));
+}
+.document-search { display: grid; grid-template-rows: auto auto auto 1fr; min-height: 0; height: 100%; padding: 10px; gap: 10px; pointer-events: auto; }
+.search-scope { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; min-width: 0; }
+.search-scope strong { color: var(--text); font-weight: 600; }
+.search-scope span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-scope button { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 5px; padding: 4px 7px; background: #292929; color: var(--text); font-size: 11px; }
+.search-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px auto; gap: 8px; }
+.search-row input, .search-row select, .search-row button {
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -1182,7 +1264,10 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
   background: #292929;
   color: var(--text);
 }
-.search-meta { color: var(--muted); font-size: 12px; }
+.search-row button { padding-inline: 8px; }
+.search-meta { min-height: 16px; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.search-spinner { width: 12px; height: 12px; border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: search-spin 700ms linear infinite; }
+@keyframes search-spin { to { transform: rotate(360deg); } }
 .search-results { overflow: auto; display: grid; align-content: start; gap: 4px; }
 .search-result {
   display: grid;

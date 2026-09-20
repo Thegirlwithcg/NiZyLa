@@ -80,6 +80,10 @@
   let documentSearchResults = [];
   let documentSearchBusy = false;
   let documentSearchTimer;
+  let documentSearchIndex = [];
+  let documentSearchToken = 0;
+  let searchHighlightTerm = '';
+  let searchScopeFolder = null;
 
   function handleExplorerWheel(event) {
     if (event.ctrlKey || event.metaKey) {
@@ -117,7 +121,7 @@
   $: floatingPanes = panes.filter((p) => p.floating && !p.detached);
   $: files = projects.flatMap((p) => flattenFiles(p.tree).map((f) => ({ ...f, projectRoot: p.rootPath })));
   $: filteredFiles = query ? files.filter((file) => file.relativePath.toLowerCase().includes(query.toLowerCase())).slice(0, 40) : files.slice(0, 40);
-  $: if (documentSearchQuery || documentSearchKind) scheduleDocumentSearch(documentSearchQuery, documentSearchKind, projects);
+  $: searchScopeLabel = searchScopeFolder ? (searchScopeFolder.relativePath || searchScopeFolder.name) : 'Entire workspace';
 
   onMount(async () => {
     applyPreferences(preferences);
@@ -139,6 +143,7 @@
           activeProjectIndex = 0;
         }
       }
+      rebuildDocumentSearchIndex();
     }
 
     const unlistenDock = api?.onDetachedDockBack?.((data) => handleDetachedDockBack(data));
@@ -217,6 +222,7 @@
     activeProjectIndex = projects.length - 1;
     status = `Opened ${result.rootPath}`;
     await refreshPlugins();
+    rebuildDocumentSearchIndex();
   }
 
   async function refreshProject() {
@@ -225,6 +231,7 @@
     projects = projects.map((p, index) => index === activeProjectIndex ? rescanned : p);
     status = `Rescanned ${rescanned.rootPath}`;
     await refreshPlugins();
+    rebuildDocumentSearchIndex();
   }
 
   async function refreshPlugins() {
@@ -236,55 +243,133 @@
     api?.windowControl?.(action);
   }
 
-  function scheduleDocumentSearch(nextQuery, nextKind) {
-    clearTimeout(documentSearchTimer);
-    documentSearchTimer = setTimeout(() => runDocumentSearch(nextQuery, nextKind), 180);
+  function normalizeSearchPath(value = '') {
+    return String(value).replace(/\\/g, '/').toLowerCase();
   }
 
-  async function runDocumentSearch(nextQuery = documentSearchQuery, nextKind = documentSearchKind) {
-    const term = nextQuery.trim().toLowerCase();
-    if (!term || !projects.length) {
+  function activateExplorerFolder(folder) {
+    if (folder?.type === 'folder') graphFolderId = folder.path;
+  }
+
+  function setSearchScopeFolder(folder) {
+    searchScopeFolder = folder?.type === 'folder' ? folder : null;
+    if (searchScopeFolder) graphFolderId = searchScopeFolder.path;
+    sidebarView = 'search';
+    runDocumentSearch();
+  }
+
+  function clearSearchScope() {
+    searchScopeFolder = null;
+    runDocumentSearch();
+  }
+
+  function scheduleDocumentSearch(nextQuery = documentSearchQuery, nextKind = documentSearchKind) {
+    clearTimeout(documentSearchTimer);
+    if (!nextQuery.trim()) {
       documentSearchResults = [];
+      documentSearchBusy = false;
+      return;
+    }
+    documentSearchBusy = true;
+    documentSearchTimer = setTimeout(() => runDocumentSearch(nextQuery, nextKind), 35);
+  }
+
+  function updateDocumentSearchQuery(value) {
+    documentSearchQuery = value;
+    scheduleDocumentSearch(value, documentSearchKind);
+  }
+
+  function updateDocumentSearchKind(value) {
+    documentSearchKind = value;
+    scheduleDocumentSearch(documentSearchQuery, value);
+  }
+
+  function runDocumentSearch(nextQuery = documentSearchQuery, nextKind = documentSearchKind) {
+    const rawTerm = nextQuery.trim();
+    const term = rawTerm.toLowerCase();
+    const token = ++documentSearchToken;
+    if (!term) {
+      documentSearchResults = [];
+      documentSearchBusy = false;
       return;
     }
 
     documentSearchBusy = true;
+    const scopePath = normalizeSearchPath(searchScopeFolder?.path || '');
+    const showAllSymbolsInKind = rawTerm === '/' && ['variable', 'class', 'function'].includes(nextKind);
     const results = [];
-    const includeText = nextKind === 'all' || nextKind === 'text';
-    const includeSymbols = nextKind === 'all' || ['variable', 'class', 'function'].includes(nextKind);
+    for (const item of documentSearchIndex) {
+      if (scopePath && !normalizeSearchPath(item.entry?.path || '').startsWith(scopePath + '/') && normalizeSearchPath(item.entry?.path || '') !== scopePath) continue;
+      if (nextKind !== 'all' && item.matchType !== nextKind) continue;
+      const index = showAllSymbolsInKind ? 0 : item.searchText.indexOf(term);
+      if (index === -1) continue;
+      if (item.matchType === 'text') {
+        const line = item.content.slice(0, index).split(/\r?\n/).length;
+        const lineText = item.lines[line - 1]?.trim() || item.relativePath;
+        results.push({ ...item.entry, matchType: 'text', line, preview: lineText.slice(0, 160), searchTerm: nextQuery.trim() });
+      } else {
+        results.push({ ...item.entry, matchType: item.matchType, preview: `${item.matchType} · line ${item.entry.line ?? '?'}`, searchTerm: nextQuery.trim() });
+      }
+      if (results.length >= 80) break;
+    }
 
-    if (includeSymbols) {
-      for (const item of projects) {
-        for (const node of item.graph?.nodes || []) {
-          if (node.type !== 'symbol') continue;
-          if (nextKind !== 'all' && node.kind !== nextKind) continue;
-          const haystack = `${node.label} ${node.relativePath}`.toLowerCase();
-          if (haystack.includes(term)) {
-            results.push({ ...node, matchType: node.kind, preview: `${node.kind} · line ${node.line ?? '?'}` });
-          }
-        }
+    if (token === documentSearchToken) {
+      documentSearchResults = results;
+      documentSearchBusy = false;
+    }
+  }
+
+  async function refreshDocumentSearch() {
+    documentSearchBusy = true;
+    await rebuildDocumentSearchIndex();
+    runDocumentSearch();
+    status = `Search refreshed${documentSearchQuery.trim() ? `: ${documentSearchQuery.trim()}` : ''}`;
+  }
+
+  async function rebuildDocumentSearchIndex() {
+    await tick();
+    if (!api || !projects.length) {
+      documentSearchIndex = [];
+      documentSearchResults = [];
+      return;
+    }
+
+    documentSearchBusy = Boolean(documentSearchQuery.trim());
+    const index = [];
+
+    for (const item of projects) {
+      for (const node of item.graph?.nodes || []) {
+        if (node.type !== 'symbol') continue;
+        index.push({
+          matchType: node.kind,
+          entry: node,
+          searchText: `${node.label} ${node.relativePath}`.toLowerCase()
+        });
       }
     }
 
-    if (includeText) {
-      for (const file of files) {
-        if (previewTypeFor(file.path) !== 'text') continue;
-        try {
-          const content = await api.readFile(file.path);
-          const lower = content.toLowerCase();
-          const index = lower.indexOf(term);
-          if (index === -1) continue;
-          const line = content.slice(0, index).split(/\r?\n/).length;
-          const lineText = content.split(/\r?\n/)[line - 1]?.trim() || file.relativePath;
-          results.push({ ...file, matchType: 'text', line, preview: lineText.slice(0, 160) });
-        } catch {
-          // Ignore unreadable files while searching.
-        }
+    for (const file of files) {
+      if (previewTypeFor(file.path) !== 'text') continue;
+      try {
+        const content = await api.readFile(file.path);
+        index.push({
+          matchType: 'text',
+          entry: file,
+          content,
+          lines: content.split(/\r?\n/),
+          searchText: `${file.relativePath}\n${content}`.toLowerCase()
+        });
+      } catch {
+        // Ignore unreadable files while indexing.
       }
     }
 
-    documentSearchResults = results.slice(0, 80);
-    documentSearchBusy = false;
+    documentSearchIndex = index;
+    runDocumentSearch();
+  }
+
+  function fileNameFromPath(filePath = '') {
+    return String(filePath).replace(/\\/g, '/').split('/').pop() || filePath;
   }
 
   function previewTypeFor(filePath = '') {
@@ -307,6 +392,7 @@
     activeProjectIndex = remainingCount ? Math.max(0, Math.min(activeProjectIndex >= index ? activeProjectIndex - 1 : activeProjectIndex, remainingCount - 1)) : 0;
     status = `Closed ${closing.rootPath}`;
     refreshPlugins();
+    rebuildDocumentSearchIndex();
   }
 
   async function selectFile(entry, targetPaneId = activePaneId) {
@@ -323,8 +409,10 @@
       return;
     }
 
-    const file = { name: entry.name ?? entry.label, path: entry.path, relativePath: entry.relativePath?.split('#')[0] ?? entry.label, type: 'file', previewType };
-    markdownPreview = file.name.toLowerCase().endsWith('.md');
+    const relativePath = entry.relativePath?.split('#')[0] ?? fileNameFromPath(entry.path);
+    const fileName = entry.type === 'symbol' ? fileNameFromPath(relativePath) : (entry.name ?? fileNameFromPath(entry.path));
+    const file = { name: fileName, path: entry.path, relativePath, type: 'file', previewType, searchLine: entry.line ?? null };
+    markdownPreview = file.name.toLowerCase().endsWith('.md') && !entry.matchType;
     const id = file.path;
 
     const targetPane = panes.find((p) => p.id === targetPaneId && !p.detached) ?? panes.find((p) => !p.detached) ?? panes[0];
@@ -339,6 +427,7 @@
     } : p);
     activePaneId = paneId;
     paletteOpen = false;
+    searchHighlightTerm = entry.searchTerm || (entry.matchType && entry.matchType !== 'text' ? (entry.label ?? '') : '');
     status = entry.type === 'symbol' ? `${entry.relativePath} line ${entry.line}` : file.relativePath;
   }
 
@@ -771,6 +860,11 @@
     openCreateDialog(type, parent);
   }
 
+  function searchFolderFromContext(entry) {
+    contextMenu = null;
+    setSearchScopeFolder(entry);
+  }
+
   function askDelete(entry) {
     contextMenu = null;
     deleteTarget = entry;
@@ -1136,7 +1230,7 @@
         {:else if activeTab?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
           <MarkdownPreview content={activeTab.content} title={activeTab.file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
         {:else}
-          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(panes[0].id, event.detail)} on:zoom={handleEditorZoom} />
+          <CodeEditor file={activeTab?.file} content={activeTab?.content ?? ''} {showLineNumbers} {theme} {preferences} searchHighlight={searchHighlightTerm} searchLine={activeTab?.file?.searchLine ?? null} on:change={(event) => updateTabContent(panes[0].id, event.detail)} on:zoom={handleEditorZoom} on:clearSearchHighlight={() => (searchHighlightTerm = '')} />
         {/if}
       </div>
     </main>
@@ -1256,7 +1350,7 @@
       <nav class="activity-bar" aria-label="Primary navigation">
         <button class:active={sidebarView === 'files'} title="Files" on:click={() => (sidebarView = 'files')}>▣</button>
         <button class:active={sidebarView === 'search'} title="Search documents" on:click={() => (sidebarView = 'search')}>⌕</button>
-        <button title="Open folder" on:click={openProject}>📁</button>
+        <button title="Open folder" on:click={openProject}><span class="nav-folder-icon" aria-hidden="true"></span></button>
         <button title="Graph" on:click={toggleGraph}>◎</button>
         <button title="Terminal" on:click={toggleTerminal}>›_</button>
         <button title="Preferences" on:click={() => (showPreferences = true)}>⚙</button>
@@ -1265,27 +1359,40 @@
         {#if sidebarView === 'search'}
           <div class="panel-title">Search</div>
           <div class="document-search">
+            <div class="search-scope">
+              <span>Searching in: <strong>{searchScopeLabel}</strong></span>
+              {#if searchScopeFolder}<button on:click={clearSearchScope}>Search all</button>{/if}
+            </div>
             <div class="search-row">
-              <input bind:value={documentSearchQuery} placeholder="Search documents..." />
-              <select bind:value={documentSearchKind} aria-label="Search type">
+              <input value={documentSearchQuery} placeholder="Search documents..." on:input={(event) => updateDocumentSearchQuery(event.currentTarget.value)} on:keydown={(event) => event.key === 'Enter' && refreshDocumentSearch()} />
+              <select value={documentSearchKind} on:change={(event) => updateDocumentSearchKind(event.currentTarget.value)} aria-label="Search type">
                 <option value="all">All</option>
                 <option value="text">Text</option>
                 <option value="variable">Variable</option>
                 <option value="class">Class</option>
                 <option value="function">Function</option>
               </select>
+              <button title="Refresh index and search now" on:click={refreshDocumentSearch}>Search</button>
             </div>
-            <div class="search-meta">{documentSearchBusy ? 'Searching...' : `${documentSearchResults.length} match${documentSearchResults.length === 1 ? '' : 'es'}`}</div>
-            <div class="search-results">
-              {#each documentSearchResults as result (`${result.path}:${result.matchType}:${result.line ?? result.label}`)}
-                <button class="search-result" on:click={() => selectFile(result)}>
-                  <strong>{result.label ?? result.name}</strong>
-                  <span>{result.relativePath}</span>
-                  <em>{result.preview}</em>
-                </button>
+            <div class="search-meta">
+              {#if documentSearchBusy}
+                <span class="search-spinner" aria-hidden="true"></span> Searching...
               {:else}
+                {documentSearchResults.length ? `${documentSearchResults.length} match${documentSearchResults.length === 1 ? '' : 'es'}` : (documentSearchQuery.trim() ? 'No matches found.' : 'Type to search.')}
+              {/if}
+            </div>
+            <div class="search-results">
+              {#if documentSearchResults.length}
+                {#each documentSearchResults as result}
+                  <button class="search-result" on:click={() => selectFile(result)}>
+                    <strong>{result.label ?? result.name}</strong>
+                    <span>{result.relativePath}</span>
+                    <em>{result.preview}</em>
+                  </button>
+                {/each}
+              {:else if !documentSearchBusy && documentSearchQuery.trim()}
                 <div class="empty">No matches found.</div>
-              {/each}
+              {/if}
             </div>
           </div>
         {:else}
@@ -1303,7 +1410,7 @@
             <span>Explorer</span>
           </div>
           <div class="explorer-tree" role="presentation" on:contextmenu={openExplorerContextMenu}>
-            <FileTree entry={project.tree} {activeFile} activeFolderPath={graphFolderId} on:select={(event) => selectFile(event.detail)} on:context={openContextMenu} on:move={moveEntry} />
+            <FileTree entry={project.tree} {activeFile} activeFolderPath={graphFolderId} on:select={(event) => selectFile(event.detail)} on:folder={(event) => activateExplorerFolder(event.detail)} on:context={openContextMenu} on:move={moveEntry} />
           </div>
         {:else}
           <div class="empty">No folder open.</div>
@@ -1355,7 +1462,7 @@
               {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
                 <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
               {:else}
-                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} on:zoom={handleEditorZoom} />
+                <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} searchHighlight={searchHighlightTerm} searchLine={getActiveTab(pane)?.file?.searchLine ?? null} on:change={(event) => updateTabContent(pane.id, event.detail)} on:zoom={handleEditorZoom} on:clearSearchHighlight={() => (searchHighlightTerm = '')} />
               {/if}
             </div>
           {/each}
@@ -1471,7 +1578,7 @@
           {:else if getActiveTab(pane)?.file?.name?.toLowerCase().endsWith('.md') && markdownPreview}
             <MarkdownPreview content={getActiveTab(pane).content} title={getActiveTab(pane).file.name.replace(/\.md$/i, '')} on:wiki={(event) => openWikiLink(event.detail)} />
           {:else}
-            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} on:change={(event) => updateTabContent(pane.id, event.detail)} on:zoom={handleEditorZoom} />
+            <CodeEditor file={getActiveTab(pane)?.file} content={getActiveTab(pane)?.content ?? ''} {showLineNumbers} {theme} {preferences} searchHighlight={searchHighlightTerm} searchLine={getActiveTab(pane)?.file?.searchLine ?? null} on:change={(event) => updateTabContent(pane.id, event.detail)} on:zoom={handleEditorZoom} on:clearSearchHighlight={() => (searchHighlightTerm = '')} />
           {/if}
         </div>
 
@@ -1534,6 +1641,7 @@
       <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
         <div class="context-title">{contextMenu.entry.name}</div>
         {#if contextMenu.entry.type === 'folder'}
+          <button on:click={() => searchFolderFromContext(contextMenu.entry)}>Search in this Folder</button>
           <button on:click={() => openCreateFromContext('file')}>New File</button>
           <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
         {/if}

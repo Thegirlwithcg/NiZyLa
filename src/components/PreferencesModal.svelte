@@ -237,6 +237,22 @@
                 <input type="text" class="color-hex" value={preferences.customColors?.activeLine || currentPreset.activeLine} on:change={(e) => updateCustomColor('activeLine', e.currentTarget.value)} />
               </div>
             </label>
+
+            <label class="color-item">
+              <span class="color-label">Folder Icon</span>
+              <div class="picker-wrap">
+                <input type="color" value={preferences.customColors?.folderIcon || currentPreset.folderIcon || currentPreset.accent} on:input={(e) => updateCustomColor('folderIcon', e.currentTarget.value)} />
+                <input type="text" class="color-hex" value={preferences.customColors?.folderIcon || currentPreset.folderIcon || currentPreset.accent} on:change={(e) => updateCustomColor('folderIcon', e.currentTarget.value)} />
+              </div>
+            </label>
+
+            <label class="color-item">
+              <span class="color-label">File Icon</span>
+              <div class="picker-wrap">
+                <input type="color" value={preferences.customColors?.fileIcon || currentPreset.fileIcon || currentPreset.muted} on:input={(e) => updateCustomColor('fileIcon', e.currentTarget.value)} />
+                <input type="text" class="color-hex" value={preferences.customColors?.fileIcon || currentPreset.fileIcon || currentPreset.muted} on:change={(e) => updateCustomColor('fileIcon', e.currentTarget.value)} />
+              </div>
+            </label>
           </div>
 
           <div class="pref-actions-row">
