@@ -86,7 +86,7 @@
   on:drop={dropOnFolder}
 >
   <span class="twisty">{entry.type === 'folder' ? (expanded ? '▾' : '▸') : '·'}</span>
-  <span class="icon">{entry.type === 'folder' ? '📁' : '📄'}</span>
+  <span class="icon" class:folder-icon={entry.type === 'folder'} class:file-icon={entry.type !== 'folder'} aria-hidden="true"></span>
   <span class="name">{entry.name}</span>
 </div>
 

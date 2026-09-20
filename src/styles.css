@@ -32,6 +32,12 @@
   --graph-links: #0e7490;
   --graph-defines: #be185d;
   --shadow: #7a5d2a22;
+  --activity-bg: #efe4cf;
+  --activity-hover: #e3d2b3;
+  --activity-icon: #7b7162;
+  --activity-icon-active: #7c5424;
+  --folder-icon: #b7791f;
+  --file-icon: #8a7d69;
 }
 
 .theme-obsidian {
@@ -59,6 +65,12 @@
   --graph-links: #7dd3fc;
   --graph-defines: #f0abfc;
   --shadow: #00000000;
+  --activity-bg: #202020;
+  --activity-hover: #303030;
+  --activity-icon: #9a9a9a;
+  --activity-icon-active: #dcddde;
+  --folder-icon: #caa6ff;
+  --file-icon: #8f9bad;
 }
 .theme-obsidian .panel, .theme-obsidian .terminal-panel { border-radius: 0; box-shadow: none; }
 .theme-obsidian .topbar, .theme-obsidian .statusbar { background: #202020; }
@@ -104,6 +116,12 @@
   --syntax-number: #f97316;
   --syntax-comment: #4d7b88;
   --shadow: #00000066;
+  --activity-bg: #102129;
+  --activity-hover: #19313d;
+  --activity-icon: #4d7b88;
+  --activity-icon-active: #7ef2ed;
+  --folder-icon: #47d8d8;
+  --file-icon: #6aa4b0;
 }
 .theme-structs .topbar, .theme-structs .statusbar { background: #12232c; border-color: #23424d; }
 .theme-structs button, .theme-structs select { border: 1.5px solid #2d5a67; border-radius: 4px; background: #19313d; color: #5ce1e6; font-weight: 500; }
@@ -150,6 +168,12 @@
   --syntax-number: #ff9900;
   --syntax-comment: #5f658b;
   --shadow: #00000099;
+  --activity-bg: #0f1020;
+  --activity-hover: #1c1e36;
+  --activity-icon: #6e749c;
+  --activity-icon-active: #00f0ff;
+  --folder-icon: #ffe600;
+  --file-icon: #7f86b6;
 }
 .theme-cyberpunk .topbar, .theme-cyberpunk .statusbar { background: #111220; border-color: #282a4a; }
 .theme-cyberpunk button, .theme-cyberpunk select { border: 1px solid #424675; border-radius: 4px; background: #1c1e36; color: #00f0ff; }
@@ -326,9 +350,52 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 }
 .tree-row[draggable="true"] { cursor: grab; }
 .tree-row.drag-over { outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 20%, var(--panel-solid)); }
-.tree-row.folder { color: var(--accent); }
+.tree-row.folder { color: color-mix(in srgb, var(--folder-icon) 82%, var(--text)); }
 .twisty { width: 14px; color: var(--muted); }
-.icon { font-size: var(--explorer-font-size, 13px); opacity: 0.9; }
+.icon { position: relative; width: 16px; height: 14px; flex: 0 0 16px; opacity: 0.95; }
+.folder-icon::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 4px;
+  width: 14px;
+  height: 9px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--folder-icon) 92%, #fff 8%), var(--folder-icon));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, #000 18%, transparent);
+}
+.folder-icon::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 7px;
+  height: 4px;
+  border-radius: 2px 2px 0 0;
+  background: color-mix(in srgb, var(--folder-icon) 82%, #fff 18%);
+}
+.file-icon::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 1px;
+  width: 10px;
+  height: 12px;
+  border: 1px solid color-mix(in srgb, var(--file-icon) 85%, var(--text));
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--file-icon) 12%, transparent);
+}
+.file-icon::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 5px;
+  width: 6px;
+  height: 1px;
+  background: var(--file-icon);
+  box-shadow: 0 3px 0 var(--file-icon);
+  opacity: .8;
+}
 .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .editors { min-height: 0; display: grid; gap: 10px; }
@@ -1090,7 +1157,7 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
   gap: 6px;
   padding: 8px 6px;
   border-right: 1px solid var(--border);
-  background: #202020;
+  background: var(--activity-bg);
 }
 .activity-bar button {
   width: 34px;
@@ -1101,10 +1168,10 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
   border-radius: 5px;
   padding: 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--activity-icon);
   font-size: 16px;
 }
-.activity-bar button:hover, .activity-bar button.active { background: #303030; color: var(--text); }
+.activity-bar button:hover, .activity-bar button.active { background: var(--activity-hover); color: var(--activity-icon-active); }
 .document-search { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; height: 100%; padding: 10px; gap: 10px; }
 .search-row { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 8px; }
 .search-row input, .search-row select {
