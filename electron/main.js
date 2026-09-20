@@ -121,7 +121,8 @@ function createWindow() {
     title: 'NiZyLa',
     icon: appIconPath,
     backgroundColor: '#15141b',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    frame: false,
+    titleBarStyle: 'hidden',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -174,7 +175,8 @@ function createDetachedWindow({ windowId, type, title, bounds, state }) {
     title: title || `NiZyLa - ${type}`,
     icon: appIconPath,
     backgroundColor: '#15141b',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    frame: false,
+    titleBarStyle: 'hidden',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -224,26 +226,7 @@ function createDetachedWindow({ windowId, type, title, bounds, state }) {
 app.whenReady().then(() => {
   if (process.platform === 'win32') app.setAppUserModelId('com.thegirlwithcg.nizyla');
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { role: 'fileMenu' },
-    { role: 'editMenu' },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' }
-      ]
-    },
-    { role: 'windowMenu' },
-    { role: 'help' }
-  ]));
+  Menu.setApplicationMenu(null);
   createWindow();
   setTimeout(() => checkForNpmUpdate(), 3000);
 });
@@ -296,6 +279,14 @@ ipcMain.handle('path:move', async (_event, sourcePath, targetFolderPath) => {
   await fs.rename(source, destination);
   return { ok: true, path: destination };
 });
+ipcMain.on('window:control', (event, action) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  if (action === 'minimize') win.minimize();
+  if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
+  if (action === 'close') win.close();
+});
+
 ipcMain.handle('terminal:create', async (event, cwd) => {
   const pty = await loadNodePty();
   if (!pty) throw new Error('Integrated terminal is unavailable because node-pty could not be installed.');

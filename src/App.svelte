@@ -60,7 +60,7 @@
   let paletteInput;
   let plugins = [];
   let preferences = loadPreferences();
-  let theme = preferences.theme || 'structs';
+  let theme = preferences.theme && preferences.theme !== 'cream' ? preferences.theme : 'obsidian';
   let showPreferences = false;
   let showLineNumbers = localStorage.getItem('nizyla.lineNumbers') !== 'false';
   let createDialog = null;
@@ -74,6 +74,12 @@
   let layoutSize = { sidebar: 270, graph: 390, terminal: 190 };
   let sidebarEl;
   let explorerFontSize = Number(localStorage.getItem('nizyla.explorerFontSize')) || 13;
+  let sidebarView = 'files';
+  let documentSearchQuery = '';
+  let documentSearchKind = 'all';
+  let documentSearchResults = [];
+  let documentSearchBusy = false;
+  let documentSearchTimer;
 
   function handleExplorerWheel(event) {
     if (event.ctrlKey || event.metaKey) {
@@ -111,6 +117,7 @@
   $: floatingPanes = panes.filter((p) => p.floating && !p.detached);
   $: files = projects.flatMap((p) => flattenFiles(p.tree).map((f) => ({ ...f, projectRoot: p.rootPath })));
   $: filteredFiles = query ? files.filter((file) => file.relativePath.toLowerCase().includes(query.toLowerCase())).slice(0, 40) : files.slice(0, 40);
+  $: if (documentSearchQuery || documentSearchKind) scheduleDocumentSearch(documentSearchQuery, documentSearchKind, projects);
 
   onMount(async () => {
     applyPreferences(preferences);
@@ -223,6 +230,61 @@
   async function refreshPlugins() {
     if (!api) return;
     plugins = await api.listPlugins(projects.map((p) => p.rootPath));
+  }
+
+  function windowControl(action) {
+    api?.windowControl?.(action);
+  }
+
+  function scheduleDocumentSearch(nextQuery, nextKind) {
+    clearTimeout(documentSearchTimer);
+    documentSearchTimer = setTimeout(() => runDocumentSearch(nextQuery, nextKind), 180);
+  }
+
+  async function runDocumentSearch(nextQuery = documentSearchQuery, nextKind = documentSearchKind) {
+    const term = nextQuery.trim().toLowerCase();
+    if (!term || !projects.length) {
+      documentSearchResults = [];
+      return;
+    }
+
+    documentSearchBusy = true;
+    const results = [];
+    const includeText = nextKind === 'all' || nextKind === 'text';
+    const includeSymbols = nextKind === 'all' || ['variable', 'class', 'function'].includes(nextKind);
+
+    if (includeSymbols) {
+      for (const item of projects) {
+        for (const node of item.graph?.nodes || []) {
+          if (node.type !== 'symbol') continue;
+          if (nextKind !== 'all' && node.kind !== nextKind) continue;
+          const haystack = `${node.label} ${node.relativePath}`.toLowerCase();
+          if (haystack.includes(term)) {
+            results.push({ ...node, matchType: node.kind, preview: `${node.kind} · line ${node.line ?? '?'}` });
+          }
+        }
+      }
+    }
+
+    if (includeText) {
+      for (const file of files) {
+        if (previewTypeFor(file.path) !== 'text') continue;
+        try {
+          const content = await api.readFile(file.path);
+          const lower = content.toLowerCase();
+          const index = lower.indexOf(term);
+          if (index === -1) continue;
+          const line = content.slice(0, index).split(/\r?\n/).length;
+          const lineText = content.split(/\r?\n/)[line - 1]?.trim() || file.relativePath;
+          results.push({ ...file, matchType: 'text', line, preview: lineText.slice(0, 160) });
+        } catch {
+          // Ignore unreadable files while searching.
+        }
+      }
+    }
+
+    documentSearchResults = results.slice(0, 80);
+    documentSearchBusy = false;
   }
 
   function previewTypeFor(filePath = '') {
@@ -1041,6 +1103,11 @@
         {/if}
         <button class="primary" on:click={saveFile} disabled={!activeTab || !activeTab.dirty}>Save</button>
       </div>
+      <div class="window-control-box">
+        <button title="Minimize" on:click={() => windowControl('minimize')}>—</button>
+        <button title="Maximize" on:click={() => windowControl('maximize')}>□</button>
+        <button class="close" title="Close" on:click={() => windowControl('close')}>×</button>
+      </div>
     </header>
 
     <main class="detached-content">
@@ -1088,6 +1155,11 @@
       <div class="actions">
         <button class="primary" on:click={dockDetachedSelf}>Dock to Main Window</button>
       </div>
+      <div class="window-control-box">
+        <button title="Minimize" on:click={() => windowControl('minimize')}>—</button>
+        <button title="Maximize" on:click={() => windowControl('maximize')}>□</button>
+        <button class="close" title="Close" on:click={() => windowControl('close')}>×</button>
+      </div>
     </header>
     <main class="detached-content">
       {#if project?.graph || detachedState?.graph}
@@ -1120,6 +1192,11 @@
       <div class="actions">
         <button class="primary" on:click={dockDetachedSelf}>Dock to Main Window</button>
       </div>
+      <div class="window-control-box">
+        <button title="Minimize" on:click={() => windowControl('minimize')}>—</button>
+        <button title="Maximize" on:click={() => windowControl('maximize')}>□</button>
+        <button class="close" title="Close" on:click={() => windowControl('close')}>×</button>
+      </div>
     </header>
     <main class="detached-content terminal-detached">
       <TerminalPanel api={api} cwd={detachedCwdParam || detachedState?.cwd || project?.rootPath || ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
@@ -1128,7 +1205,7 @@
   </div>
 {:else}
   <div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible || graphDetached} class:terminal-open={terminalVisible && !terminalFloating && !terminalDetached} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
-    <header class="topbar">
+    <header class="topbar app-titlebar">
       <div class="brand">
         <img class="logo" src={logoUrl} alt="NiZyLa logo" />
         <div>
@@ -1168,10 +1245,50 @@
         <button on:click={toggleGraph}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
         <button class="primary" on:click={saveFile} disabled={!activeTab || !activeTab.dirty}>Save</button>
       </div>
+      <div class="window-control-box">
+        <button title="Minimize" on:click={() => windowControl('minimize')}>—</button>
+        <button title="Maximize" on:click={() => windowControl('maximize')}>□</button>
+        <button class="close" title="Close" on:click={() => windowControl('close')}>×</button>
+      </div>
     </header>
 
     <main class="workspace" bind:this={workspaceEl}>
+      <nav class="activity-bar" aria-label="Primary navigation">
+        <button class:active={sidebarView === 'files'} title="Files" on:click={() => (sidebarView = 'files')}>▣</button>
+        <button class:active={sidebarView === 'search'} title="Search documents" on:click={() => (sidebarView = 'search')}>⌕</button>
+        <button title="Open folder" on:click={openProject}>📁</button>
+        <button title="Graph" on:click={toggleGraph}>◎</button>
+        <button title="Terminal" on:click={toggleTerminal}>›_</button>
+        <button title="Preferences" on:click={() => (showPreferences = true)}>⚙</button>
+      </nav>
       <aside class="sidebar panel" bind:this={sidebarEl}>
+        {#if sidebarView === 'search'}
+          <div class="panel-title">Search</div>
+          <div class="document-search">
+            <div class="search-row">
+              <input bind:value={documentSearchQuery} placeholder="Search documents..." />
+              <select bind:value={documentSearchKind} aria-label="Search type">
+                <option value="all">All</option>
+                <option value="text">Text</option>
+                <option value="variable">Variable</option>
+                <option value="class">Class</option>
+                <option value="function">Function</option>
+              </select>
+            </div>
+            <div class="search-meta">{documentSearchBusy ? 'Searching...' : `${documentSearchResults.length} match${documentSearchResults.length === 1 ? '' : 'es'}`}</div>
+            <div class="search-results">
+              {#each documentSearchResults as result (`${result.path}:${result.matchType}:${result.line ?? result.label}`)}
+                <button class="search-result" on:click={() => selectFile(result)}>
+                  <strong>{result.label ?? result.name}</strong>
+                  <span>{result.relativePath}</span>
+                  <em>{result.preview}</em>
+                </button>
+              {:else}
+                <div class="empty">No matches found.</div>
+              {/each}
+            </div>
+          </div>
+        {:else}
         <div class="panel-title">Workspaces</div>
         {#if projects.length}
           <div class="workspace-tabs">
@@ -1190,6 +1307,7 @@
           </div>
         {:else}
           <div class="empty">No folder open.</div>
+        {/if}
         {/if}
       </aside>
       {#if !graphFullscreen && !graphDetached}
