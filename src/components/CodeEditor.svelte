@@ -37,11 +37,14 @@
   $: syntaxStyle = getSyntaxStyleString(currentLang, theme, preferences);
 
   $: if (view && (file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers || searchHighlight !== lastSearchHighlight || searchLine !== lastSearchLine)) {
+    const fileChanged = file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers || searchHighlight !== lastSearchHighlight;
     lastFilePath = file?.path ?? null;
     lastShowLineNumbers = showLineNumbers;
     lastSearchHighlight = searchHighlight;
     lastSearchLine = searchLine;
-    view.setState(createState(content));
+    if (fileChanged) {
+      view.setState(createState(content));
+    }
     revealSearchTarget();
   } else if (view && content !== view.state.doc.toString()) {
     view.dispatch({
@@ -244,7 +247,44 @@
           '.cm-activeLineGutter': { backgroundColor: 'var(--active-line)' },
           '.cm-selectionBackground': { backgroundColor: 'var(--selection) !important' },
           '.cm-search-hit': { backgroundColor: 'color-mix(in srgb, var(--accent) 45%, transparent)', outline: '1px solid var(--accent)', borderRadius: '2px' },
-          '.cm-cursor': { borderLeftColor: 'var(--accent)' }
+          '.cm-cursor': { borderLeftColor: 'var(--accent)' },
+          '.cm-tooltip': {
+            backgroundColor: 'color-mix(in srgb, var(--panel-solid, #141628) 82%, transparent) !important',
+            backdropFilter: 'blur(14px)',
+            border: '1px solid var(--border-strong, #424675) !important',
+            borderRadius: '7px !important',
+            boxShadow: '0 10px 28px var(--shadow, rgba(0, 0, 0, 0.5)), 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent) !important',
+            color: 'var(--text) !important'
+          },
+          '.cm-tooltip.cm-tooltip-autocomplete': {
+            border: '1px solid var(--border-strong, #424675) !important',
+            borderRadius: '7px !important'
+          },
+          '.cm-tooltip-autocomplete > ul': {
+            fontFamily: 'var(--mono-font) !important',
+            fontSize: 'var(--editor-font-size, 13px) !important',
+            padding: '4px !important'
+          },
+          '.cm-tooltip-autocomplete > ul > li': {
+            padding: '4px 8px !important',
+            borderRadius: '4px !important',
+            color: 'var(--text) !important',
+            lineHeight: '1.35 !important'
+          },
+          '.cm-tooltip-autocomplete > ul > li[aria-selected="true"]': {
+            backgroundColor: 'color-mix(in srgb, var(--accent) 30%, var(--button-hover, #2a2a2a)) !important',
+            color: '#ffffff !important',
+            outline: '1px solid color-mix(in srgb, var(--accent) 65%, transparent) !important'
+          },
+          '.cm-completionMatchedText': {
+            color: 'var(--accent) !important',
+            fontWeight: 'bold !important',
+            textDecoration: 'underline !important'
+          },
+          '.cm-completionDetail': {
+            color: 'var(--muted) !important',
+            fontStyle: 'italic !important'
+          }
         }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;

@@ -84,6 +84,14 @@
   let documentSearchToken = 0;
   let searchHighlightTerm = '';
   let searchScopeFolder = null;
+  let searchMatchCase = typeof localStorage !== 'undefined' && localStorage.getItem('nizyla.searchMatchCase') === 'true';
+  let searchWholeWord = typeof localStorage !== 'undefined' && localStorage.getItem('nizyla.searchWholeWord') === 'true';
+  let searchUseRegex = typeof localStorage === 'undefined' || localStorage.getItem('nizyla.searchUseRegex') === null ? true : localStorage.getItem('nizyla.searchUseRegex') === 'true';
+  let searchRegexError = '';
+  let allCollapsed = false;
+
+  $: totalMatchCount = documentSearchResults.reduce((sum, g) => sum + (g.matches?.length || 0), 0);
+  $: totalFileCount = documentSearchResults.length;
 
   function handleExplorerWheel(event) {
     if (event.ctrlKey || event.metaKey) {
@@ -284,11 +292,104 @@
     scheduleDocumentSearch(documentSearchQuery, value);
   }
 
+  function toggleMatchCase() {
+    searchMatchCase = !searchMatchCase;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('nizyla.searchMatchCase', String(searchMatchCase));
+    runDocumentSearch();
+  }
+
+  function toggleWholeWord() {
+    searchWholeWord = !searchWholeWord;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('nizyla.searchWholeWord', String(searchWholeWord));
+    runDocumentSearch();
+  }
+
+  function toggleUseRegex() {
+    searchUseRegex = !searchUseRegex;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('nizyla.searchUseRegex', String(searchUseRegex));
+    runDocumentSearch();
+  }
+
+  function toggleCollapseAll() {
+    allCollapsed = !allCollapsed;
+    documentSearchResults = documentSearchResults.map((g) => ({ ...g, collapsed: allCollapsed }));
+  }
+
+  function toggleFileCollapse(index) {
+    if (documentSearchResults[index]) {
+      documentSearchResults[index].collapsed = !documentSearchResults[index].collapsed;
+      documentSearchResults = [...documentSearchResults];
+    }
+  }
+
+  function selectSearchResult(fileEntry, match) {
+    selectFile({
+      ...fileEntry,
+      line: match.line,
+      searchTerm: match.searchTerm || documentSearchQuery.trim()
+    });
+  }
+
+  function getSearchMatcher(rawQuery, matchCase, wholeWord, useRegex) {
+    searchRegexError = '';
+    if (!rawQuery) return null;
+    let pattern = rawQuery;
+    if (!useRegex) {
+      pattern = escapeRegExp(pattern);
+    }
+    if (wholeWord) {
+      pattern = `\\b(?:${pattern})\\b`;
+    }
+    const flags = matchCase ? 'g' : 'gi';
+    try {
+      return new RegExp(pattern, flags);
+    } catch (err) {
+      searchRegexError = err.message || 'Invalid regular expression';
+      return null;
+    }
+  }
+
+  function splitMatchPreview(text, term, matchCase, wholeWord, useRegex) {
+    if (!text || !term) return [{ text, match: false }];
+    const matcher = getSearchMatcher(term, matchCase, wholeWord, useRegex);
+    if (!matcher) return [{ text, match: false }];
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+    try {
+      while ((match = matcher.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push({ text: text.slice(lastIndex, match.index), match: false });
+        }
+        parts.push({ text: match[0], match: true });
+        lastIndex = matcher.lastIndex;
+        if (!matcher.global || match[0].length === 0) {
+          lastIndex = match.index + 1;
+          matcher.lastIndex = lastIndex;
+        }
+        if (parts.length >= 25) break;
+      }
+    } catch {
+      // ignore regex exec errors
+    }
+    if (lastIndex < text.length) {
+      parts.push({ text: text.slice(lastIndex), match: false });
+    }
+    return parts.length ? parts : [{ text, match: false }];
+  }
+
   function runDocumentSearch(nextQuery = documentSearchQuery, nextKind = documentSearchKind) {
     const rawTerm = nextQuery.trim();
-    const term = rawTerm.toLowerCase();
     const token = ++documentSearchToken;
-    if (!term) {
+    if (!rawTerm) {
+      documentSearchResults = [];
+      documentSearchBusy = false;
+      searchRegexError = '';
+      return;
+    }
+
+    const matcher = getSearchMatcher(rawTerm, searchMatchCase, searchWholeWord, searchUseRegex);
+    if (!matcher) {
       documentSearchResults = [];
       documentSearchBusy = false;
       return;
@@ -297,24 +398,72 @@
     documentSearchBusy = true;
     const scopePath = normalizeSearchPath(searchScopeFolder?.path || '');
     const showAllSymbolsInKind = rawTerm === '/' && ['variable', 'class', 'function'].includes(nextKind);
-    const results = [];
+    const fileGroups = new Map();
+
     for (const item of documentSearchIndex) {
-      if (scopePath && !normalizeSearchPath(item.entry?.path || '').startsWith(scopePath + '/') && normalizeSearchPath(item.entry?.path || '') !== scopePath) continue;
-      if (nextKind !== 'all' && item.matchType !== nextKind) continue;
-      const index = showAllSymbolsInKind ? 0 : item.searchText.indexOf(term);
-      if (index === -1) continue;
+      const entryPath = normalizeSearchPath(item.entry?.path || '');
+      if (scopePath && !entryPath.startsWith(scopePath + '/') && entryPath !== scopePath) continue;
+
       if (item.matchType === 'text') {
-        const line = item.content.slice(0, index).split(/\r?\n/).length;
-        const lineText = item.lines[line - 1]?.trim() || item.relativePath;
-        results.push({ ...item.entry, matchType: 'text', line, preview: lineText.slice(0, 160), searchTerm: nextQuery.trim() });
+        if (nextKind !== 'all' && nextKind !== 'text') continue;
+        const fileMatches = [];
+        for (let lineIdx = 0; lineIdx < item.lines.length; lineIdx++) {
+          const lineText = item.lines[lineIdx];
+          matcher.lastIndex = 0;
+          let match;
+          while ((match = matcher.exec(lineText)) !== null) {
+            fileMatches.push({
+              line: lineIdx + 1,
+              preview: lineText.trim() || '(empty line)',
+              searchTerm: match[0] || rawTerm,
+              matchType: 'text'
+            });
+            break; // Keep one entry per matching line
+          }
+          if (fileMatches.length >= 150) break;
+        }
+        if (fileMatches.length > 0) {
+          const existing = fileGroups.get(item.entry.path);
+          if (existing) {
+            existing.matches.push(...fileMatches);
+          } else {
+            fileGroups.set(item.entry.path, {
+              file: item.entry,
+              collapsed: allCollapsed,
+              matches: fileMatches
+            });
+          }
+        }
       } else {
-        results.push({ ...item.entry, matchType: item.matchType, preview: `${item.matchType} · line ${item.entry.line ?? '?'}`, searchTerm: nextQuery.trim() });
+        if (nextKind !== 'all' && item.matchType !== nextKind) continue;
+        matcher.lastIndex = 0;
+        const isMatch = showAllSymbolsInKind || matcher.test(item.entry.label) || matcher.test(item.entry.relativePath);
+        if (isMatch) {
+          let group = fileGroups.get(item.entry.path);
+          if (!group) {
+            const fileEntry = files.find((f) => f.path === item.entry.path) || {
+              name: fileNameFromPath(item.entry.path),
+              path: item.entry.path,
+              relativePath: item.entry.relativePath?.split('#')[0] || fileNameFromPath(item.entry.path),
+              type: 'file',
+              previewType: previewTypeFor(item.entry.path)
+            };
+            group = { file: fileEntry, collapsed: allCollapsed, matches: [] };
+            fileGroups.set(item.entry.path, group);
+          }
+          group.matches.push({
+            line: item.entry.line ?? 1,
+            preview: `${item.matchType} · ${item.entry.label}`,
+            searchTerm: item.entry.label,
+            matchType: item.matchType,
+            label: item.entry.label
+          });
+        }
       }
-      if (results.length >= 80) break;
     }
 
     if (token === documentSearchToken) {
-      documentSearchResults = results;
+      documentSearchResults = Array.from(fileGroups.values());
       documentSearchBusy = false;
     }
   }
@@ -1363,32 +1512,92 @@
               <span>Searching in: <strong>{searchScopeLabel}</strong></span>
               {#if searchScopeFolder}<button on:click={clearSearchScope}>Search all</button>{/if}
             </div>
-            <div class="search-row">
-              <input value={documentSearchQuery} placeholder="Search documents..." on:input={(event) => updateDocumentSearchQuery(event.currentTarget.value)} on:keydown={(event) => event.key === 'Enter' && refreshDocumentSearch()} />
-              <select value={documentSearchKind} on:change={(event) => updateDocumentSearchKind(event.currentTarget.value)} aria-label="Search type">
-                <option value="all">All</option>
-                <option value="text">Text</option>
-                <option value="variable">Variable</option>
-                <option value="class">Class</option>
-                <option value="function">Function</option>
-              </select>
-              <button title="Refresh index and search now" on:click={refreshDocumentSearch}>Search</button>
+            <div class="search-box-row">
+              <div class="search-input-wrapper">
+                <input
+                  value={documentSearchQuery}
+                  placeholder="Search documents..."
+                  on:input={(event) => updateDocumentSearchQuery(event.currentTarget.value)}
+                  on:keydown={(event) => event.key === 'Enter' && refreshDocumentSearch()}
+                />
+                <div class="search-toggles">
+                  <button
+                    type="button"
+                    class="search-toggle-btn"
+                    class:active={searchMatchCase}
+                    title="Match Case (Aa)"
+                    on:click={toggleMatchCase}
+                  >Aa</button>
+                  <button
+                    type="button"
+                    class="search-toggle-btn"
+                    class:active={searchWholeWord}
+                    title="Match Whole Word (\b)"
+                    on:click={toggleWholeWord}
+                  >\b</button>
+                  <button
+                    type="button"
+                    class="search-toggle-btn"
+                    class:active={searchUseRegex}
+                    title="Use Regular Expression (.*)"
+                    on:click={toggleUseRegex}
+                  >.*</button>
+                </div>
+              </div>
+              <div class="search-controls-row">
+                <select value={documentSearchKind} on:change={(event) => updateDocumentSearchKind(event.currentTarget.value)} aria-label="Search type">
+                  <option value="all">All</option>
+                  <option value="text">Text</option>
+                  <option value="variable">Variable</option>
+                  <option value="class">Class</option>
+                  <option value="function">Function</option>
+                </select>
+                <button type="button" title="Refresh index and search now" on:click={refreshDocumentSearch}>Search</button>
+              </div>
             </div>
             <div class="search-meta">
               {#if documentSearchBusy}
                 <span class="search-spinner" aria-hidden="true"></span> Searching...
+              {:else if searchRegexError}
+                <span class="search-error" title={searchRegexError}>⚠️ {searchRegexError}</span>
+              {:else if totalMatchCount > 0}
+                <span>{totalMatchCount} {totalMatchCount === 1 ? 'match' : 'matches'} in {totalFileCount} {totalFileCount === 1 ? 'file' : 'files'}</span>
+                <button type="button" class="search-collapse-toggle" on:click={toggleCollapseAll}>
+                  {allCollapsed ? 'Expand all' : 'Collapse all'}
+                </button>
               {:else}
-                {documentSearchResults.length ? `${documentSearchResults.length} match${documentSearchResults.length === 1 ? '' : 'es'}` : (documentSearchQuery.trim() ? 'No matches found.' : 'Type to search.')}
+                <span>{documentSearchQuery.trim() ? 'No matches found.' : 'Type to search.'}</span>
               {/if}
             </div>
             <div class="search-results">
               {#if documentSearchResults.length}
-                {#each documentSearchResults as result}
-                  <button class="search-result" on:click={() => selectFile(result)}>
-                    <strong>{result.label ?? result.name}</strong>
-                    <span>{result.relativePath}</span>
-                    <em>{result.preview}</em>
-                  </button>
+                {#each documentSearchResults as group, gIndex}
+                  <div class="search-file-group">
+                    <button type="button" class="search-file-header" on:click={() => toggleFileCollapse(gIndex)}>
+                      <span class="search-file-arrow">{group.collapsed ? '▸' : '▾'}</span>
+                      <span class="search-file-name">{group.file.name}</span>
+                      <span class="search-file-path">{group.file.relativePath}</span>
+                      <span class="search-file-count" title={`${group.matches.length} matches`}>{group.matches.length}</span>
+                    </button>
+                    {#if !group.collapsed}
+                      <div class="search-match-list">
+                        {#each group.matches as match}
+                          <button type="button" class="search-match-item" on:click={() => selectSearchResult(group.file, match)}>
+                            <span class="search-line-num">L{match.line}</span>
+                            <span class="search-match-preview" title={match.preview}>
+                              {#each splitMatchPreview(match.preview, match.searchTerm || documentSearchQuery, searchMatchCase, searchWholeWord, searchUseRegex) as part}
+                                {#if part.match}
+                                  <mark class="search-match-text">{part.text}</mark>
+                                {:else}
+                                  <span>{part.text}</span>
+                                {/if}
+                              {/each}
+                            </span>
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
                 {/each}
               {:else if !documentSearchBusy && documentSearchQuery.trim()}
                 <div class="empty">No matches found.</div>
