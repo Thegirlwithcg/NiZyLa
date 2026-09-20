@@ -1,7 +1,8 @@
 # Geometry Code contract — .gcn v1
 
-Stage 1 implements data and validation only in `src/core/geometry.js`.
-No UI, file IPC, compiler or execution is implemented yet. Subsequent stages
+Stage 1 (data and validation) lives in `src/core/geometry.js`; stage 2 (code
+generation) in `src/core/geometry-codegen.js`. No UI, file IPC, Run button or
+export is implemented yet. Subsequent stages
 must use this contract rather than introduce a second graph representation.
 
 ## File format
@@ -99,7 +100,9 @@ saveable graph error, not an invalid file shape.
   value outputs can fan out. All statements have only one execution input,
   so branches/bodies cannot share statements.
 - Both execution and value cycles are errors, including disconnected cycles.
-  Iterative traversals avoid JavaScript recursion limits on long chains.
+  Iterative traversals avoid JavaScript recursion limits on long chains, and generated Python/GDScript. Codegen tests also run the output
+with real Python 3 and Godot 4 (`GODOT_BIN` = a Godot console executable, or
+`godot` on PATH) and skip with a reason when a runtime is missing.
 - Unconnected execution exits end the current block. If runs its selected
   branch and then next. Loops run body repeatedly and then next. Do not draw
   loop-back edges. Empty blocks are allowed.
@@ -134,27 +137,54 @@ Diagnostic codes: `invalid-json`, `invalid-format`, `unsupported-version`,
 `value-cycle`, `unused-node`, `missing-input`, `type-mismatch`,
 `comparison-type`, `zero-step`, `nested-for-variable`.
 
-## Contract for the following compiler stage (not implemented)
+## Code generation (stage 2, `src/core/geometry-codegen.js`)
 
-- Python 3: `def main():` plus a `__main__` entry guard. Godot 4: `extends Node`
-  and `func _ready():`. Four-space indentation; empty blocks emit `pass`.
-- Initialize all declared variables at function entry. Emit Get expressions
-  at their points of use, including reevaluating While conditions each iteration.
-- For Range uses exclusive stop and supports negative steps. Generate a
-  private `_gcn_` iterator, then assign it to the declared variable at body
-  entry. Setting that variable in the body must not change the iteration sequence.
-- Preserve type promotion, escape strings, parenthesize expressions and make
-  division floating-point in both languages (`float(a) / b` in GDScript).
-- Reject errors and omit unused nodes. Do not silently display old code as
-  current after a validation failure. Runtime-only issues (dynamic zero step,
-  division by zero, nontermination, overflow) are not statically proved here.
-- No reverse conversion, arbitrary script evaluation or migrations in v1.
+`generateGeometryCode(document, target = document?.target)` returns
+`{ code: string | null, diagnostics }`. `target` (`python` or `gdscript`)
+overrides the language for that call only; the document is never modified. It
+runs `validateGeometryDocument` first and returns `code: null` plus the
+diagnostics on any error, including `unsupported-target` for a bad target.
+Warnings alone still generate code and are returned unchanged. The module is
+pure (no filesystem, process or Electron use) and never evaluates graph data.
+
+- Python 3: `def main():` plus `if __name__ == "__main__":`. Godot 4:
+  `extends Node` and `func _ready():`. Four-space indentation, LF, final newline.
+  `pass` appears only in blocks with no statement.
+- All variables are initialized at function entry in array order. GDScript uses
+  typed locals (`int`, `float`, `String`, `bool`); float values are always
+  emitted as float literals (`1.0`), and an int assigned to a float variable is
+  wrapped in `float(...)`.
+- Execution is walked from Start through ports only (never by node position or a
+  global sort), with an explicit work stack rather than recursion. If runs then/else
+  and then `next` once; loops run body and then `next`. Unused nodes are omitted.
+- Expressions are fully parenthesized, rendered at the point of use and never
+  hoisted. `and`/`or`/`not` keep short-circuiting. `/` is `(a / b)` in Python and
+  `(float(a) / b)` in GDScript. Negative number literals are parenthesized.
+- For Range emits `for _gcn_iN in range(start, stop, step):` (N counts loops in
+  generation order), then `variable = _gcn_iN` as the first body line, so assigning
+  the variable in the body cannot change iteration and an empty range leaves it alone.
+- Strings are escaped per language; node IDs are never written to the output.
+  Lone surrogates (both targets) and NUL (GDScript) cannot be represented and give
+  `invalid-string-literal`.
+- Generation limits (diagnostic, `code: null`, never a thrown `RangeError`):
+  expression nesting 64 (`expression-too-deep`), one expression's text 100,000
+  characters (`expression-too-large`, reached by heavy value fan-out), block
+  indentation 50 (`block-too-deep`), and `generation-limit` as a last-resort guard.
+  Statement chains of any length are fine (tested at 6,000).
+- Not proved statically: dynamic zero step, division by zero (Python raises;
+  GDScript float division gives inf), overflow, nontermination. GDScript locals
+  may shadow `Node` members such as `name` (Godot warns); the reserved-name list
+  does not cover those. Generated `print` output differs across languages
+  (`True` vs `true`, `3.0` vs `3`).
+- Still not implemented: reverse conversion, migrations, UI, execution or export.
 
 ## Checks
 
-Run `node --test test/geometry.test.js` and `npm test`. Tests cover schema vs
+Run `node --test test/geometry.test.js test/geometry-codegen.test.js` and `npm test`. Tests cover schema vs
 editable errors, round-trip and transient stripping, typed connections,
-control nesting, cycles, variable references, immutable input and long chains.
+control nesting, cycles, variable references, immutable input and long chains, and generated Python/GDScript. Codegen tests
+also run the output with real Python 3 and Godot 4 (`GODOT_BIN` = a Godot
+console executable, or `godot` on PATH) and skip with a reason if one is missing.
 Build the installer with `npm run dist:win` as required by AGENTS.md.
 
 Keyword references: [Python lexical analysis](https://docs.python.org/3/reference/lexical_analysis.html#keywords)
