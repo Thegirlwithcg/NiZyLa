@@ -7,6 +7,9 @@
   import logoUrl from '../resource/Logo NiZyLa.svg';
   import MarkdownPreview from './components/MarkdownPreview.svelte';
   import PreferencesModal from './components/PreferencesModal.svelte';
+  import GeometryWorkspace from './components/GeometryWorkspace.svelte';
+  import { createGeometryDocument } from './core/geometry.js';
+  import { sameContent } from './core/geometry-editor.js';
   import { loadPreferences, applyPreferences, savePreferences } from './core/preferences.js';
 
   const api = globalThis.nizyla;
@@ -90,6 +93,28 @@
   let searchRegexError = '';
   let allCollapsed = false;
 
+  // Geometry Code (experimental): the scratch graph lives only in memory; nothing is saved or exported yet.
+  const geometryUnsaved = 'กราฟทดลอง — ยังบันทึกไม่ได้ในรุ่นนี้';
+  const geometryDiscard = 'กราฟทดลองที่ยังไม่ได้บันทึกจะหายไป ต้องการปิดและทิ้งกราฟหรือไม่?';
+  const geometryInitial = createGeometryDocument();
+  let appMode = 'code';
+  let geometryOpened = false;
+  let geometryDoc = geometryInitial;
+  let discardGeometry = false;
+  $: geometryMode = appMode === 'geometry';
+  $: geometryChanged = !sameContent(geometryDoc, geometryInitial);
+
+  function setMode(mode) {
+    appMode = mode;
+    if (mode === 'geometry') geometryOpened = true;
+  }
+
+  function requestClose() {
+    if (geometryChanged && !confirm(geometryDiscard)) return;
+    discardGeometry = true;
+    windowControl('close');
+  }
+
   $: totalMatchCount = documentSearchResults.reduce((sum, g) => sum + (g.matches?.length || 0), 0);
   $: totalFileCount = documentSearchResults.length;
 
@@ -165,17 +190,30 @@
     const keydown = (event) => {
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'p') { event.preventDefault(); openPalette(); query = ''; }
-      if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); saveFile(); }
-      if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
-      if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
-      if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
+      if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); if (appMode === 'geometry') status = geometryUnsaved; else saveFile(); }
+      if (appMode === 'code') {
+        if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
+        if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
+        if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
+      }
       if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
       if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; }
     };
+    // Closing or reloading with an edited scratch graph: cancel, then ask (no new IPC; accepting closes via the existing control).
+    const beforeUnload = (event) => {
+      if (!geometryChanged || discardGeometry) return;
+      event.preventDefault();
+      event.returnValue = '';
+      setTimeout(() => {
+        if (confirm(geometryDiscard)) { discardGeometry = true; windowControl('close'); }
+      }, 0);
+    };
     window.addEventListener('keydown', keydown);
+    window.addEventListener('beforeunload', beforeUnload);
     window.addEventListener('pointerdown', closeContextMenuOnOutsideClick);
     return () => {
       window.removeEventListener('keydown', keydown);
+      window.removeEventListener('beforeunload', beforeUnload);
       window.removeEventListener('pointerdown', closeContextMenuOnOutsideClick);
       sidebarEl?.removeEventListener('wheel', handleExplorerWheel);
       unlistenDock?.();
@@ -546,6 +584,7 @@
 
   async function selectFile(entry, targetPaneId = activePaneId) {
     if (entry.type !== 'file' && entry.type !== 'symbol') return;
+    appMode = 'code';
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
     if (owningProject >= 0) activeProjectIndex = owningProject;
 
@@ -1447,7 +1486,7 @@
     <footer class="statusbar">Integrated Terminal · Detached Multi-Monitor Window</footer>
   </div>
 {:else}
-  <div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible || graphDetached} class:terminal-open={terminalVisible && !terminalFloating && !terminalDetached} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
+  <div class="app-shell theme-{theme}" class:geometry-mode={geometryMode} class:graph-hidden={!graphVisible || graphDetached} class:terminal-open={terminalVisible && !terminalFloating && !terminalDetached} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
     <header class="topbar app-titlebar">
       <div class="brand">
         <img class="logo" src={logoUrl} alt="NiZyLa logo" />
@@ -1455,6 +1494,10 @@
           <strong>NiZyLa</strong>
           <span>{projects.length} workspace{projects.length === 1 ? '' : 's'} · {plugins.length} plugin{plugins.length === 1 ? '' : 's'} · local code completion</span>
         </div>
+      </div>
+      <div class="mode-switch" role="group" aria-label="Editor mode">
+        <button class:active={appMode === 'code'} aria-pressed={appMode === 'code'} on:click={() => setMode('code')}>Code</button>
+        <button class:active={appMode === 'geometry'} aria-pressed={appMode === 'geometry'} on:click={() => setMode('geometry')}>Geometry Code</button>
       </div>
       <div
         class="actions"
@@ -1477,21 +1520,21 @@
           <option value="custom">Custom Theme</option>
         </select>
         <button on:click={() => (showPreferences = true)} title="Preferences: Theme, Fonts, Syntax (Ctrl+,)">⚙ Preferences</button>
-        <button on:click={() => addPane(false)} title="Add a new editor window">+ Editor</button>
-        <button on:click={() => addPane(true)} title="Add a floating editor window">+ Float Editor</button>
-        <button on:click={toggleSplit} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
-        <button on:click={toggleTerminal} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
+        <button on:click={() => addPane(false)} disabled={geometryMode} title="Add a new editor window">+ Editor</button>
+        <button on:click={() => addPane(true)} disabled={geometryMode} title="Add a floating editor window">+ Float Editor</button>
+        <button on:click={toggleSplit} disabled={geometryMode} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
+        <button on:click={toggleTerminal} disabled={geometryMode} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
         {/if}
-        <button on:click={toggleGraph}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
-        <button class="primary" on:click={saveFile} disabled={!activeTab || !activeTab.dirty}>Save</button>
+        <button on:click={toggleGraph} disabled={geometryMode}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
+        <button class="primary" on:click={saveFile} disabled={geometryMode || !activeTab || !activeTab.dirty}>Save</button>
       </div>
       <div class="window-control-box">
         <button title="Minimize" on:click={() => windowControl('minimize')}>—</button>
         <button title="Maximize" on:click={() => windowControl('maximize')}>□</button>
-        <button class="close" title="Close" on:click={() => windowControl('close')}>×</button>
+        <button class="close" title="Close" on:click={requestClose}>×</button>
       </div>
     </header>
 
@@ -1500,8 +1543,8 @@
         <button class:active={sidebarView === 'files'} title="Files" on:click={() => (sidebarView = 'files')}>▣</button>
         <button class:active={sidebarView === 'search'} title="Search documents" on:click={() => (sidebarView = 'search')}>⌕</button>
         <button title="Open folder" on:click={openProject}><span class="nav-folder-icon" aria-hidden="true"></span></button>
-        <button title="Graph" on:click={toggleGraph}>◎</button>
-        <button title="Terminal" on:click={toggleTerminal}>›_</button>
+        <button title="Graph" on:click={toggleGraph} disabled={geometryMode}>◎</button>
+        <button title="Terminal" on:click={toggleTerminal} disabled={geometryMode}>›_</button>
         <button title="Preferences" on:click={() => (showPreferences = true)}>⚙</button>
       </nav>
       <aside class="sidebar panel" bind:this={sidebarEl}>
@@ -1730,6 +1773,9 @@
             <button class="float-resize" aria-label="Resize graph" on:pointerdown={(event) => startFloatingResize(event, 'graph')}>Resize</button>
           {/if}
         </aside>
+      {/if}
+      {#if geometryOpened}
+        <GeometryWorkspace document={geometryDoc} documentKey="scratch" active={geometryMode} {theme} {preferences} {showLineNumbers} onchange={(next) => (geometryDoc = next)} />
       {/if}
     </main>
 

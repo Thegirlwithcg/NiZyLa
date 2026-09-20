@@ -1,0 +1,276 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
+import { generateGeometryCode } from '../src/core/geometry-codegen.js';
+import {
+  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, checkConnection, createEditorState, deleteVariable,
+  endEdit, moveNodes, positionsFromFlow, redo, removeItems, sameContent, setLiteralType, setNodeData, setTarget,
+  setViewport, undo, updateVariable, variableUsage
+} from '../src/core/geometry-editor.js';
+
+const freeze = (value) => {
+  if (value && typeof value === 'object') Object.values(value).forEach(freeze);
+  return Object.freeze(value);
+};
+const add = (doc, preset, x = 0, y = 0) => addNode(doc, preset, { x, y });
+const wire = (doc, source, sourceHandle, target, targetHandle) => {
+  const result = addEdge(doc, { source, sourceHandle, target, targetHandle });
+  assert.ok(result.doc, result.error);
+  return result.doc;
+};
+const codes = (doc) => validateGeometryDocument(doc).map((d) => d.code);
+
+test('adding and deleting nodes leaves no dangling edges; Start is protected', () => {
+  let doc = createGeometryDocument();
+  const a = add(doc, 'int'); doc = a.doc;
+  const p = add(doc, 'print'); doc = p.doc;
+  doc = wire(doc, a.nodeId, 'value', p.nodeId, 'value');
+  doc = wire(doc, 'start', 'next', p.nodeId, 'in');
+  assert.equal(doc.edges.length, 2);
+  assert.equal(removeItems(doc, { nodeIds: ['start'] }), null);
+  const after = removeItems(doc, { nodeIds: [a.nodeId] });
+  assert.deepEqual(after.edges.map((e) => e.source), ['start']);
+  assert.equal(removeItems(after, { nodeIds: ['start'] }), null);
+  assert.equal(removeItems(after, { edgeIds: [after.edges[0].id] }).edges.length, 0);
+  assert.equal(add(doc, 'start'), null);
+});
+
+test('And -> Not removes the b wire, one Undo restores operator and wire', () => {
+  let doc = createGeometryDocument();
+  const t = add(doc, 'bool'); doc = t.doc;
+  const gate = add(doc, 'and'); doc = gate.doc;
+  doc = wire(doc, t.nodeId, 'value', gate.nodeId, 'a');
+  doc = wire(doc, t.nodeId, 'value', gate.nodeId, 'b');
+  let state = createEditorState(doc);
+  const changed = setNodeData(doc, gate.nodeId, { operator: 'not' });
+  assert.equal(changed.removedEdges.length, 1);
+  assert.equal(changed.removedEdges[0].targetHandle, 'b');
+  state = applyEdit(state, changed.doc);
+  assert.equal(state.present.edges.length, 1);
+  state = undo(state);
+  assert.equal(state.present.edges.length, 2);
+  assert.equal(state.present.nodes.find((n) => n.id === gate.nodeId).data.operator, 'and');
+});
+
+test('one drag is one Undo entry, however many live moves', () => {
+  let doc = createGeometryDocument();
+  const n = add(doc, 'print', 10, 10); doc = n.doc;
+  let state = createEditorState(doc);
+  for (let x = 11; x <= 60; x++) state = applyEdit(state, moveNodes(state.present, { [n.nodeId]: { x, y: 10 } }), true);
+  assert.equal(state.past.length, 0);
+  state = endEdit(state);
+  assert.equal(state.past.length, 1);
+  state = undo(state);
+  assert.deepEqual(state.present.nodes.find((x) => x.id === n.nodeId).position, { x: 10, y: 10 });
+  state = redo(state);
+  assert.equal(state.present.nodes.find((x) => x.id === n.nodeId).position.x, 60);
+});
+
+test('no-op edits create no history entry, including a drag that ends where it began', () => {
+  const doc = createGeometryDocument();
+  let state = createEditorState(doc);
+  assert.equal(applyEdit(state, { ...doc }), state);
+  assert.equal(moveNodes(doc, { start: { x: 0, y: 0 } }), null);
+  assert.equal(setTarget(doc, 'python'), null);
+  const moved = applyEdit(state, moveNodes(doc, { start: { x: 5, y: 5 } }), true);
+  state = endEdit(applyEdit(moved, moveNodes(moved.present, { start: { x: 0, y: 0 } }), true));
+  assert.equal(state.past.length, 0);
+  assert.equal(removeItems(doc, { edgeIds: ['nope'] }), null);
+});
+
+test('a new edit after Undo clears Redo; history is capped at 100', () => {
+  let state = createEditorState(createGeometryDocument());
+  state = applyEdit(state, add(state.present, 'int').doc);
+  state = undo(state);
+  assert.equal(state.future.length, 1);
+  state = applyEdit(state, add(state.present, 'float').doc);
+  assert.equal(state.future.length, 0);
+  assert.equal(redo(state), state);
+  for (let i = 0; i < HISTORY_LIMIT + 20; i++) state = applyEdit(state, add(state.present, 'int', i).doc);
+  assert.equal(state.past.length, HISTORY_LIMIT);
+});
+
+test('viewport changes never enter history and Undo/Redo keep the current viewport', () => {
+  let state = createEditorState(createGeometryDocument());
+  state = applyEdit(state, add(state.present, 'int').doc);
+  state = setViewport(state, { x: 40, y: -20, zoom: 2 });
+  assert.equal(state.past.length, 1);
+  assert.equal(setViewport(state, { x: 40, y: -20, zoom: 2 }), state);
+  const nodesRef = state.present.nodes;
+  assert.equal(setViewport(state, { x: 1, y: 1, zoom: 1 }).present.nodes, nodesRef);
+  state = undo(state);
+  assert.deepEqual(state.present.viewport, { x: 40, y: -20, zoom: 2 });
+  state = redo(state);
+  assert.deepEqual(state.present.viewport, { x: 40, y: -20, zoom: 2 });
+  assert.ok(sameContent(state.present, { ...state.present, viewport: { x: 0, y: 0, zoom: 1 } }));
+});
+
+test('grouped live edits (typing) are one transaction and Undo returns to the start', () => {
+  let doc = createGeometryDocument();
+  const n = add(doc, 'int'); doc = n.doc;
+  let state = createEditorState(doc);
+  for (const value of [1, 12, 123]) state = applyEdit(state, setNodeData(state.present, n.nodeId, { value }).doc, true);
+  state = endEdit(state);
+  assert.equal(state.past.length, 1);
+  state = undo(state);
+  assert.equal(state.present.nodes.at(-1).data.value, 0);
+  assert.ok(sameContent(state.present, doc), 'back at the initial content means not changed');
+});
+
+test('renaming a variable keeps its ID and references', () => {
+  let doc = createGeometryDocument();
+  const v = addVariable(doc); doc = v.doc;
+  assert.equal(doc.variables[0].name, 'value1');
+  assert.equal(addVariable(doc).doc.variables[1].name, 'value2');
+  const get = add(doc, 'get'); doc = get.doc;
+  assert.equal(doc.nodes.at(-1).data.variableId, v.variableId);
+  doc = updateVariable(doc, v.variableId, { name: 'total' });
+  assert.equal(doc.variables[0].id, v.variableId);
+  assert.equal(variableUsage(doc, v.variableId), 1);
+  assert.deepEqual(codes(doc).filter((c) => c === 'missing-variable'), []);
+});
+
+test('changing a variable type resets its initial value; deleting keeps references and Undo restores all', () => {
+  let doc = createGeometryDocument();
+  const v = addVariable(doc); doc = v.doc;
+  doc = updateVariable(doc, v.variableId, { initialValue: 7 });
+  doc = updateVariable(doc, v.variableId, { type: 'string' });
+  assert.deepEqual([doc.variables[0].type, doc.variables[0].initialValue], ['string', '']);
+  assert.equal(updateVariable(doc, 'missing', { name: 'x' }), null);
+  doc = add(doc, 'set').doc;
+  let state = applyEdit(createEditorState(doc), deleteVariable(doc, v.variableId));
+  assert.equal(state.present.nodes.at(-1).data.variableId, v.variableId, 'reference kept');
+  assert.ok(codes(state.present).includes('missing-variable'));
+  state = undo(state);
+  assert.equal(state.present.variables.length, 1);
+  assert.ok(!codes(state.present).includes('missing-variable'));
+});
+
+test('For Range preset picks an int variable; literal type change picks a valid value', () => {
+  let doc = addVariable(createGeometryDocument()).doc;
+  doc = updateVariable(doc, doc.variables[0].id, { type: 'string' });
+  assert.equal(add(doc, 'for').doc.nodes.at(-1).data.variableId, '');
+  const lit = add(doc, 'float'); doc = lit.doc;
+  doc = setNodeData(doc, lit.nodeId, { value: 2.5 }).doc;
+  assert.equal(setLiteralType(doc, lit.nodeId, 'int').doc.nodes.at(-1).data.value, 0);
+  assert.equal(setLiteralType(doc, lit.nodeId, 'string').doc.nodes.at(-1).data.value, '');
+  const int = add(doc, 'int'); doc = setNodeData(int.doc, int.nodeId, { value: 4 }).doc;
+  assert.equal(setLiteralType(doc, int.nodeId, 'float').doc.nodes.at(-1).data.value, 4);
+});
+
+test('a candidate connection is allowed while the graph is still incomplete', () => {
+  let doc = createGeometryDocument();
+  const p = add(doc, 'print'); doc = p.doc;
+  assert.ok(codes(doc).includes('unused-node'));
+  // Start -> Print makes Print reachable with a missing value input: that must not block the wire.
+  const result = addEdge(doc, { source: 'start', sourceHandle: 'next', target: p.nodeId, targetHandle: 'in' });
+  assert.ok(result.doc);
+  assert.ok(codes(result.doc).includes('missing-input'));
+  // An unfinished Add feeding Print (unknown output type) is also fine.
+  const sum = add(result.doc, 'add');
+  assert.ok(addEdge(sum.doc, { source: sum.nodeId, sourceHandle: 'value', target: p.nodeId, targetHandle: 'value' }).doc);
+});
+
+test('wrong connections are rejected with a message and never replace an existing wire', () => {
+  let doc = createGeometryDocument();
+  const a = add(doc, 'int'); doc = a.doc;
+  const b = add(doc, 'int'); doc = b.doc;
+  const p = add(doc, 'print'); doc = p.doc;
+  const iff = add(doc, 'if'); doc = iff.doc;
+  const text = add(doc, 'string'); doc = text.doc;
+  doc = wire(doc, a.nodeId, 'value', p.nodeId, 'value');
+  doc = wire(doc, 'start', 'next', p.nodeId, 'in');
+  const reject = (c, pattern) => {
+    const r = checkConnection(doc, c);
+    assert.equal(r.ok, false);
+    assert.match(r.message, pattern);
+    assert.equal(addEdge(doc, c).error, r.message);
+  };
+  reject({ source: b.nodeId, sourceHandle: 'value', target: p.nodeId, targetHandle: 'value' }, /already has a wire/);
+  reject({ source: 'start', sourceHandle: 'next', target: iff.nodeId, targetHandle: 'in' }, /Execution output already/);
+  reject({ source: a.nodeId, sourceHandle: 'value', target: iff.nodeId, targetHandle: 'in' }, /cannot connect/);
+  reject({ source: p.nodeId, sourceHandle: 'in', target: iff.nodeId, targetHandle: 'in' }, /output to an input/);
+  reject({ source: a.nodeId, sourceHandle: 'value', target: iff.nodeId, targetHandle: 'condition' }, /expects bool/);
+  reject({ source: a.nodeId, sourceHandle: 'nope', target: iff.nodeId, targetHandle: 'condition' }, /Unknown port/);
+  assert.equal(doc.edges.length, 2, 'existing wires untouched');
+  const sum = add(doc, 'add'); doc = sum.doc;
+  const wrong = checkConnection(doc, { source: text.nodeId, sourceHandle: 'value', target: sum.nodeId, targetHandle: 'a' });
+  assert.equal(wrong.ok, false);
+});
+
+test('execution and value cycles are rejected', () => {
+  let doc = createGeometryDocument();
+  const p1 = add(doc, 'print'); doc = p1.doc;
+  const p2 = add(doc, 'print'); doc = p2.doc;
+  doc = wire(doc, 'start', 'next', p1.nodeId, 'in');
+  doc = wire(doc, p1.nodeId, 'next', p2.nodeId, 'in');
+  assert.match(checkConnection(doc, { source: p2.nodeId, sourceHandle: 'next', target: p1.nodeId, targetHandle: 'in' }).message, /already has a wire/);
+  const loop = add(doc, 'if'); doc = loop.doc;
+  doc = wire(doc, p2.nodeId, 'next', loop.nodeId, 'in');
+  assert.equal(checkConnection(doc, { source: loop.nodeId, sourceHandle: 'then', target: 'start', targetHandle: 'in' }).ok, false);
+
+  const x = add(doc, 'add'); doc = x.doc;
+  const y = add(doc, 'add'); doc = y.doc;
+  doc = wire(doc, x.nodeId, 'value', y.nodeId, 'a');
+  const cycle = checkConnection(doc, { source: y.nodeId, sourceHandle: 'value', target: x.nodeId, targetHandle: 'a' });
+  assert.equal(cycle.ok, false);
+  assert.match(cycle.message, /cycle/);
+  assert.equal(checkConnection(doc, { source: x.nodeId, sourceHandle: 'value', target: x.nodeId, targetHandle: 'b' }).ok, false);
+});
+
+test('pre-existing errors do not block an unrelated valid connection', () => {
+  let doc = createGeometryDocument();
+  doc = addVariable(doc).doc;
+  const bad = add(doc, 'get'); doc = bad.doc;
+  doc = deleteVariable(doc, doc.variables[0].id);
+  assert.ok(codes(doc).includes('missing-variable'));
+  const p = add(doc, 'print'); doc = p.doc;
+  assert.ok(checkConnection(doc, { source: 'start', sourceHandle: 'next', target: p.nodeId, targetHandle: 'in' }).ok);
+});
+
+test('changing a variable type keeps a now-mismatching wire and reports it', () => {
+  let doc = createGeometryDocument();
+  const v = addVariable(doc); doc = v.doc;
+  doc = updateVariable(doc, v.variableId, { type: 'bool' });
+  const get = add(doc, 'get'); doc = get.doc;
+  const gate = add(doc, 'not'); doc = gate.doc;
+  doc = wire(doc, get.nodeId, 'value', gate.nodeId, 'a');
+  assert.ok(!codes(doc).includes('type-mismatch'));
+  doc = updateVariable(doc, v.variableId, { type: 'string' });
+  assert.equal(doc.edges.length, 1);
+  assert.ok(codes(doc).includes('type-mismatch'));
+});
+
+test('flow positions map back without transient fields; input documents are never mutated', () => {
+  const doc = freeze(createGeometryDocument());
+  const n = add(doc, 'int');
+  const flow = [{ id: 'start', type: 'geometry', position: { x: 3, y: 4 }, selected: true, dragging: true, measured: { width: 9, height: 9 }, data: { fn() {} } }];
+  const moved = moveNodes(n.doc, positionsFromFlow(flow));
+  assert.deepEqual(moved.nodes[0], { id: 'start', type: 'start', position: { x: 3, y: 4 }, data: {} });
+  const text = serializeGeometryDocument(moved);
+  assert.deepEqual(JSON.parse(text).nodes[0], moved.nodes[0]);
+  for (const op of [
+    () => removeItems(n.doc, { nodeIds: [n.nodeId] }),
+    () => setNodeData(n.doc, n.nodeId, { value: 5 }),
+    () => setLiteralType(n.doc, n.nodeId, 'bool'),
+    () => addVariable(doc), () => setTarget(doc, 'gdscript'),
+    () => updateVariable(addVariable(doc).doc, 'x', {}), () => moveNodes(doc, { start: { x: 1, y: 1 } })
+  ]) op();
+  assert.deepEqual(doc, createGeometryDocument());
+});
+
+test('graph built through the editor ops generates the expected code (5 / 2 -> Print)', () => {
+  let doc = createGeometryDocument();
+  const five = add(doc, 'int'); doc = setNodeData(five.doc, five.nodeId, { value: 5 }).doc;
+  const two = add(doc, 'int'); doc = setNodeData(two.doc, two.nodeId, { value: 2 }).doc;
+  const div = add(doc, 'divide'); doc = div.doc;
+  const p = add(doc, 'print'); doc = p.doc;
+  doc = wire(doc, five.nodeId, 'value', div.nodeId, 'a');
+  doc = wire(doc, two.nodeId, 'value', div.nodeId, 'b');
+  doc = wire(doc, div.nodeId, 'value', p.nodeId, 'value');
+  doc = wire(doc, 'start', 'next', p.nodeId, 'in');
+  assert.match(generateGeometryCode(doc, 'python').code, /print\(\(5 \/ 2\)\)/);
+  assert.match(generateGeometryCode(doc, 'gdscript').code, /print\(\(float\(5\) \/ 2\)\)/);
+  const removed = removeItems(doc, { edgeIds: [doc.edges.find((e) => e.targetHandle === 'b').id] });
+  assert.equal(generateGeometryCode(removed, 'python').code, null);
+});

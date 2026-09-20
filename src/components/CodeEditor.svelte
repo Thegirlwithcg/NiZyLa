@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { EditorState } from '@codemirror/state';
-  import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, Decoration, ViewPlugin, MatchDecorator } from '@codemirror/view';
+  import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter, Decoration, ViewPlugin, MatchDecorator } from '@codemirror/view';
   import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
   import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
   import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
@@ -19,6 +19,7 @@
   export let preferences = null;
   export let searchHighlight = '';
   export let searchLine = null;
+  export let readOnly = false;
 
   const dispatch = createEventDispatcher();
   let host;
@@ -229,6 +230,8 @@
       doc,
       extensions: [
         ...(showLineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : []),
+        drawSelection(),
+        ...(readOnly ? [EditorState.readOnly.of(true)] : []),
         history(),
         indentOnInput(),
         bracketMatching(),
@@ -247,7 +250,7 @@
           '.cm-activeLineGutter': { backgroundColor: 'var(--active-line)' },
           '.cm-selectionBackground': { backgroundColor: 'var(--selection) !important' },
           '.cm-search-hit': { backgroundColor: 'color-mix(in srgb, var(--accent) 45%, transparent)', outline: '1px solid var(--accent)', borderRadius: '2px' },
-          '.cm-cursor': { borderLeftColor: 'var(--accent)' },
+          '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
           '.cm-tooltip': {
             backgroundColor: 'color-mix(in srgb, var(--panel-solid, #141628) 82%, transparent) !important',
             backdropFilter: 'blur(14px)',
@@ -287,7 +290,7 @@
           }
         }),
         EditorView.updateListener.of((update) => {
-          if (!update.docChanged) return;
+          if (!update.docChanged || readOnly) return;
           dispatch('change', update.state.doc.toString());
           maybeInsertTableDivider(update);
         })

@@ -1,8 +1,8 @@
 # Geometry Code contract — .gcn v1
 
 Stage 1 (data and validation) lives in `src/core/geometry.js`; stage 2 (code
-generation) in `src/core/geometry-codegen.js`. No UI, file IPC, Run button or
-export is implemented yet. Subsequent stages
+generation) in `src/core/geometry-codegen.js`; stage 3 (editor UI, experimental) is
+described at the end. No file IPC, Run button or export exists yet. Subsequent stages
 must use this contract rather than introduce a second graph representation.
 
 ## File format
@@ -189,3 +189,57 @@ Build the installer with `npm run dist:win` as required by AGENTS.md.
 
 Keyword references: [Python lexical analysis](https://docs.python.org/3/reference/lexical_analysis.html#keywords)
 and [GDScript reference](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_basics.html#keywords).
+
+## Stage 3: node editor UI (experimental, in memory only)
+
+Open it with the **Geometry Code** switch in the top bar (next to **Code**). The
+graph starts as one Start node, needs no open project, and is **not saved**
+(banner: "กราฟทดลอง — ยังบันทึกไม่ได้ในรุ่นนี้"). No Save/Export/Run/.gcn open yet.
+Closing or reloading after an edit asks to discard the graph (Cancel stays);
+undoing back to the initial content is not "changed". Picking a file in the
+Explorer returns to Code mode and keeps the graph. While in Geometry, Code-pane
+buttons/shortcuts (Save, Split, Graph, Terminal, +Editor) are disabled and
+floating windows are hidden; Ctrl+S only reports "cannot save yet".
+
+Files: `src/core/geometry-editor.js` (pure document ops + history, tested in
+`test/geometry-editor.test.js`), `src/components/GeometryWorkspace.svelte`
+(public, wraps `SvelteFlowProvider`) -> `GeometryWorkspaceInner.svelte`,
+`GeometryNode.svelte` (one component for all node types), `GeometryAddMenu.svelte`,
+`GeometryField.svelte` (numeric draft input). Dependency: `@xyflow/svelte` 1.6.6.
+
+Component API: `<GeometryWorkspace document documentKey active theme preferences
+showLineNumbers onchange />`. `document` is a plain .gcn object, never mutated and
+read only when `documentKey` changes (new key = load, reset history/selection;
+same key = the echo of our own `onchange` is ignored). `onchange(next)` receives a
+fresh plain .gcn document (no selection/measured/DOM fields) after every edit and
+after pan/zoom (viewport). `active=false` hides it and disables shortcuts. App
+keeps the document (key `"scratch"`) and computes "changed" with `sameContent`.
+
+Shortcuts (only when focus is not in an input/textarea/select/CodeMirror):
+Shift+A add-node menu (canvas focus; at the pointer, else canvas center; Add Node
+button uses the center), Delete/Backspace delete selection (canvas focus),
+Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo. Menu: search, Up/Down, Enter, Esc.
+
+Undo/Redo: snapshots of plain .gcn content, 100 transactions. One transaction =
+add/delete, wire add/delete, one drag (group), one field focus-to-blur edit,
+one variable edit, target change, an operator change with its removed wires.
+No-ops, selection, menus, pan/zoom/Fit View make no entry; Undo/Redo keep the
+current viewport. Wires are added only after `checkConnection` (same-kind
+output->input, cardinality, no exec/value cycle, no known type mismatch); missing
+inputs never block a wire. Wires to ports that disappear (And -> Not) are removed
+in the same transaction; type mismatches from retyping are kept and reported.
+
+Code preview uses `generateGeometryCode`; with errors or an invalid input draft
+the preview is cleared and Copy Code is disabled. `CodeEditor` got `readOnly`.
+
+### Test status
+Automated: `npm test` = 72 tests, 71 pass, 1 skipped (Godot runtime not installed).
+Checked by hand in real Electron (dev build and installed exe) through the debug
+port, screenshots in `docs/geometry-stage3-shots/`: Shift+A/menu/placement after
+pan+zoom, typing guards, drafts, 5/2 -> Print and For 0..4 in both languages,
+wire/node delete + Undo/Redo, drag undo, rejected wires, variables (rename, retype,
+delete+confirm+Undo, Missing variable), And -> Not + Undo, mode switching, Ctrl+S,
+read-only preview, close/reload Cancel, 4 themes at 1000x680 (emulated size),
+installed exe (build, wire, both previews, close Cancel and discard).
+Not verified: real GDScript run (no Godot), light theme by eye beyond cream,
+multi-selection drag, the Copy Code clipboard result, a real window resize.
