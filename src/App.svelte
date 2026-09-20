@@ -570,6 +570,23 @@
     }
   }
 
+  async function closeTerminalWorkspaceFromLastTab() {
+    if (detachedMode === 'terminal') {
+      api?.updateDetachedState?.('terminal', { closedByLastTab: true });
+      window.close();
+      return;
+    }
+
+    if (terminalDetached && api?.closeDetachedWindow) {
+      await api.closeDetachedWindow('terminal');
+    }
+
+    terminalDetached = false;
+    terminalVisible = false;
+    terminalFloating = false;
+    status = 'Terminal closed';
+  }
+
   async function toggleTerminal() {
     if (terminalDetached) {
       if (api?.closeDetachedWindow) {
@@ -617,9 +634,15 @@
       status = 'Project Graph restored to main window';
     } else if (windowId === 'terminal') {
       terminalDetached = false;
-      terminalVisible = true;
-      terminalFloating = false;
-      status = 'Terminal restored to main window';
+      if (state?.closedByLastTab) {
+        terminalVisible = false;
+        terminalFloating = false;
+        status = 'Terminal closed';
+      } else {
+        terminalVisible = true;
+        terminalFloating = false;
+        status = 'Terminal restored to main window';
+      }
     }
   }
 
@@ -1099,7 +1122,7 @@
       </div>
     </header>
     <main class="detached-content terminal-detached">
-      <TerminalPanel api={api} cwd={detachedCwdParam || detachedState?.cwd || project?.rootPath || ''} />
+      <TerminalPanel api={api} cwd={detachedCwdParam || detachedState?.cwd || project?.rootPath || ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
     </main>
     <footer class="statusbar">Integrated Terminal · Detached Multi-Monitor Window</footer>
   </div>
@@ -1379,7 +1402,7 @@
           </div>
         {/if}
         <div class="terminal-shell-wrap">
-          <TerminalPanel api={api} cwd={project?.rootPath ?? ''} />
+          <TerminalPanel api={api} cwd={project?.rootPath ?? ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
         </div>
         {#if terminalFloating && !terminalFloat.maximized}
           <button class="float-resize" aria-label="Resize terminal" on:pointerdown={(e) => startFloatingResize(e, 'terminal')}>Resize</button>
@@ -1394,7 +1417,6 @@
         <div class="context-title">{contextMenu.entry.name}</div>
         {#if contextMenu.entry.type === 'folder'}
           <button on:click={() => openCreateFromContext('file')}>New File</button>
-          <button on:click={() => openCreateFromContext('note')}>New Note</button>
           <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
         {/if}
         {#if contextMenu.entry.path !== project?.rootPath}

@@ -874,9 +874,47 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  background: #1c1b19;
-  color: #e9e2d4;
+  background: #000;
+  color: #c0c0c0;
 }
+.system-terminal-shell { display: grid; grid-template-rows: 33px 1fr; }
+.terminal-tabbar {
+  display: flex;
+  align-items: end;
+  gap: 3px;
+  min-width: 0;
+  padding: 5px 8px 0;
+  background: #2b2b2b;
+  border-bottom: 1px solid #3c3c3c;
+}
+.terminal-tab, .terminal-new-tab {
+  min-height: 27px;
+  border: 0;
+  border-radius: 5px 5px 0 0;
+  background: #202020;
+  color: #d6d6d6;
+  font: 12px var(--mono-font);
+}
+.terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 190px;
+}
+.terminal-tab button { border: 0; background: transparent; color: inherit; font: inherit; }
+.terminal-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 4px 5px 8px; }
+.terminal-tab.active { background: #050505; color: #f0f0f0; }
+.terminal-tab-close { padding: 5px 8px 5px 4px; color: #a0a0a0; font-weight: 700; }
+.terminal-tab-close:hover { color: #fff; }
+.terminal-new-tab { width: 28px; color: #aaa; font-size: 16px; }
+.terminal-deck { min-height: 0; overflow: hidden; background: #000; padding: 8px 10px 18px; box-sizing: border-box; }
+.terminal-pane { display: none; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
+.terminal-pane.active { display: block; }
+.terminal-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: 10px; color: #9a9a9a; font-size: 13px; }
+.terminal-empty button { border: 1px solid #2f2f2f; background: #111; color: #ddd; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.terminal-empty button:hover { border-color: var(--accent); color: #fff; }
+.terminal-pane .xterm { height: 100%; padding: 0; }
+.terminal-pane .xterm-viewport { overflow-y: auto; }
 .terminal-shell { display: grid; grid-template-rows: 31px 1fr 32px; }
 .terminal-header {
   display: flex;

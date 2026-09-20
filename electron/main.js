@@ -102,13 +102,14 @@ async function loadNodePty() {
   return ptyModule;
 }
 
-function getShellConfig() {
+async function getShellConfig() {
   if (process.platform === 'win32') {
     const shell = process.env.COMSPEC || 'cmd.exe';
-    return { shell, args: [] };
+    return { shell, args: ['/d', '/k', 'chcp 65001 > nul'], shellName: path.basename(shell) };
   }
 
-  return { shell: process.env.SHELL || '/bin/bash', args: ['--login'] };
+  const shell = process.env.SHELL || '/bin/bash';
+  return { shell, args: ['--login'], shellName: path.basename(shell) };
 }
 
 function createWindow() {
@@ -300,14 +301,21 @@ ipcMain.handle('terminal:create', async (event, cwd) => {
   if (!pty) throw new Error('Integrated terminal is unavailable because node-pty could not be installed.');
 
   const id = randomUUID();
-  const { shell, args } = getShellConfig();
+  const { shell, args, shellName } = await getShellConfig();
   const targetCwd = (cwd && typeof cwd === 'string' && cwd.trim()) ? cwd.trim() : (app.getPath('home') || process.cwd());
   const terminal = pty.spawn(shell, args, {
     name: 'xterm-256color',
     cols: 100,
     rows: 24,
     cwd: targetCwd,
-    env: { ...process.env, TERM: 'xterm-256color' }
+    env: {
+      ...process.env,
+      TERM: 'xterm-256color',
+      TERM_PROGRAM: process.env.TERM_PROGRAM,
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+      PYTHONIOENCODING: process.env.PYTHONIOENCODING || 'utf-8'
+    }
   });
   terminals.set(id, terminal);
   terminal.onData((data) => {
@@ -321,7 +329,7 @@ ipcMain.handle('terminal:create', async (event, cwd) => {
       event.sender.send('terminal:exit', id);
     }
   });
-  return id;
+  return { id, title: shellName || 'terminal' };
 });
 ipcMain.on('terminal:input', (_event, id, data) => terminals.get(id)?.write(data));
 ipcMain.on('terminal:resize', (_event, id, cols, rows) => terminals.get(id)?.resize(cols, rows));
