@@ -131,6 +131,21 @@ function createWindow() {
     }
   });
 
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'NiZyLa',
+      message: 'มีกราฟทดลองที่ยังไม่ได้บันทึก',
+      detail: 'หากปิดหน้าต่างหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
+    });
+    if (choice === 1) {
+      event.preventDefault();
+    }
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     mainWindow.focus();
