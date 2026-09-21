@@ -23,6 +23,32 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
   let currentY = 150;
   const Y_STEP = 120;
   const X_STEP = 280;
+  const symbolDefinitions = new Map();
+
+  function inferVariableInitializer(expr) {
+    if (!expr) return { type: 'int', initialValue: 0 };
+    if (expr.type === 'Constant') {
+      if (expr.value_type === 'string') return { type: 'string', initialValue: String(expr.value ?? '') };
+      if (expr.value_type === 'bool') return { type: 'bool', initialValue: Boolean(expr.value) };
+      if (expr.value_type === 'float') return { type: 'float', initialValue: Number(expr.value) || 0 };
+      if (expr.value_type === 'int') return { type: 'int', initialValue: Number.isSafeInteger(expr.value) ? expr.value : 0 };
+    }
+    if (expr.type === 'Call' && expr.func?.id === 'input') return { type: 'string', initialValue: '' };
+    return { type: 'int', initialValue: 0 };
+  }
+
+  function ensureVariable(graph, name, valueExpr = null) {
+    let v = graph.variables.find((item) => item.name === name);
+    if (!v) {
+      v = { id: `v_${uuid().slice(0, 8)}`, name, ...inferVariableInitializer(valueExpr) };
+      graph.variables.push(v);
+    }
+    return v;
+  }
+
+  function resolveCallableId(name) {
+    return symbolDefinitions.get(name) || '';
+  }
 
   function buildExpression(expr, graph, posX, posY) {
     if (!expr) return null;
@@ -220,7 +246,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
         id: `call_${uuid().slice(0, 8)}`,
         type: 'functionCall',
         position: { x: posX, y: posY },
-        data: { name: funcName, argumentNames: argNames, isMethod }
+        data: { targetId: isMethod ? '' : resolveCallableId(funcName), name: funcName, argumentNames: argNames, isMethod }
       };
       graph.nodes.push(callNode);
 
@@ -269,9 +295,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     return { node: codeNode, outputHandle: 'value' };
   }
 
-  function convertStatements(stmts, targetGraph, startX = 200, startY = 150) {
-    let prevId = 'start';
-    let prevHandle = 'next';
+  function convertStatements(stmts, targetGraph, startX = 200, startY = 150, entry = null) {
+    let prevId = entry?.prevId ?? 'start';
+    let prevHandle = entry?.prevHandle ?? 'next';
     let curX = startX;
     let curY = startY;
 
@@ -333,6 +359,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           }
         };
         targetGraph.nodes.push(fnNode);
+        symbolDefinitions.set(stmt.name, fnNode.id);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -362,6 +389,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           }
         };
         targetGraph.nodes.push(clsNode);
+        symbolDefinitions.set(stmt.name, clsNode.id);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -376,11 +404,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       }
 
       if (k === 'AssignVar') {
-        let v = targetGraph.variables.find((v) => v.name === stmt.name);
-        if (!v) {
-          v = { id: `v_${uuid().slice(0, 8)}`, name: stmt.name, type: 'int', initialValue: 0 };
-          targetGraph.variables.push(v);
-        }
+        let v = ensureVariable(targetGraph, stmt.name, stmt.value);
         const setNode = {
           id: `set_${uuid().slice(0, 8)}`,
           type: 'setVariable',
@@ -498,7 +522,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           id: `call_${uuid().slice(0, 8)}`,
           type: 'functionCall',
           position: { x: curX, y: curY },
-          data: { name: funcName, argumentNames: argNames, isMethod }
+          data: { targetId: isMethod ? '' : resolveCallableId(funcName), name: funcName, argumentNames: argNames, isMethod }
         };
         targetGraph.nodes.push(callNode);
         targetGraph.edges.push({
@@ -570,37 +594,12 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
 
         // Then block
         if (stmt.body && stmt.body.length > 0) {
-          const thenPrev = { id: ifNode.id, handle: 'then' };
-          let bPrevId = thenPrev.id;
-          let bPrevHandle = thenPrev.handle;
-          let bX = curX + X_STEP;
-          let bY = curY - 80;
-          for (const bs of stmt.body) {
-            // Helper to wire single statement
-            const sRes = convertSingleStatement(bs, targetGraph, bPrevId, bPrevHandle, bX, bY);
-            if (sRes) {
-              bPrevId = sRes.id;
-              bPrevHandle = sRes.handle;
-              bX += X_STEP;
-            }
-          }
+          convertStatements(stmt.body, targetGraph, curX + X_STEP, curY - 80, { prevId: ifNode.id, prevHandle: 'then' });
         }
 
         // Else block
         if (stmt.orelse && stmt.orelse.length > 0) {
-          const elsePrev = { id: ifNode.id, handle: 'else' };
-          let bPrevId = elsePrev.id;
-          let bPrevHandle = elsePrev.handle;
-          let bX = curX + X_STEP;
-          let bY = curY + 80;
-          for (const bs of stmt.orelse) {
-            const sRes = convertSingleStatement(bs, targetGraph, bPrevId, bPrevHandle, bX, bY);
-            if (sRes) {
-              bPrevId = sRes.id;
-              bPrevHandle = sRes.handle;
-              bX += X_STEP;
-            }
-          }
+          convertStatements(stmt.orelse, targetGraph, curX + X_STEP, curY + 80, { prevId: ifNode.id, prevHandle: 'else' });
         }
 
         prevId = ifNode.id;
@@ -637,18 +636,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
         }
 
         if (stmt.body && stmt.body.length > 0) {
-          let bPrevId = wNode.id;
-          let bPrevHandle = 'body';
-          let bX = curX + X_STEP;
-          let bY = curY - 60;
-          for (const bs of stmt.body) {
-            const sRes = convertSingleStatement(bs, targetGraph, bPrevId, bPrevHandle, bX, bY);
-            if (sRes) {
-              bPrevId = sRes.id;
-              bPrevHandle = sRes.handle;
-              bX += X_STEP;
-            }
-          }
+          convertStatements(stmt.body, targetGraph, curX + X_STEP, curY - 60, { prevId: wNode.id, prevHandle: 'body' });
         }
 
         prevId = wNode.id;
@@ -658,11 +646,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       }
 
       if (k === 'ForRange') {
-        let v = targetGraph.variables.find((v) => v.name === stmt.variable);
-        if (!v) {
-          v = { id: `v_${uuid().slice(0, 8)}`, name: stmt.variable, type: 'int', initialValue: 0 };
-          targetGraph.variables.push(v);
-        }
+        let v = ensureVariable(targetGraph, stmt.variable, { type: 'Constant', value_type: 'int', value: 0 });
         const forNode = {
           id: `for_${uuid().slice(0, 8)}`,
           type: 'forRange',
@@ -710,18 +694,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
         }
 
         if (stmt.body && stmt.body.length > 0) {
-          let bPrevId = forNode.id;
-          let bPrevHandle = 'body';
-          let bX = curX + X_STEP;
-          let bY = curY - 60;
-          for (const bs of stmt.body) {
-            const sRes = convertSingleStatement(bs, targetGraph, bPrevId, bPrevHandle, bX, bY);
-            if (sRes) {
-              bPrevId = sRes.id;
-              bPrevHandle = sRes.handle;
-              bX += X_STEP;
-            }
-          }
+          convertStatements(stmt.body, targetGraph, curX + X_STEP, curY - 60, { prevId: forNode.id, prevHandle: 'body' });
         }
 
         prevId = forNode.id;
@@ -911,6 +884,15 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
   }
 
   convertStatements(statements, doc, currentX, currentY);
+
+  for (const graph of [doc, ...doc.nodes.map((n) => n.data?.graph).filter(Boolean)]) {
+    for (const node of graph.nodes || []) {
+      if (node.type === 'functionCall' && !node.data?.targetId && !node.data?.isMethod) {
+        const targetId = resolveCallableId(node.data?.name || '');
+        if (targetId) node.data.targetId = targetId;
+      }
+    }
+  }
 
   return { document: doc, error: null };
 }

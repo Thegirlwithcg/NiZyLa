@@ -565,7 +565,8 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
       if (!matches) error('type-mismatch', `${p.id} expects ${p.valueType}, received ${actual}.`, { nodeId: id, edgeId: incoming.get(id)?.get(p.id)?.id });
     }
     if (node.type === 'compare' && ['==', '!='].includes(node.data?.operator) && types.a && types.b
-      && types.a !== 'unknown' && types.b !== 'unknown' && types.a !== types.b && !(numeric(types.a) && numeric(types.b))) {
+      && types.a !== 'unknown' && types.b !== 'unknown' && types.a !== 'any' && types.b !== 'any'
+      && types.a !== types.b && !(numeric(types.a) && numeric(types.b))) {
       error('comparison-type', 'Equality requires matching types or an int/float pair.', { nodeId: id });
     }
     if (node.type === 'forRange') {

@@ -333,6 +333,10 @@
       return;
     }
 
+    status = 'กำลังเตรียม Terminal สำหรับรัน Python...';
+    terminalVisible = true;
+    await tick();
+    await terminalPanelRef?.openRunTab('pending');
     status = 'กำลังเริ่มต้นการรัน Python...';
     try {
       const res = await api.runPython({
@@ -353,9 +357,7 @@
 
       isPythonRunning = true;
       activeRunId = res.runId;
-      terminalVisible = true;
-      await tick();
-      terminalPanelRef?.openRunTab(res.runId);
+      await terminalPanelRef?.openRunTab(res.runId);
       status = 'กำลังรันโปรแกรม...';
     } catch (err) {
       status = `รันล้มเหลว: ${err.message}`;

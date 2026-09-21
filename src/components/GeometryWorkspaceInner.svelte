@@ -53,6 +53,12 @@
   let addButton;
   let pointer = null;
   let noticeTimer;
+  const savedLayout = (() => {
+    try { return JSON.parse(localStorage.getItem('nizyla.gcnLayout') || '{}'); } catch { return {}; }
+  })();
+  let gcnLayout = $state({ side: savedLayout.side ?? 360, details: savedLayout.details ?? 260 });
+  let collapsed = $state({ variables: false, parameters: false, diagnostics: false, ...(savedLayout.collapsed || {}) });
+  let resizing = null;
 
   const doc = $derived(editor.present);
   const scopePathIds = $derived(scopeStack.map((s) => s.id));
@@ -75,7 +81,59 @@
     notice = { text, error };
     noticeTimer = setTimeout(() => (notice = { text: '', error: false }), 6000);
   }
-  onDestroy(() => clearTimeout(noticeTimer));
+  onDestroy(() => {
+    clearTimeout(noticeTimer);
+    window.removeEventListener('pointermove', resizePanels);
+    window.removeEventListener('pointerup', stopResizePanels);
+  });
+
+  function saveGcnLayout() {
+    try { localStorage.setItem('nizyla.gcnLayout', JSON.stringify({ ...gcnLayout, collapsed })); } catch (_) {}
+  }
+
+  function startPanelResize(event, type) {
+    event.preventDefault();
+    resizing = { type, startX: event.clientX, startY: event.clientY, ...gcnLayout };
+    document.body.classList.add(type === 'side' ? 'resizing-col' : 'resizing-row');
+    window.addEventListener('pointermove', resizePanels);
+    window.addEventListener('pointerup', stopResizePanels, { once: true });
+  }
+
+  function resizePanels(event) {
+    if (!resizing) return;
+    const bodyRect = canvasEl?.closest('.gcn-body')?.getBoundingClientRect();
+    if (resizing.type === 'side') {
+      const width = bodyRect?.width ?? window.innerWidth;
+      gcnLayout = { ...gcnLayout, side: Math.max(280, Math.min(width - 360, resizing.side - (event.clientX - resizing.startX))) };
+    } else {
+      const sideHeight = canvasEl?.closest('.gcn-body')?.querySelector('.gcn-side')?.clientHeight ?? 600;
+      gcnLayout = { ...gcnLayout, details: Math.max(120, Math.min(sideHeight - 180, resizing.details + (event.clientY - resizing.startY))) };
+    }
+  }
+
+  function stopResizePanels() {
+    saveGcnLayout();
+    resizing = null;
+    document.body.classList.remove('resizing-col', 'resizing-row');
+    window.removeEventListener('pointermove', resizePanels);
+  }
+
+  function nudgePanel(type, delta) {
+    if (type === 'side') gcnLayout = { ...gcnLayout, side: Math.max(280, Math.min(720, gcnLayout.side + delta)) };
+    else gcnLayout = { ...gcnLayout, details: Math.max(120, Math.min(520, gcnLayout.details + delta)) };
+    saveGcnLayout();
+  }
+
+  function togglePanel(name) {
+    collapsed = { ...collapsed, [name]: !collapsed[name] };
+    saveGcnLayout();
+  }
+
+  function resetLayout() {
+    gcnLayout = { side: 360, details: 260 };
+    collapsed = { variables: false, parameters: false, diagnostics: false };
+    saveGcnLayout();
+  }
 
   function refresh() {
     const d = editor.present;
@@ -415,8 +473,8 @@
     <button onclick={() => flow.fitView({ padding: 0.2, maxZoom: 1.25, duration: 200 })}>Fit View</button>
 
     {#if canEnterSelected}
-      <button class="gcn-enter-toolbar-btn" onclick={() => enterScope(selectedNode.id)} title="Enter Graph (Enter)">
-        เข้าไปแก้ไข ⏎
+      <button class="gcn-enter-toolbar-btn" onclick={() => enterScope(selectedNode.id)} title={selectedFunctionNode ? 'Open function body' : 'Open class body'} aria-label="Open Subgraph">
+        Open Subgraph ⏎
       </button>
     {/if}
 
@@ -436,6 +494,7 @@
     <span class="gcn-file-badge" class:dirty>
       {filePath ? filePath.split(/[/\\]/).pop() : 'Scratch Graph'}{dirty ? ' •' : ''}
     </span>
+    <button type="button" onclick={resetLayout} title="Reset Geometry Code layout">Reset Layout</button>
     <span class="gcn-notice" class:error={notice.error} role="status" aria-live="polite">{notice.text}</span>
   </div>
 
@@ -452,7 +511,7 @@
     {/each}
   </nav>
 
-  <div class="gcn-body">
+  <div class="gcn-body" style={`--gcn-side-width: ${gcnLayout.side}px; --gcn-details-height: ${gcnLayout.details}px;`}>
     <div class="gcn-canvas" bind:this={canvasEl} tabindex="-1" aria-label="Geometry Code graph canvas" role="application"
       onpointerdowncapture={(e) => { if (!typing(e.target)) canvasEl.focus({ preventScroll: true }); }}
       onpointermove={(e) => (pointer = { x: e.clientX, y: e.clientY })}
@@ -467,13 +526,19 @@
       </SvelteFlow>
     </div>
 
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div class="gcn-panel-splitter gcn-side-splitter" role="separator" tabindex="0" aria-label="Resize Canvas and right panel" aria-orientation="vertical" onpointerdown={(event) => startPanelResize(event, 'side')} onkeydown={(event) => { if (event.key === 'ArrowLeft') nudgePanel('side', 20); if (event.key === 'ArrowRight') nudgePanel('side', -20); }}></div>
+
     <aside class="gcn-side" aria-label="Geometry Code panels">
+      <div class="gcn-side-details">
       {#if selectedFunctionNode}
-        <section aria-labelledby="gcn-params">
+        <section aria-labelledby="gcn-params" class:collapsed={collapsed.parameters}>
           <div class="gcn-section-head">
+            <button type="button" class="gcn-collapse" aria-expanded={!collapsed.parameters} onclick={() => togglePanel('parameters')}>{collapsed.parameters ? '▸' : '▾'}</button>
             <h3 id="gcn-params">Parameters ({selectedFunctionNode.data?.name || 'func'})</h3>
             <button onclick={addParam}>+ Parameter</button>
           </div>
+          {#if !collapsed.parameters}
           {#each (selectedFunctionNode.data?.parameters || []) as p (p.id)}
             <div class="gcn-param-row">
               <input value={p.name} placeholder="param_name" spellcheck="false"
@@ -490,14 +555,17 @@
           {:else}
             <p class="gcn-empty">No parameters.</p>
           {/each}
+          {/if}
         </section>
       {/if}
 
-      <section aria-labelledby="gcn-vars">
+      <section aria-labelledby="gcn-vars" class:collapsed={collapsed.variables}>
         <div class="gcn-section-head">
+          <button type="button" class="gcn-collapse" aria-expanded={!collapsed.variables} onclick={() => togglePanel('variables')}>{collapsed.variables ? '▸' : '▾'}</button>
           <h3 id="gcn-vars">Variables</h3>
           <button onclick={() => applyScoped((g) => addVariable(g).doc)}>+ Variable</button>
         </div>
+        {#if !collapsed.variables}
         {#each activeGraph.variables as variable (variable.id)}
           <div class="gcn-var">
             <div class="gcn-var-row">
@@ -532,13 +600,16 @@
         {:else}
           <p class="gcn-empty">No variables.</p>
         {/each}
+        {/if}
       </section>
 
-      <section aria-labelledby="gcn-diag">
+      <section aria-labelledby="gcn-diag" class:collapsed={collapsed.diagnostics}>
         <div class="gcn-section-head">
+          <button type="button" class="gcn-collapse" aria-expanded={!collapsed.diagnostics} onclick={() => togglePanel('diagnostics')}>{collapsed.diagnostics ? '▸' : '▾'}</button>
           <h3 id="gcn-diag">Diagnostics</h3>
           <span class="gcn-count">{errors.length} error{errors.length === 1 ? '' : 's'}</span>
         </div>
+        {#if !collapsed.diagnostics}
         {#each draftMessages as message}
           <div class="gcn-diag error"><b>Error:</b> Fix invalid input first — {message}</div>
         {/each}
@@ -553,7 +624,12 @@
           {/if}
         {/each}
         {#if !generated.diagnostics.length && !hasDrafts}<p class="gcn-empty">No problems.</p>{/if}
+        {/if}
       </section>
+      </div>
+
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div class="gcn-panel-splitter gcn-preview-splitter" role="separator" tabindex="0" aria-label="Resize details and Code Preview" aria-orientation="horizontal" onpointerdown={(event) => startPanelResize(event, 'details')} onkeydown={(event) => { if (event.key === 'ArrowUp') nudgePanel('details', -20); if (event.key === 'ArrowDown') nudgePanel('details', 20); }}></div>
 
       <section aria-labelledby="gcn-code" class="gcn-preview">
         <div class="gcn-section-head">

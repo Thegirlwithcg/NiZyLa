@@ -31,7 +31,8 @@
   const onSelectData = (key) => (event) => ctx.setData(id, { [key]: event.currentTarget.value });
   const onInputData = (key) => (event) => ctx.setData(id, { [key]: event.currentTarget.value }, true);
 
-  function ondblclick() {
+  function ondblclick(event) {
+    if (event.target?.closest?.('input, textarea, select, button, .cm-editor')) return;
     if (['functionDef', 'classDef'].includes(node?.type)) {
       ctx.enterScope(id);
     }
@@ -77,8 +78,8 @@
             oninput={onInputData('name')} onblur={ctx.endEdit} spellcheck="false" />
           <div class="gcn-subgraph-info">
             <span>{(node.data?.parameters || []).length} params</span>
-            <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Enter graph (Enter / Double click)">
-              เข้าไปแก้ไข ⏎
+            <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Open function body" aria-label="Open Subgraph">
+              Open Subgraph ⏎
             </button>
           </div>
         </div>
@@ -90,8 +91,8 @@
           <input aria-label="Base class" value={node.data?.baseClass || ''} placeholder="BaseClass (optional)"
             oninput={onInputData('baseClass')} onblur={ctx.endEdit} spellcheck="false" />
           <div class="gcn-subgraph-info">
-            <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Enter graph (Enter / Double click)">
-              เข้าไปแก้ไข ⏎
+            <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Open class body" aria-label="Open Subgraph">
+              Open Subgraph ⏎
             </button>
           </div>
         </div>

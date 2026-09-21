@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { exec, spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
+import { promisify, TextDecoder } from 'node:util';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './scanner.js';
@@ -675,16 +675,22 @@ exec(code_obj, {"__name__": "__main__", "__file__": ${JSON.stringify(logicalFile
   const args = [...interpreter.args, '-u', runnerScript];
   const win = BrowserWindow.fromWebContents(event.sender);
 
-  const proc = spawn(interpreter.bin, args, {
-    cwd,
-    shell: false,
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: '1',
-      PYTHONIOENCODING: 'utf-8'
-    },
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
+  let proc;
+  try {
+    proc = spawn(interpreter.bin, args, {
+      cwd,
+      shell: false,
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8'
+      },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+  } catch (error) {
+    try { fsSync.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+    return { ok: false, error: `Failed to start Python: ${error.message}` };
+  }
 
   activeRunSession = {
     runId,
@@ -694,19 +700,22 @@ exec(code_obj, {"__name__": "__main__", "__file__": ${JSON.stringify(logicalFile
     sourceMap
   };
 
-  proc.stdout.on('data', (chunk) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send('run:stdout', { runId, text: chunk.toString('utf8') });
-    }
-  });
+  const stdoutDecoder = new TextDecoder('utf-8');
+  const stderrDecoder = new TextDecoder('utf-8');
+  const sendRun = (channel, text) => {
+    if (text && !win.isDestroyed()) win.webContents.send(channel, { runId, text });
+  };
 
-  proc.stderr.on('data', (chunk) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send('run:stderr', { runId, text: chunk.toString('utf8') });
-    }
+  proc.stdout.on('data', (chunk) => sendRun('run:stdout', stdoutDecoder.decode(chunk, { stream: true })));
+  proc.stderr.on('data', (chunk) => sendRun('run:stderr', stderrDecoder.decode(chunk, { stream: true })));
+
+  proc.on('error', (error) => {
+    sendRun('run:stderr', `Failed to start Python: ${error.message}\n`);
   });
 
   proc.on('close', (exitCode, signal) => {
+    sendRun('run:stdout', stdoutDecoder.decode());
+    sendRun('run:stderr', stderrDecoder.decode());
     try { fsSync.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
     if (activeRunSession?.runId === runId) {
       activeRunSession = null;

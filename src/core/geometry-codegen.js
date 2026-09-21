@@ -61,7 +61,8 @@ function render(node, sources, context) {
     const obj = inputs.object?.text ?? (target === 'python' ? 'self' : 'self');
     text = `${obj}.${node.data?.memberName || 'member'}`;
   } else if (node.type === 'functionCall') {
-    const funcName = node.data?.name || 'call';
+    const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
+    const funcName = targetNode?.data?.name || node.data?.name || 'call';
     const argNames = node.data?.argumentNames || [];
     const argTexts = argNames.map((name, i) => inputs[name || `arg_${i}`]?.text ?? 'None');
     if (node.data?.isMethod) {
@@ -222,7 +223,8 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       statementsEmitted++;
       // return ends control flow for this branch
     } else if (node.type === 'functionCall') {
-      const funcName = node.data?.name || 'call';
+      const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
+      const funcName = targetNode?.data?.name || node.data?.name || 'call';
       const argNames = node.data?.argumentNames || [];
       const argTexts = argNames.map((name, i) => inputVal(name || `arg_${i}`).text);
       if (node.data?.isMethod) {
@@ -385,12 +387,22 @@ function generate(doc, target) {
     lines.push('');
   };
 
+  const definitions = new Map();
+  const collectDefinitions = (graph) => {
+    for (const node of graph.nodes || []) {
+      if (node.type === 'functionDef' || node.type === 'classDef') definitions.set(node.id, node);
+      if (node.data?.graph) collectDefinitions(node.data.graph);
+    }
+  };
+  collectDefinitions(workingDoc);
+
   const context = {
     target,
     sourceMap,
     emitLine,
     emptyLine,
-    variables: new Map()
+    variables: new Map(),
+    definitions
   };
 
   // If this is a migrated v1 document:

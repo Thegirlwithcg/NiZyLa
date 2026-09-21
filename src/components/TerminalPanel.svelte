@@ -43,13 +43,14 @@
     });
   }
 
-  export async function openRunTab(runId) {
+  export async function openRunTab(runId = 'pending') {
     let runTab = tabs.find((t) => t.type === 'run');
     if (runTab) {
       runTab.runId = runId;
       runTab.sessionActive = true;
       runTab.terminal.writeln(`\r\n\x1b[32m=== Starting Python Run ===\x1b[0m\r\n`);
       activeKey = runTab.key;
+      tabs = [...tabs];
       await tick();
       resize(runTab);
       return;
@@ -165,8 +166,19 @@
     if (remaining.length === 0) onLastTabClose?.();
   }
 
+  function findRunTab(runId) {
+    const exact = tabs.find((t) => t.type === 'run' && t.runId === runId);
+    if (exact) return exact;
+    const pending = tabs.find((t) => t.type === 'run' && t.runId === 'pending');
+    if (pending && runId) {
+      pending.runId = runId;
+      return pending;
+    }
+    return null;
+  }
+
   function sendRunInput() {
-    const runTab = tabs.find((t) => t.type === 'run');
+    const runTab = tabs.find((t) => t.type === 'run' && t.key === activeKey) || tabs.find((t) => t.type === 'run');
     if (!runTab || !runTab.runId || !runTab.sessionActive) return;
     const text = runInputText;
     runInputText = '';
@@ -190,22 +202,24 @@
       }
     });
 
-    removeRunStdout = api?.onRunStdout(({ text }) => {
-      const runTab = tabs.find((t) => t.type === 'run');
+    removeRunStdout = api?.onRunStdout(({ runId, text }) => {
+      const runTab = findRunTab(runId);
       if (runTab) {
         runTab.terminal.write(text.replace(/\r?\n/g, '\r\n'));
+        tabs = [...tabs];
       }
     });
 
-    removeRunStderr = api?.onRunStderr(({ text }) => {
-      const runTab = tabs.find((t) => t.type === 'run');
+    removeRunStderr = api?.onRunStderr(({ runId, text }) => {
+      const runTab = findRunTab(runId);
       if (runTab) {
         runTab.terminal.write(`\x1b[31m${text.replace(/\r?\n/g, '\r\n')}\x1b[0m`);
+        tabs = [...tabs];
       }
     });
 
-    removeRunExit = api?.onRunExit(({ exitCode, signal }) => {
-      const runTab = tabs.find((t) => t.type === 'run');
+    removeRunExit = api?.onRunExit(({ runId, exitCode, signal }) => {
+      const runTab = findRunTab(runId);
       if (runTab) {
         runTab.terminal.writeln(`\r\n\x1b[90m[Process finished with exit code ${exitCode}${signal ? ` (${signal})` : ''}]\x1b[0m\r\n`);
         runTab.sessionActive = false;
@@ -274,11 +288,11 @@
     {:else}
       {#each tabs as tab (tab.key)}
         <div class="terminal-pane-wrapper" class:active={tab.key === activeKey}>
-          <div class="terminal-pane" bind:this={tab.host}></div>
+          <div class="terminal-pane" class:active={tab.key === activeKey} bind:this={tab.host}></div>
           {#if tab.type === 'run'}
             <form class="terminal-run-input-bar" on:submit|preventDefault={sendRunInput}>
-              <input bind:value={runInputText} placeholder="Send input to input() and press Enter..." spellcheck="false" disabled={!tab.sessionActive} />
-              <button type="submit" disabled={!tab.sessionActive}>Send</button>
+              <input bind:value={runInputText} aria-label="Send Input" placeholder="Send Input" spellcheck="false" disabled={!tab.sessionActive} />
+              <button type="submit" disabled={!tab.sessionActive}>Send Input</button>
             </form>
           {/if}
         </div>
