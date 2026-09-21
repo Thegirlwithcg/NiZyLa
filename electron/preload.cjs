@@ -53,5 +53,9 @@ contextBridge.exposeInMainWorld('nizyla', {
     ipcRenderer.on('main:sync-folder', handler);
     return () => ipcRenderer.removeListener('main:sync-folder', handler);
   },
+  saveGeometryFile: (filePath, document) => ipcRenderer.invoke('geometry:save', filePath, document),
+  createGeometryFile: (filePath, initialContent) => ipcRenderer.invoke('geometry:create', filePath, initialContent),
+  exportGeometryFile: (options) => ipcRenderer.invoke('geometry:export', options),
+  syncGeometryUnloadState: (state) => ipcRenderer.sendSync('geometry:sync-unload-state', state),
   windowControl: (action) => ipcRenderer.send('window:control', action)
 });

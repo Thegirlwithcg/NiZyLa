@@ -14,7 +14,19 @@
   import GeometryField from './GeometryField.svelte';
   import GeometryNode from './GeometryNode.svelte';
 
-  let { document: initialDocument, documentKey, active = true, theme, preferences, showLineNumbers = true, onchange } = $props();
+  let {
+    document: initialDocument,
+    documentKey,
+    active = true,
+    theme,
+    preferences,
+    showLineNumbers = true,
+    onchange,
+    ondraftchange,
+    filePath = null,
+    dirty = false,
+    onexport
+  } = $props();
 
   const flow = useSvelteFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -111,6 +123,7 @@
       loadedKey = key;
       editor = createEditorState(initialDocument);
       drafts = {};
+      ondraftchange?.(false, {});
       menu = null;
       deleting = null;
       nodes = [];
@@ -136,6 +149,7 @@
     const next = { ...drafts };
     if (message) next[key] = message; else delete next[key];
     drafts = next;
+    ondraftchange?.(Object.keys(next).length > 0, next);
   }
 
   function setData(id, patch, live = false) {
@@ -304,7 +318,9 @@
       <option value="python">Python</option>
       <option value="gdscript">GDScript</option>
     </select>
-    <span class="gcn-banner">กราฟทดลอง — ยังบันทึกไม่ได้ในรุ่นนี้</span>
+    <span class="gcn-file-badge" class:dirty>
+      {filePath ? filePath.split(/[/\\]/).pop() : 'Scratch Graph'}{dirty ? ' •' : ''}
+    </span>
     <span class="gcn-notice" class:error={notice.error} role="status" aria-live="polite">{notice.text}</span>
   </div>
 
@@ -383,6 +399,9 @@
       <section aria-labelledby="gcn-code" class="gcn-preview">
         <div class="gcn-section-head">
           <h3 id="gcn-code">Code Preview</h3>
+          {#if onexport}
+            <button onclick={() => onexport?.()} disabled={!canCopy} title="Export code to file">Export</button>
+          {/if}
           <button onclick={copyCode} disabled={!canCopy} title="Copy the generated code to the clipboard">Copy Code</button>
         </div>
         <div class="gcn-preview-box">

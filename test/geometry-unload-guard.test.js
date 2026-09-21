@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createGeometryDocument } from '../src/core/geometry.js';
-import { addNode, sameContent } from '../src/core/geometry-editor.js';
+import { createGeometryDocument, serializeGeometryDocument, parseGeometryDocument } from '../src/core/geometry.js';
+import { addNode, sameContent, sameDocument, setViewport, createEditorState } from '../src/core/geometry-editor.js';
+import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appSveltePath = path.join(__dirname, '..', 'src', 'App.svelte');
@@ -16,9 +17,10 @@ test('geometry dirty detection triggers beforeunload prevention cleanly', () => 
 
   // Clean document -> not changed
   assert.equal(sameContent(currentDoc, initialDoc), true);
+  assert.equal(sameDocument(currentDoc, initialDoc), true);
 
-  const simulateBeforeUnload = (doc) => {
-    const isChanged = !sameContent(doc, initialDoc);
+  const simulateBeforeUnload = (doc, baseline = initialDoc, hasDrafts = false) => {
+    const isDirty = hasDrafts || !sameDocument(doc, baseline);
     const event = {
       defaultPrevented: false,
       returnValue: undefined,
@@ -26,7 +28,7 @@ test('geometry dirty detection triggers beforeunload prevention cleanly', () => 
         this.defaultPrevented = true;
       }
     };
-    if (isChanged) {
+    if (isDirty) {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -41,10 +43,32 @@ test('geometry dirty detection triggers beforeunload prevention cleanly', () => 
   const editResult = addNode(currentDoc, 'int');
   currentDoc = editResult.doc;
   assert.equal(sameContent(currentDoc, initialDoc), false);
+  assert.equal(sameDocument(currentDoc, initialDoc), false);
 
   const dirtyEvent = simulateBeforeUnload(currentDoc);
   assert.equal(dirtyEvent.defaultPrevented, true);
   assert.equal(dirtyEvent.returnValue, '');
+});
+
+test('sameDocument accurately compares content and viewport coordinates', () => {
+  const doc1 = createGeometryDocument();
+  const doc2 = JSON.parse(JSON.stringify(doc1));
+
+  assert.equal(sameDocument(doc1, doc2), true);
+
+  // Pan / zoom viewport only: sameContent is true, but sameDocument is false!
+  const moved = { ...doc1, viewport: { x: 100, y: 200, zoom: 1.5 } };
+  assert.equal(sameContent(doc1, moved), true, 'sameContent ignores viewport');
+  assert.equal(sameDocument(doc1, moved), false, 'sameDocument requires matching viewport');
+
+  // Move back to exact coordinates: sameDocument is true again!
+  const movedBack = { ...moved, viewport: { ...doc1.viewport } };
+  assert.equal(sameDocument(doc1, movedBack), true);
+
+  // Edit node: both are false
+  const nodeAdded = addNode(doc1, 'int').doc;
+  assert.equal(sameContent(doc1, nodeAdded), false);
+  assert.equal(sameDocument(doc1, nodeAdded), false);
 });
 
 test('src/App.svelte has no heuristic reload keys, flags, or renderer confirms', async () => {
@@ -63,8 +87,9 @@ test('src/App.svelte has no heuristic reload keys, flags, or renderer confirms',
   // requestClose delegates to windowControl('close')
   assert.match(content, /function\s+requestClose\s*\(\)\s*\{\s*windowControl\('close'\);\s*\}/);
 
-  // beforeunload only prevents unload when geometryChanged is true
-  assert.match(content, /const\s+beforeUnload\s*=\s*\(event\)\s*=>\s*\{\s*if\s*\(!geometryChanged\)\s*return;\s*event\.preventDefault\(\);\s*event\.returnValue\s*=\s*'';\s*\};/);
+  // beforeunload checks geometryDirty and syncs unload state
+  assert.match(content, /const\s+beforeUnload\s*=\s*\(event\)\s*=>\s*\{/);
+  assert.match(content, /syncGeometryUnloadState/);
 });
 
 test('electron/main.js registers will-prevent-unload with synchronous dialog and proper action handling', async () => {
@@ -76,17 +101,11 @@ test('electron/main.js registers will-prevent-unload with synchronous dialog and
   // Uses dialog.showMessageBoxSync attached to mainWindow
   assert.match(content, /dialog\.showMessageBoxSync\s*\(\s*mainWindow\s*,/);
 
-  // Check buttons, defaultId, cancelId
+  // Supports Save when file path is present, plus Discard and Cancel
+  assert.match(content, /buttons:\s*\[['"]บันทึก['"],\s*['"]ทิ้งกราฟ['"],\s*['"]ยกเลิก['"]\]/);
+
+  // Also supports Cancel and Discard when scratch or drafts
   assert.match(content, /buttons:\s*\[['"]ยกเลิก['"],\s*['"]ทิ้งกราฟ['"]\]/);
-  assert.match(content, /defaultId:\s*0/);
-  assert.match(content, /cancelId:\s*0/);
-
-  // Check message covers both closing and reloading
-  assert.match(content, /รีโหลด/);
-  assert.match(content, /ปิด/);
-
-  // Calls event.preventDefault() only when choice === 1 (ทิ้งกราฟ)
-  assert.match(content, /if\s*\(\s*choice\s*===\s*1\s*\)\s*\{\s*event\.preventDefault\(\);\s*\}/);
 
   // No window.close() or location.reload() inside will-prevent-unload
   const willPreventUnloadBlock = content.match(/mainWindow\.webContents\.on\('will-prevent-unload'[\s\S]*?\n  \}\);/)?.[0];
@@ -95,35 +114,117 @@ test('electron/main.js registers will-prevent-unload with synchronous dialog and
   assert.doesNotMatch(willPreventUnloadBlock, /reload\(\)/);
 });
 
-test('will-prevent-unload handler semantics: Discard unloads, Cancel keeps page', () => {
-  function handleWillPreventUnload(event, showMessageBoxSync) {
-    const choice = showMessageBoxSync({
-      type: 'warning',
-      buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'NiZyLa',
-      message: 'มีกราฟทดลองที่ยังไม่ได้บันทึก',
-      detail: 'หากปิดหน้าต่างหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
-    });
-    if (choice === 1) {
-      event.preventDefault();
+test('will-prevent-unload handler semantics: Save writes and unloads, Discard unloads, Cancel keeps page', () => {
+  function handleWillPreventUnload(snapshot, event, showMessageBoxSync, writeSync) {
+    const canSave = snapshot && snapshot.filePath && !snapshot.hasDrafts && snapshot.document;
+
+    if (canSave) {
+      const choice = showMessageBoxSync({
+        type: 'warning',
+        buttons: ['บันทึก', 'ทิ้งกราฟ', 'ยกเลิก'],
+        defaultId: 0,
+        cancelId: 2
+      });
+      if (choice === 0) {
+        try {
+          writeSync(snapshot.filePath, serializeGeometryDocument(snapshot.document));
+          event.preventDefault();
+        } catch (_) {}
+      } else if (choice === 1) {
+        event.preventDefault();
+      }
+    } else {
+      const choice = showMessageBoxSync({
+        type: 'warning',
+        buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
+        defaultId: 0,
+        cancelId: 0
+      });
+      if (choice === 1) {
+        event.preventDefault();
+      }
     }
   }
 
-  // Case 1: User chooses Cancel (index 0)
+  const validDoc = createGeometryDocument();
+
+  // Case 1: canSave -> Save (index 0) succeeds
   {
     let preventDefaultCalled = false;
+    let written = false;
     const event = { preventDefault: () => { preventDefaultCalled = true; } };
-    handleWillPreventUnload(event, () => 0);
-    assert.equal(preventDefaultCalled, false, 'Cancel must NOT call event.preventDefault() so unload remains prevented');
+    handleWillPreventUnload(
+      { filePath: '/project/test.gcn', document: validDoc, hasDrafts: false },
+      event,
+      () => 0,
+      () => { written = true; }
+    );
+    assert.equal(written, true, 'Save must write the file');
+    assert.equal(preventDefaultCalled, true, 'Save success must allow unload');
   }
 
-  // Case 2: User chooses Discard (index 1)
+  // Case 2: canSave -> Save fails (writeSync throws)
   {
     let preventDefaultCalled = false;
     const event = { preventDefault: () => { preventDefaultCalled = true; } };
-    handleWillPreventUnload(event, () => 1);
-    assert.equal(preventDefaultCalled, true, 'Discard MUST call event.preventDefault() to allow the original unload (close or reload)');
+    handleWillPreventUnload(
+      { filePath: '/project/test.gcn', document: validDoc, hasDrafts: false },
+      event,
+      () => 0,
+      () => { throw new Error('Write failed'); }
+    );
+    assert.equal(preventDefaultCalled, false, 'Save failure must abort unload');
+  }
+
+  // Case 3: canSave -> Discard (index 1)
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleWillPreventUnload(
+      { filePath: '/project/test.gcn', document: validDoc, hasDrafts: false },
+      event,
+      () => 1,
+      () => {}
+    );
+    assert.equal(preventDefaultCalled, true, 'Discard must allow unload without saving');
+  }
+
+  // Case 4: canSave -> Cancel (index 2)
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleWillPreventUnload(
+      { filePath: '/project/test.gcn', document: validDoc, hasDrafts: false },
+      event,
+      () => 2,
+      () => {}
+    );
+    assert.equal(preventDefaultCalled, false, 'Cancel must abort unload');
+  }
+
+  // Case 5: hasDrafts -> Discard (index 1)
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleWillPreventUnload(
+      { filePath: '/project/test.gcn', document: validDoc, hasDrafts: true },
+      event,
+      () => 1,
+      () => {}
+    );
+    assert.equal(preventDefaultCalled, true, 'Drafts Discard must allow unload');
+  }
+
+  // Case 6: hasDrafts -> Cancel (index 0)
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleWillPreventUnload(
+      { filePath: '/project/test.gcn', document: validDoc, hasDrafts: true },
+      event,
+      () => 0,
+      () => {}
+    );
+    assert.equal(preventDefaultCalled, false, 'Drafts Cancel must abort unload');
   }
 });

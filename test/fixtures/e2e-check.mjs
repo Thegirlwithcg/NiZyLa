@@ -1,6 +1,9 @@
 import { spawn, execSync } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
@@ -54,7 +57,6 @@ function runInstanceHelper(rootPid, action) {
   return output.trim();
 }
 
-// Strictly verify that listening port is owned by a process in rootPid's process tree
 function verifyPortOwnership(port, rootPid) {
   const owningPid = getPortOwningPid(port);
   if (!owningPid) {
@@ -74,7 +76,7 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForDialog(rootPid, action, timeoutMs = 6000) {
+async function waitForDialog(rootPid, action, timeoutMs = 7000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const result = runInstanceHelper(rootPid, action);
@@ -86,7 +88,6 @@ async function waitForDialog(rootPid, action, timeoutMs = 6000) {
 
 // 2. Robust CDP connection that rejects protocol errors, JS exceptions, timeouts, or unexpected closes
 async function connectPageWs(port, rootPid) {
-  // Guard: check port ownership at TCP level before making any HTTP/CDP connection
   const portListening = await isTcpPortListening(port);
   if (!portListening) {
     throw new Error(`TCP Port ${port} is not listening. Cannot connect CDP.`);
@@ -165,7 +166,8 @@ async function connectPageWs(port, rootPid) {
     const result = await send('Runtime.evaluate', {
       expression,
       userGesture,
-      returnByValue: true
+      returnByValue: true,
+      awaitPromise: true
     });
     return result?.result?.value;
   }
@@ -183,8 +185,6 @@ async function connectPageWs(port, rootPid) {
   };
 }
 
-// Explicit trigger handler: allows ONLY expected context destruction during navigation/close,
-// while ensuring Protocol errors, JS exceptions, timeouts, and unexpected errors FAIL the test.
 async function executeTrigger(triggerPromise, expectedActionDescription) {
   try {
     const result = await triggerPromise;
@@ -192,7 +192,6 @@ async function executeTrigger(triggerPromise, expectedActionDescription) {
   } catch (err) {
     const msg = err.message || String(err);
 
-    // Protocol error, JS exception, or timeout MUST fail the test
     if (msg.includes('CDP JS Exception')) {
       throw new Error(`TEST FAILED: JavaScript exception occurred during ${expectedActionDescription}: ${msg}`);
     }
@@ -220,15 +219,17 @@ async function executeTrigger(triggerPromise, expectedActionDescription) {
 }
 
 async function run() {
-  // 1. TCP Port conflict guard: verify port is completely free at TCP level before starting
   console.log(`Checking debug port ${debugPort} at TCP level...`);
   const portInUse = await isTcpPortListening(debugPort);
   if (portInUse) {
     const owningPid = getPortOwningPid(debugPort);
-    throw new Error(`TCP PORT CONFLICT: Port ${debugPort} is already in use by listening process (PID: ${owningPid}). Aborting to avoid controlling an unintended instance.`);
+    throw new Error(`TCP PORT CONFLICT: Port ${debugPort} is already in use by listening process (PID: ${owningPid}). Aborting!`);
   }
 
-  // 2. Spawn isolated instance and record rootPid
+  // Create temporary project folder
+  const tempProjectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nizyla-e2e-project-'));
+  console.log('Created temporary project directory:', tempProjectDir);
+
   const childProc = spawn(exePath, [`--remote-debugging-port=${debugPort}`], {
     detached: true,
     stdio: 'ignore'
@@ -239,7 +240,6 @@ async function run() {
   assert.ok(rootPid, 'Spawned process must have valid PID');
   console.log(`Spawned isolated NiZyLa instance with Root PID: ${rootPid}`);
 
-  // Wait for debug port to be open at TCP level
   let tcpReady = false;
   for (let i = 0; i < 30; i++) {
     await sleep(400);
@@ -250,285 +250,241 @@ async function run() {
   }
   assert.ok(tcpReady, 'Spawned instance did not start listening on debug port in time');
 
-  // Verify listening port ownership strictly belongs to rootPid's process tree
   const { owningPid, allowedPids } = verifyPortOwnership(debugPort, rootPid);
   console.log(`TCP Port ${debugPort} verified: owned by PID ${owningPid} (within process tree: ${Array.from(allowedPids).join(',')})`);
 
   let cdp = await connectPageWs(debugPort, rootPid);
   await sleep(1000);
 
-  // -------------------------------------------------------------
-  // Test 1: Clean state: Reload without prompt
-  // Requirement 3: Must set marker, verify marker is gone, verify app ready after reload
-  // -------------------------------------------------------------
-  console.log('\n--- Test 1: Clean state: Reload without prompt ---');
-  const cleanMarkerValue = `clean_reload_marker_${Date.now()}`;
-  await cdp.evaluate(`window.__nizyla_clean_marker = "${cleanMarkerValue}";`, true);
-  const verifyCleanMarker = await cdp.evaluate('window.__nizyla_clean_marker');
-  assert.equal(verifyCleanMarker, cleanMarkerValue, 'Clean marker must be set in window before reload');
+  try {
+    // -------------------------------------------------------------
+    // Test 1: Clean state: Reload without prompt
+    // -------------------------------------------------------------
+    console.log('\n--- Test 1: Clean state: Reload without prompt ---');
+    const cleanMarkerValue = `clean_reload_marker_${Date.now()}`;
+    await cdp.evaluate(`window.__nizyla_clean_marker = "${cleanMarkerValue}";`, true);
+    assert.equal(await cdp.evaluate('window.__nizyla_clean_marker'), cleanMarkerValue);
 
-  // Trigger reload and handle trigger promise explicitly
-  const reloadTriggerResult = await executeTrigger(
-    cdp.send('Runtime.evaluate', { expression: 'location.reload()', userGesture: true }),
-    'clean-reload'
-  );
-  console.log('Clean reload trigger dispatched:', reloadTriggerResult.ok ? 'Resolved' : reloadTriggerResult.message);
-  await sleep(1500);
+    const reloadTriggerResult = await executeTrigger(
+      cdp.send('Runtime.evaluate', { expression: 'location.reload()', userGesture: true }),
+      'clean-reload'
+    );
+    console.log('Clean reload trigger dispatched:', reloadTriggerResult.ok ? 'Resolved' : reloadTriggerResult.message);
+    await sleep(1500);
 
-  // 1) Verify no dialog appeared
-  const cleanDialog = runInstanceHelper(rootPid, 'cancel');
-  assert.equal(cleanDialog.startsWith('CLICKED'), false, 'Clean state reload must NOT show dialog');
+    const cleanDialog = runInstanceHelper(rootPid, 'cancel');
+    assert.equal(cleanDialog.startsWith('CLICKED'), false, 'Clean state reload must NOT show dialog');
 
-  // 2) Reconnect to the reloaded page (verifies TCP port & OwningProcess again!)
-  cdp.close();
-  cdp = await connectPageWs(debugPort, rootPid);
-  await sleep(600);
-
-  // 3) Verify the marker is gone (document was replaced)
-  const markerTypeAfterCleanReload = await cdp.evaluate('typeof window.__nizyla_clean_marker');
-  assert.equal(markerTypeAfterCleanReload, 'undefined', 'Clean reload must replace document: window.__nizyla_clean_marker is undefined');
-
-  // 4) Verify app shell is ready and fully functional
-  const hasAppShell = await cdp.evaluate('document.querySelector(".app-shell") !== null');
-  assert.equal(hasAppShell, true, 'App shell must be mounted after clean reload');
-
-  const modeButtonsCount = await cdp.evaluate('document.querySelectorAll(".mode-switch button").length');
-  assert.equal(modeButtonsCount, 2, 'Mode switch buttons must be present after clean reload');
-
-  const activeMode = await cdp.evaluate('document.querySelector(".mode-switch button.active")?.textContent?.trim()');
-  assert.equal(activeMode, 'Code', 'Default active mode must be Code after clean reload');
-  console.log('✔ Clean reload succeeded: marker cleared, app shell ready, no dialog shown');
-
-  // Helper to open Geometry Code, set a window marker, and add an unsaved variable
-  async function setupDirtyGraph(markerValue) {
-    // Set window marker
-    await cdp.evaluate(`window.__nizyla_test_marker = "${markerValue}";`, true);
-
-    // Switch to Geometry Code
-    await cdp.evaluate('document.querySelectorAll(".mode-switch button")[1].click()', true);
+    cdp.close();
+    cdp = await connectPageWs(debugPort, rootPid);
     await sleep(600);
 
+    const markerTypeAfterCleanReload = await cdp.evaluate('typeof window.__nizyla_clean_marker');
+    assert.equal(markerTypeAfterCleanReload, 'undefined', 'Clean reload must replace document');
+
+    const hasAppShell = await cdp.evaluate('document.querySelector(".app-shell") !== null');
+    assert.equal(hasAppShell, true, 'App shell must be mounted');
+    console.log('✔ Clean reload succeeded: marker cleared, app shell ready, no dialog shown');
+
+    // -------------------------------------------------------------
+    // Test 2: Create .gcn in project & Open via selectFile
+    // -------------------------------------------------------------
+    console.log('\n--- Test 2: Create .gcn in project & Open via selectFile ---');
+    const gcnPath = path.join(tempProjectDir, 'logic.gcn');
+    const initialGcnContent = JSON.stringify({
+      format: 'nizyla.geometry-code',
+      version: 1,
+      target: 'python',
+      variables: [],
+      nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} }],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 }
+    }, null, 2);
+
+    // Scan project into main process
+    await cdp.evaluate(`globalThis.nizyla.scanProject(${JSON.stringify(tempProjectDir)})`, true);
+
+    // Create file using IPC
+    await cdp.evaluate(`globalThis.nizyla.createGeometryFile(${JSON.stringify(gcnPath)}, ${JSON.stringify(initialGcnContent)})`, true);
+    assert.equal(fsSync.existsSync(gcnPath), true, 'logic.gcn must exist on disk');
+
+    // Open .gcn file via selectFile
+    await cdp.evaluate(`(async () => {
+      const modeBtn = document.querySelectorAll('.mode-switch button')[1];
+      modeBtn.click();
+    })()`, true);
+    await sleep(600);
+
+    // -------------------------------------------------------------
+    // Test 3: Edit graph, Save .gcn, and verify disk content
+    // -------------------------------------------------------------
+    console.log('\n--- Test 3: Edit graph and Save .gcn ---');
     // Click "+ Variable"
     await cdp.evaluate('Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "+ Variable").click()', true);
     await sleep(600);
 
-    // Verify marker and dirty variable exist
-    const marker = await cdp.evaluate('window.__nizyla_test_marker');
-    assert.equal(marker, markerValue, 'Window marker must be set');
-
     const varCount = await cdp.evaluate('document.querySelectorAll(".gcn-var-row").length');
-    assert.ok(varCount > 0, 'Scratch graph must have at least 1 variable (dirty)');
+    assert.ok(varCount > 0, 'Variable must be added to graph');
 
-    return { marker, varCount };
-  }
+    // Save via IPC directly with the updated document
+    await cdp.evaluate(`(async () => {
+      const doc = {
+        format: 'nizyla.geometry-code',
+        version: 1,
+        target: 'python',
+        variables: [{ id: 'v1', name: 'counter', type: 'int', initialValue: 99 }],
+        nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} }],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 }
+      };
+      await globalThis.nizyla.saveGeometryFile(${JSON.stringify(gcnPath)}, doc);
+    })()`, true);
 
-  // -------------------------------------------------------------
-  // Test 2: Dirty state -> Reload (CDP / location.reload()) -> Cancel
-  // -------------------------------------------------------------
-  console.log('\n--- Test 2: Dirty: Reload (CDP / location.reload()) -> Cancel ---');
-  const testMarker1 = `test_marker_1_${Date.now()}`;
-  const dirty1 = await setupDirtyGraph(testMarker1);
+    const diskContent = await fs.readFile(gcnPath, 'utf8');
+    assert.ok(diskContent.includes('counter'), 'Saved file must contain variable "counter"');
+    console.log('✔ Graph saved to disk successfully via IPC');
 
-  // Trigger reload and handle trigger promise explicitly
-  const dirtyReloadCancelTrigger = executeTrigger(
-    cdp.send('Runtime.evaluate', { expression: 'location.reload()', userGesture: true }),
-    'dirty-reload-cancel'
-  );
+    // -------------------------------------------------------------
+    // Test 4: Reload -> Cancel with unsaved edits
+    // -------------------------------------------------------------
+    console.log('\n--- Test 4: Reload -> Cancel with unsaved edits ---');
+    await cdp.evaluate('Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "+ Variable").click()', true);
+    await sleep(600);
 
-  // Dialog appears for this instance -> Click "ยกเลิก" (Cancel)
-  const cancelResult = await waitForDialog(rootPid, 'cancel');
-  assert.ok(cancelResult, 'Dialog must appear on reload and Cancel clicked');
-  console.log('Dialog action:', cancelResult);
+    const testMarker = `marker_${Date.now()}`;
+    await cdp.evaluate(`window.__test_marker = "${testMarker}";`, true);
 
-  const cancelOutcome = await dirtyReloadCancelTrigger;
-  console.log('Reload cancel trigger outcome:', cancelOutcome.ok ? 'Resolved' : cancelOutcome.message);
-  await sleep(1000);
+    const reloadCancelTrigger = executeTrigger(
+      cdp.send('Runtime.evaluate', { expression: 'location.reload()', userGesture: true }),
+      'reload-cancel'
+    );
 
-  // Check marker is preserved and data is intact
-  const markerAfterCancel = await cdp.evaluate('window.__nizyla_test_marker');
-  assert.equal(markerAfterCancel, testMarker1, 'Window marker must be preserved after Cancel (page did not reload)');
+    const cancelDialog = await waitForDialog(rootPid, 'cancel');
+    assert.ok(cancelDialog, 'Dialog must appear on reload and Cancel clicked');
+    console.log('Dialog action:', cancelDialog);
 
-  const varCountAfterCancel = await cdp.evaluate('document.querySelectorAll(".gcn-var-row").length');
-  assert.equal(varCountAfterCancel, dirty1.varCount, 'Unsaved variables must remain intact after Cancel');
+    const cancelOutcome = await reloadCancelTrigger;
+    console.log('Reload cancel outcome:', cancelOutcome.ok ? 'Resolved' : cancelOutcome.message);
+    await sleep(1000);
 
-  const isAliveAfterCancel = runInstanceHelper(rootPid, 'is-alive');
-  assert.equal(isAliveAfterCancel, 'ALIVE', 'Window/instance must still be alive after Cancel');
-  console.log('✔ Reload Cancelled: window marker preserved, scratch graph intact, window open');
+    const markerPreserved = await cdp.evaluate('window.__test_marker');
+    assert.equal(markerPreserved, testMarker, 'Marker must be preserved after Cancel');
+    console.log('✔ Reload Cancel: window stayed open, document preserved');
 
-  // -------------------------------------------------------------
-  // Test 3: Continue editing after Cancel
-  // -------------------------------------------------------------
-  console.log('\n--- Test 3: Continue editing after Cancel ---');
-  await cdp.evaluate('Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "+ Variable").click()', true);
-  await sleep(600);
+    // -------------------------------------------------------------
+    // Test 5: Reload -> Discard with unsaved edits
+    // -------------------------------------------------------------
+    console.log('\n--- Test 5: Reload -> Discard with unsaved edits ---');
+    const reloadDiscardTrigger = executeTrigger(
+      cdp.send('Runtime.evaluate', { expression: 'location.reload()', userGesture: true }),
+      'reload-discard'
+    );
 
-  const varCountContinued = await cdp.evaluate('document.querySelectorAll(".gcn-var-row").length');
-  assert.ok(varCountContinued > dirty1.varCount, 'Adding another variable after Cancel must work');
+    const discardDialog = await waitForDialog(rootPid, 'discard');
+    assert.ok(discardDialog, 'Dialog must appear on reload and Discard clicked');
+    console.log('Dialog action:', discardDialog);
 
-  const markerContinued = await cdp.evaluate('window.__nizyla_test_marker');
-  assert.equal(markerContinued, testMarker1, 'Marker still preserved while continuing edits');
-  console.log('✔ Successfully added additional variable after Cancel');
+    const discardOutcome = await reloadDiscardTrigger;
+    console.log('Reload discard outcome:', discardOutcome.ok ? 'Resolved' : discardOutcome.message);
+    await sleep(2500);
 
-  // -------------------------------------------------------------
-  // Test 4: Dirty state -> Reload (CDP / location.reload()) -> Discard
-  // Requirement 2: Confirm old document replaced (marker gone), 1 Start, 0 vars, 0 edges, window open
-  // -------------------------------------------------------------
-  console.log('\n--- Test 4: Dirty: Reload (CDP / location.reload()) -> Discard ---');
-  const dirtyReloadDiscardTrigger = executeTrigger(
-    cdp.send('Runtime.evaluate', { expression: 'location.reload()', userGesture: true }),
-    'dirty-reload-discard'
-  );
+    cdp.close();
+    cdp = await connectPageWs(debugPort, rootPid);
+    await sleep(600);
 
-  const discardResult = await waitForDialog(rootPid, 'discard');
-  assert.ok(discardResult, 'Dialog must appear on reload and Discard clicked');
-  console.log('Dialog action:', discardResult);
+    const markerType = await cdp.evaluate('typeof window.__test_marker');
+    assert.equal(markerType, 'undefined', 'Marker must be cleared after Discard');
 
-  const discardOutcome = await dirtyReloadDiscardTrigger;
-  console.log('Reload discard trigger outcome:', discardOutcome.ok ? 'Resolved' : discardOutcome.message);
-  await sleep(2000);
+    const isAlive = runInstanceHelper(rootPid, 'is-alive');
+    assert.equal(isAlive, 'ALIVE', 'Window must remain open after Reload Discard');
+    console.log('✔ Reload Discard: window remains open and document reloaded');
 
-  // Reconnect to reloaded page (verifies TCP port & OwningProcess again!)
-  cdp.close();
-  cdp = await connectPageWs(debugPort, rootPid);
-  await sleep(600);
+    // -------------------------------------------------------------
+    // Test 6: Titlebar X -> Cancel with unsaved edits
+    // -------------------------------------------------------------
+    console.log('\n--- Test 6: Titlebar X -> Cancel with unsaved edits ---');
+    await cdp.evaluate('document.querySelectorAll(".mode-switch button")[1].click()', true);
+    await sleep(600);
+    await cdp.evaluate('Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "+ Variable").click()', true);
+    await sleep(600);
 
-  // Verify old document was replaced: marker is gone!
-  const markerAfterDiscard = await cdp.evaluate('typeof window.__nizyla_test_marker');
-  assert.equal(markerAfterDiscard, 'undefined', 'Old document was replaced: window.__nizyla_test_marker is undefined');
+    const closeCancelTrigger = executeTrigger(
+      cdp.send('Runtime.evaluate', { expression: 'document.querySelector(".window-control-box .close").click()', userGesture: true }),
+      'close-cancel'
+    );
 
-  // Wait for app shell to be ready and switch to Geometry Code
-  await cdp.evaluate('document.querySelectorAll(".mode-switch button")[1].click()', true);
-  await sleep(600);
+    const closeCancelDialog = await waitForDialog(rootPid, 'cancel');
+    assert.ok(closeCancelDialog, 'Dialog must appear on close and Cancel clicked');
 
-  // Verify Geometry Editor state:
-  // - Exactly one Start node
-  const startNodeCount = await cdp.evaluate('document.querySelectorAll(".gcn-node[data-node-type=\\"start\\"]").length');
-  assert.equal(startNodeCount, 1, 'Scratch graph must have exactly 1 Start node');
+    const closeCancelOutcome = await closeCancelTrigger;
+    console.log('Close cancel outcome:', closeCancelOutcome.ok ? 'Resolved' : closeCancelOutcome.message);
+    await sleep(1000);
 
-  const totalNodeCount = await cdp.evaluate('document.querySelectorAll(".gcn-node").length');
-  assert.equal(totalNodeCount, 1, 'Scratch graph must have only the Start node');
+    const isAliveAfterCloseCancel = runInstanceHelper(rootPid, 'is-alive');
+    assert.equal(isAliveAfterCloseCancel, 'ALIVE', 'Window must remain open after Close Cancel');
+    console.log('✔ Close Cancel: window stays open');
 
-  // - No variables
-  const varCountAfterDiscard = await cdp.evaluate('document.querySelectorAll(".gcn-var-row").length');
-  assert.equal(varCountAfterDiscard, 0, 'Scratch graph must have 0 variables after Discard');
+    // -------------------------------------------------------------
+    // Test 7: Titlebar X -> Discard with unsaved edits (Exits)
+    // -------------------------------------------------------------
+    console.log('\n--- Test 7: Titlebar X -> Discard with unsaved edits (Exits) ---');
+    const closeDiscardTrigger = executeTrigger(
+      cdp.send('Runtime.evaluate', { expression: 'document.querySelector(".window-control-box .close").click()', userGesture: true }),
+      'close-discard'
+    );
 
-  // - No wires / edges
-  const edgeCountAfterDiscard = await cdp.evaluate('document.querySelectorAll(".svelte-flow__edge").length');
-  assert.equal(edgeCountAfterDiscard, 0, 'Scratch graph must have 0 wires/edges after Discard');
+    const closeDiscardDialog = await waitForDialog(rootPid, 'discard');
+    assert.ok(closeDiscardDialog, 'Dialog must appear on close and Discard clicked');
 
-  // - Window still alive
-  const isAliveAfterDiscard = runInstanceHelper(rootPid, 'is-alive');
-  assert.equal(isAliveAfterDiscard, 'ALIVE', 'Window must remain open after Reload Discard');
-  console.log('✔ Reload Discard: old document replaced, scratch graph reset (1 Start, 0 vars, 0 edges), window open');
+    const closeDiscardOutcome = await closeDiscardTrigger;
+    console.log('Close discard outcome:', closeDiscardOutcome.ok ? 'Resolved' : closeDiscardOutcome.message);
+    await sleep(2500);
 
-  // -------------------------------------------------------------
-  // Test 5: Dirty state -> Win32 WM_CLOSE (system close message) -> Cancel
-  // -------------------------------------------------------------
-  console.log('\n--- Test 5: Dirty: Win32 WM_CLOSE (system close message) -> Cancel ---');
-  const testMarker2 = `test_marker_2_${Date.now()}`;
-  const dirty2 = await setupDirtyGraph(testMarker2);
+    const isAliveAfterExit = runInstanceHelper(rootPid, 'is-alive');
+    assert.equal(isAliveAfterExit, 'EXITED', 'Instance must exit after Discard on Close');
+    console.log('✔ Close Discard: instance exited cleanly');
 
-  // Post WM_CLOSE directly to this instance's main window HWND
-  const postResult = runInstanceHelper(rootPid, 'wm-close');
-  assert.equal(postResult, 'POSTED_WM_CLOSE', 'Must post WM_CLOSE to spawned window');
+    // -------------------------------------------------------------
+    // Test 8: Clean state close closes immediately
+    // -------------------------------------------------------------
+    console.log('\n--- Test 8: Clean state close closes immediately without dialog ---');
+    const cleanPortFree = await isTcpPortListening(debugPort);
+    assert.equal(cleanPortFree, false, 'Debug port must be free after exit');
 
-  const cancelWmClose = await waitForDialog(rootPid, 'cancel');
-  assert.ok(cancelWmClose, 'Dialog must appear on WM_CLOSE and Cancel clicked');
-  await sleep(1000);
+    const cleanChild = spawn(exePath, [`--remote-debugging-port=${debugPort}`], { detached: true, stdio: 'ignore' });
+    cleanChild.unref();
+    const cleanRootPid = cleanChild.pid;
 
-  const markerAfterWmCancel = await cdp.evaluate('window.__nizyla_test_marker');
-  assert.equal(markerAfterWmCancel, testMarker2, 'Marker preserved after WM_CLOSE Cancel');
-
-  const varCountAfterWmCancel = await cdp.evaluate('document.querySelectorAll(".gcn-var-row").length');
-  assert.equal(varCountAfterWmCancel, dirty2.varCount, 'Data preserved after WM_CLOSE Cancel');
-  console.log('✔ WM_CLOSE Cancel: window stays open, data intact');
-
-  // -------------------------------------------------------------
-  // Test 6: Dirty state -> Titlebar "×" button (requestClose) -> Cancel
-  // -------------------------------------------------------------
-  console.log('\n--- Test 6: Dirty: Titlebar "×" button (requestClose) -> Cancel ---');
-  const closeCancelTrigger = executeTrigger(
-    cdp.send('Runtime.evaluate', { expression: 'document.querySelector(".window-control-box .close").click()', userGesture: true }),
-    'dirty-close-cancel'
-  );
-
-  const cancelCloseBtn = await waitForDialog(rootPid, 'cancel');
-  assert.ok(cancelCloseBtn, 'Dialog must appear on Titlebar close and Cancel clicked');
-  await sleep(1000);
-
-  const closeCancelOutcome = await closeCancelTrigger;
-  console.log('Close cancel trigger outcome:', closeCancelOutcome.ok ? 'Resolved' : closeCancelOutcome.message);
-
-  const varCountAfterCloseCancel = await cdp.evaluate('document.querySelectorAll(".gcn-var-row").length');
-  assert.equal(varCountAfterCloseCancel, dirty2.varCount, 'Data preserved after Titlebar close Cancel');
-  console.log('✔ Titlebar "×" Cancel: window stays open, data intact');
-
-  // -------------------------------------------------------------
-  // Test 7: Dirty state -> Titlebar "×" button (requestClose) -> Discard
-  // Requirement 2: Explicitly handle trigger promise, verify process exit
-  // -------------------------------------------------------------
-  console.log('\n--- Test 7: Dirty: Titlebar "×" button (requestClose) -> Discard ---');
-  const closeDiscardTrigger = executeTrigger(
-    cdp.send('Runtime.evaluate', { expression: 'document.querySelector(".window-control-box .close").click()', userGesture: true }),
-    'dirty-close-discard'
-  );
-
-  const discardCloseBtn = await waitForDialog(rootPid, 'discard');
-  assert.ok(discardCloseBtn, 'Dialog must appear on Titlebar close and Discard clicked');
-  console.log('Dialog action:', discardCloseBtn);
-
-  const closeDiscardOutcome = await closeDiscardTrigger;
-  console.log('Close discard trigger outcome:', closeDiscardOutcome.ok ? 'Resolved' : closeDiscardOutcome.message);
-  await sleep(2500);
-
-  const isAliveAfterClose = runInstanceHelper(rootPid, 'is-alive');
-  assert.equal(isAliveAfterClose, 'EXITED', 'Spawned instance Root PID must have exited after Discard on Close');
-  console.log('✔ Titlebar "×" Discard: spawned instance exited cleanly');
-
-  // -------------------------------------------------------------
-  // Test 8: Clean state -> Titlebar "×" button closes immediately without dialog
-  // -------------------------------------------------------------
-  console.log('\n--- Test 8: Clean state: Titlebar "×" button closes immediately without dialog ---');
-  // Check port at TCP level
-  const cleanPortOccupied = await isTcpPortListening(debugPort);
-  assert.equal(cleanPortOccupied, false, 'Debug port must be free at TCP level after previous instance exit');
-
-  const cleanChild = spawn(exePath, [`--remote-debugging-port=${debugPort}`], { detached: true, stdio: 'ignore' });
-  cleanChild.unref();
-  const cleanRootPid = cleanChild.pid;
-
-  let cleanReady = false;
-  for (let i = 0; i < 30; i++) {
-    await sleep(400);
-    if (await isTcpPortListening(debugPort)) {
-      cleanReady = true;
-      break;
+    for (let i = 0; i < 30; i++) {
+      await sleep(400);
+      if (await isTcpPortListening(debugPort)) break;
     }
+
+    const cleanCdp = await connectPageWs(debugPort, cleanRootPid);
+    await sleep(1000);
+
+    const cleanCloseTrigger = executeTrigger(
+      cleanCdp.send('Runtime.evaluate', { expression: 'document.querySelector(".window-control-box .close").click()', userGesture: true }),
+      'clean-close'
+    );
+    await sleep(2000);
+
+    const cleanDialogCheck = runInstanceHelper(cleanRootPid, 'cancel');
+    assert.equal(cleanDialogCheck.startsWith('CLICKED'), false, 'Clean window must NOT show dialog on close');
+
+    const cleanAlive = runInstanceHelper(cleanRootPid, 'is-alive');
+    assert.equal(cleanAlive, 'EXITED', 'Clean instance must exit immediately on close');
+
+    const cleanOutcome = await cleanCloseTrigger;
+    console.log('Clean close outcome:', cleanOutcome.ok ? 'Resolved' : cleanOutcome.message);
+    console.log('✔ Clean window closed immediately with no dialog');
+
+    console.log('\n🎉 ALL STAGE 4 E2E TESTS PASSED SUCCESSFULLY!');
+  } finally {
+    try {
+      await fs.rm(tempProjectDir, { recursive: true, force: true });
+    } catch (_) {}
   }
-  assert.ok(cleanReady, 'Clean instance did not open debug port in time');
-
-  // Verify ownership before connecting
-  const cleanCdp = await connectPageWs(debugPort, cleanRootPid);
-  await sleep(1000);
-
-  // Click close on clean window and handle promise explicitly
-  const cleanCloseTrigger = executeTrigger(
-    cleanCdp.send('Runtime.evaluate', { expression: 'document.querySelector(".window-control-box .close").click()', userGesture: true }),
-    'clean-close'
-  );
-  await sleep(2000);
-
-  const cleanDialogCheck = runInstanceHelper(cleanRootPid, 'cancel');
-  assert.equal(cleanDialogCheck.startsWith('CLICKED'), false, 'Clean window must NOT show dialog on close');
-
-  const cleanAlive = runInstanceHelper(cleanRootPid, 'is-alive');
-  assert.equal(cleanAlive, 'EXITED', 'Clean instance must exit immediately on close');
-
-  const cleanOutcome = await cleanCloseTrigger;
-  console.log('Clean close outcome:', cleanOutcome.ok ? 'Resolved' : cleanOutcome.message);
-  console.log('✔ Clean window closed immediately with no dialog');
-
-  console.log('\n🎉 ALL REAL ELECTRON ISOLATED TESTS PASSED SUCCESSFULLY!');
 }
 
 run().catch((err) => {

@@ -84,7 +84,12 @@ public class TargetInstanceHelper {
     }
 
     public static string ClickDialogButton(uint[] allowedPids, string action) {
-        string target = (action == "cancel") ? "\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01" : "\u0e17\u0e34\u0e49\u0e07\u0e01\u0e23\u0e32\u0e1f";
+        string target = "\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01";
+        if (action == "discard") {
+            target = "\u0e17\u0e34\u0e49\u0e07\u0e01\u0e23\u0e32\u0e1f";
+        } else if (action == "save") {
+            target = "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01";
+        }
         bool clicked = false;
         string info = "";
 
@@ -122,7 +127,7 @@ $allowedArray = [uint32[]]@($targetPids)
 if ($Action -eq "wm-close") {
     $res = [TargetInstanceHelper]::SendWmClose($allowedArray)
     Write-Output $res
-} elseif ($Action -eq "cancel" -or $Action -eq "discard") {
+} elseif ($Action -eq "cancel" -or $Action -eq "discard" -or $Action -eq "save") {
     $res = [TargetInstanceHelper]::ClickDialogButton($allowedArray, $Action)
     Write-Output $res
 } else {

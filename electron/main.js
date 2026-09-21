@@ -5,8 +5,11 @@ import { exec } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './scanner.js';
 import { discoverPlugins } from './plugins.js';
+import { parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
+import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 
 const execAsync = promisify(exec);
 let ptyModule;
@@ -23,6 +26,77 @@ const appIconPath = isDev
 let mainWindow;
 const detachedWindows = new Map();
 const detachedStates = new Map();
+const knownProjectRoots = new Set();
+let pendingGeometryUnloadState = null;
+
+function isPathInsideProject(targetPath, knownRoots) {
+  if (typeof targetPath !== 'string' || !targetPath.trim()) return false;
+  const resolvedTarget = path.resolve(targetPath);
+  for (const root of knownRoots) {
+    const resolvedRoot = path.resolve(root);
+    const r1 = process.platform === 'win32' ? resolvedRoot.toLowerCase() : resolvedRoot;
+    const r2 = process.platform === 'win32' ? resolvedTarget.toLowerCase() : resolvedTarget;
+    const rel = path.relative(r1, r2);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel) && rel !== '') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function validateGcnPath(targetPath) {
+  if (typeof targetPath !== 'string' || !targetPath.trim()) {
+    throw new Error('Invalid file path');
+  }
+  if (path.extname(targetPath).toLowerCase() !== '.gcn') {
+    throw new Error('File path must have .gcn extension');
+  }
+  if (!isPathInsideProject(targetPath, knownProjectRoots)) {
+    throw new Error('File path must be located inside an open project');
+  }
+}
+
+function validateSender(event) {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) {
+    throw new Error('Unauthorized sender: window not found or destroyed');
+  }
+}
+
+async function writeGcnAtomic(targetPath, content) {
+  const resolved = path.resolve(targetPath);
+  const dir = path.dirname(resolved);
+  const tempPath = path.join(dir, `.tmp_${randomUUID()}.gcn`);
+  let handle;
+  try {
+    handle = await fs.open(tempPath, 'wx');
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+  } finally {
+    if (handle) await handle.close();
+  }
+  try {
+    await fs.rename(tempPath, resolved);
+  } catch (err) {
+    try { await fs.unlink(tempPath); } catch (_) {}
+    throw err;
+  }
+  return { ok: true, path: resolved };
+}
+
+function writeGcnAtomicSync(targetPath, content) {
+  const resolved = path.resolve(targetPath);
+  const dir = path.dirname(resolved);
+  const tempPath = path.join(dir, `.tmp_${randomUUID()}.gcn`);
+  try {
+    fsSync.writeFileSync(tempPath, content, { flag: 'wx', encoding: 'utf8' });
+    fsSync.renameSync(tempPath, resolved);
+  } catch (err) {
+    try { fsSync.unlinkSync(tempPath); } catch (_) {}
+    throw err;
+  }
+  return { ok: true, path: resolved };
+}
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -132,17 +206,68 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('will-prevent-unload', (event) => {
-    const choice = dialog.showMessageBoxSync(mainWindow, {
-      type: 'warning',
-      buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'NiZyLa',
-      message: 'มีกราฟทดลองที่ยังไม่ได้บันทึก',
-      detail: 'หากปิดหน้าต่างหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
-    });
-    if (choice === 1) {
-      event.preventDefault();
+    const snapshot = pendingGeometryUnloadState;
+    pendingGeometryUnloadState = null;
+
+    const canSave = snapshot && snapshot.filePath && !snapshot.hasDrafts && snapshot.document;
+    const hasDrafts = snapshot && snapshot.hasDrafts;
+
+    if (canSave) {
+      const fileName = path.basename(snapshot.filePath);
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        title: 'NiZyLa',
+        message: `มีงานที่ยังไม่ได้บันทึกใน ${fileName}`,
+        detail: 'หากปิดหรือรีโหลดโดยไม่บันทึก การเปลี่ยนแปลงทั้งหมดจะหายไป',
+        buttons: ['บันทึก', 'ทิ้งกราฟ', 'ยกเลิก'],
+        defaultId: 0,
+        cancelId: 2
+      });
+
+      if (choice === 0) {
+        // บันทึก
+        try {
+          const diagnostics = validateGeometryDocument(snapshot.document);
+          const hasShapeErrors = diagnostics.some((d) =>
+            ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-schema'].includes(d.code)
+          );
+          if (hasShapeErrors) throw new Error('Cannot save document with schema/shape errors');
+          const content = serializeGeometryDocument(snapshot.document);
+          writeGcnAtomicSync(snapshot.filePath, content);
+          event.preventDefault(); // Unload allowed after successful save
+        } catch (saveErr) {
+          dialog.showMessageBoxSync(mainWindow, {
+            type: 'error',
+            title: 'NiZyLa',
+            message: 'บันทึกไฟล์ไม่สำเร็จ',
+            detail: saveErr.message,
+            buttons: ['ตกลง']
+          });
+          // Abort unload
+        }
+      } else if (choice === 1) {
+        // ทิ้งกราฟ
+        event.preventDefault();
+      }
+      // choice === 2 is Cancel -> do not call event.preventDefault() -> abort unload
+    } else {
+      const detailMsg = hasDrafts
+        ? 'มีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) ไม่สามารถบันทึกได้ หากปิดหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
+        : 'หากปิดหรือรีโหลดหน้าต่าง การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?';
+
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        title: 'NiZyLa',
+        message: 'มีกราฟที่ยังไม่ได้บันทึก',
+        detail: detailMsg,
+        buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
+        defaultId: 0,
+        cancelId: 0
+      });
+
+      if (choice === 1) {
+        event.preventDefault();
+      }
     }
   });
 
@@ -261,10 +386,16 @@ ipcMain.handle('project:open', async () => {
   });
 
   if (result.canceled || result.filePaths.length === 0) return null;
-  return scanProject(result.filePaths[0]);
+  const root = path.resolve(result.filePaths[0]);
+  knownProjectRoots.add(root);
+  return scanProject(root);
 });
 
-ipcMain.handle('project:scan', async (_event, rootPath) => scanProject(rootPath));
+ipcMain.handle('project:scan', async (_event, rootPath) => {
+  const root = path.resolve(rootPath);
+  knownProjectRoots.add(root);
+  return scanProject(root);
+});
 ipcMain.handle('file:read', async (_event, filePath) => readTextFile(filePath));
 ipcMain.handle('file:read-data-url', async (_event, filePath) => readFileDataUrl(filePath));
 ipcMain.handle('file:write', async (_event, filePath, content) => writeTextFile(filePath, content));
@@ -276,6 +407,73 @@ ipcMain.handle('file:create', async (_event, filePath) => {
 ipcMain.handle('folder:create', async (_event, folderPath) => {
   await fs.mkdir(folderPath, { recursive: true });
   return { ok: true, path: folderPath };
+});
+ipcMain.handle('geometry:create', async (event, targetPath, initialContent) => {
+  validateSender(event);
+  validateGcnPath(targetPath);
+  if (typeof initialContent !== 'string') throw new TypeError('Invalid document payload');
+  const { document } = parseGeometryDocument(initialContent);
+  if (!document) throw new Error('Cannot create document with schema/shape errors');
+  const content = serializeGeometryDocument(document);
+  const resolved = path.resolve(targetPath);
+  await fs.mkdir(path.dirname(resolved), { recursive: true });
+  await fs.writeFile(resolved, content, { flag: 'wx', encoding: 'utf8' });
+  return { ok: true, path: resolved };
+});
+
+ipcMain.handle('geometry:save', async (event, targetPath, document) => {
+  validateSender(event);
+  validateGcnPath(targetPath);
+  if (!document || typeof document !== 'object') throw new TypeError('Invalid document payload');
+  const diagnostics = validateGeometryDocument(document);
+  const hasShapeErrors = diagnostics.some((d) =>
+    ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-schema'].includes(d.code)
+  );
+  if (hasShapeErrors) throw new Error('Cannot save document with schema/shape errors');
+  const content = serializeGeometryDocument(document);
+  return writeGcnAtomic(targetPath, content);
+});
+
+ipcMain.handle('geometry:export', async (event, { defaultFileName, defaultDirectory, target, document }) => {
+  validateSender(event);
+  if (target !== 'python' && target !== 'gdscript') throw new Error(`Unsupported export target: ${target}`);
+  if (!document || typeof document !== 'object') throw new TypeError('Invalid document payload');
+  const { code, diagnostics } = generateGeometryCode(document, target);
+  const errors = diagnostics.filter((d) => d.severity === 'error');
+  if (errors.length > 0 || code === null) {
+    throw new Error(`Cannot export graph with errors: ${errors.map((e) => e.message).join(', ')}`);
+  }
+
+  const ext = target === 'python' ? 'py' : 'gd';
+  const filterName = target === 'python' ? 'Python Script' : 'GDScript';
+  const defaultName = (defaultFileName ? path.basename(defaultFileName, path.extname(defaultFileName)) : 'main') + `.${ext}`;
+  let defaultPath = defaultName;
+  if (defaultDirectory !== undefined) {
+    if (typeof defaultDirectory !== 'string' || !path.isAbsolute(defaultDirectory)) throw new Error('Invalid export folder');
+    const directory = path.resolve(defaultDirectory);
+    if (![...knownProjectRoots].some((root) => directory.toLowerCase() === root.toLowerCase()) && !isPathInsideProject(directory, knownProjectRoots)) {
+      throw new Error('Export default folder must be inside an open project');
+    }
+    if (!(await fs.stat(directory)).isDirectory()) throw new Error('Export default folder is not a directory');
+    defaultPath = path.join(directory, defaultName);
+  }
+
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showSaveDialog(win, {
+    title: `Export ${filterName}`,
+    defaultPath,
+    filters: [{ name: filterName, extensions: [ext] }]
+  });
+
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const targetPath = result.filePath;
+  await fs.writeFile(targetPath, code, 'utf8');
+  return { ok: true, filePath: targetPath };
+});
+
+ipcMain.on('geometry:sync-unload-state', (event, state) => {
+  pendingGeometryUnloadState = state;
+  event.returnValue = true;
 });
 ipcMain.handle('path:delete', async (_event, targetPath) => {
   await fs.rm(targetPath, { recursive: true, force: false });

@@ -82,6 +82,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "src/core/**/*",
       "package.json"
     ],
     "linux": {

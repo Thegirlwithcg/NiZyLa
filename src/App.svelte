@@ -8,8 +8,8 @@
   import MarkdownPreview from './components/MarkdownPreview.svelte';
   import PreferencesModal from './components/PreferencesModal.svelte';
   import GeometryWorkspace from './components/GeometryWorkspace.svelte';
-  import { createGeometryDocument } from './core/geometry.js';
-  import { sameContent } from './core/geometry-editor.js';
+  import { createGeometryDocument, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from './core/geometry.js';
+  import { sameDocument } from './core/geometry-editor.js';
   import { loadPreferences, applyPreferences, savePreferences } from './core/preferences.js';
 
   const api = globalThis.nizyla;
@@ -70,6 +70,8 @@
   let createPath = '';
   let createParent = null;
   let createInput;
+  let createBusy = false;
+  let resolveGeometrySave = null;
   let contextMenu = null;
   let deleteTarget = null;
   let workspaceEl;
@@ -93,14 +95,22 @@
   let searchRegexError = '';
   let allCollapsed = false;
 
-  // Geometry Code (experimental): the scratch graph lives only in memory; nothing is saved or exported yet.
-  const geometryUnsaved = 'กราฟทดลอง — ยังบันทึกไม่ได้ในรุ่นนี้';
   const geometryInitial = createGeometryDocument();
   let appMode = 'code';
   let geometryOpened = false;
+  let geometryFilePath = null;
+  let geometryDocumentKey = 'scratch';
   let geometryDoc = geometryInitial;
+  let geometryBaseline = geometryInitial;
+  let geometryHasDrafts = false;
+  let isSavingGeometry = false;
+  let geometryConfirmDialog = null;
+
   $: geometryMode = appMode === 'geometry';
-  $: geometryChanged = !sameContent(geometryDoc, geometryInitial);
+  $: geometryDirty = geometryHasDrafts || !sameDocument(geometryDoc, geometryBaseline);
+  $: geometryFileName = geometryFilePath ? geometryFilePath.split(/[/\\]/).pop() : 'Scratch Graph';
+  $: canExportGeometry = !geometryHasDrafts && validateGeometryDocument(geometryDoc).every((d) => d.severity !== 'error');
+  $: canSave = appMode === 'geometry' ? ((geometryDirty || !geometryFilePath) && !geometryHasDrafts && !isSavingGeometry && !createDialog) : (!!activeTab?.dirty);
 
   function setMode(mode) {
     appMode = mode;
@@ -109,6 +119,186 @@
 
   function requestClose() {
     windowControl('close');
+  }
+
+  function promptUnsavedGeometry(actionLabel = 'ดำเนินการต่อ') {
+    if (!geometryDirty) return Promise.resolve('discard');
+    return new Promise((resolve) => {
+      geometryConfirmDialog = {
+        title: 'งานที่ยังไม่ได้บันทึก',
+        message: `มีงานที่ยังไม่ได้บันทึกใน ${geometryFileName} ก่อน${actionLabel} ต้องการบันทึกก่อนหรือไม่?`,
+        hasDrafts: geometryHasDrafts,
+        resolve
+      };
+    });
+  }
+
+  function handleGeometryConfirmChoice(choice) {
+    const dialog = geometryConfirmDialog;
+    geometryConfirmDialog = null;
+    dialog?.resolve(choice);
+  }
+
+  async function openGeometryFile(filePath) {
+    if (isSavingGeometry || createBusy) return;
+    const normalized = filePath.replace(/\\/g, '/');
+    if (geometryFilePath && geometryFilePath.replace(/\\/g, '/') === normalized) {
+      setMode('geometry');
+      status = `${geometryFileName} is already open`;
+      return;
+    }
+
+    if (geometryDirty) {
+      const decision = await promptUnsavedGeometry('สลับเอกสารกราฟ');
+      if (decision === 'cancel') return;
+      if (decision === 'save') {
+        const ok = await saveGeometry();
+        if (!ok) return;
+      }
+    }
+
+    let content;
+    try {
+      content = await api.readFile(filePath);
+    } catch (err) {
+      status = `Could not read ${filePath.split(/[/\\]/).pop()}: ${err.message}`;
+      return;
+    }
+
+    const { document: parsedDoc, diagnostics } = parseGeometryDocument(content);
+    if (!parsedDoc) {
+      const shapeMsg = diagnostics.map((d) => d.message).join('; ');
+      status = `Cannot open ${filePath.split(/[/\\]/).pop()}: ${shapeMsg}`;
+      return;
+    }
+
+    geometryFilePath = filePath;
+    geometryDoc = parsedDoc;
+    geometryBaseline = parsedDoc;
+    geometryDocumentKey = crypto.randomUUID();
+    geometryHasDrafts = false;
+    setMode('geometry');
+
+    const errCount = diagnostics.filter((d) => d.severity === 'error').length;
+    const warnCount = diagnostics.filter((d) => d.severity === 'warning').length;
+    if (errCount > 0) {
+      status = `Opened ${geometryFileName} with ${errCount} graph error(s) (Export disabled)`;
+    } else if (warnCount > 0) {
+      status = `Opened ${geometryFileName} with ${warnCount} warning(s)`;
+    } else {
+      status = `Opened ${geometryFileName}`;
+    }
+  }
+
+  async function saveGeometry(saveAs = false) {
+    if (isSavingGeometry) return false;
+    if (geometryHasDrafts) {
+      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนบันทึก';
+      return false;
+    }
+    if (!geometryFilePath || saveAs) {
+      if (!project) {
+        status = 'กรุณาเปิดโฟลเดอร์โปรเจกต์ก่อนบันทึกกราฟ';
+        return false;
+      }
+      if (createDialog) return false;
+      return new Promise((resolve) => {
+        resolveGeometrySave = resolve;
+        openCreateDialog('geometry-save');
+      });
+    }
+
+    isSavingGeometry = true;
+    const snapshot = geometryDoc;
+    const key = geometryDocumentKey;
+    const filePath = geometryFilePath;
+    try {
+      await api.saveGeometryFile(filePath, snapshot);
+      if (key !== geometryDocumentKey) return false;
+      geometryBaseline = snapshot;
+      const refreshError = await refreshFileProject(filePath);
+      status = refreshError || `บันทึก ${geometryFileName} สำเร็จ`;
+      return !geometryHasDrafts && sameDocument(geometryDoc, snapshot);
+    } catch (err) {
+      status = `บันทึกล้มเหลว: ${err.message}`;
+      return false;
+    } finally {
+      isSavingGeometry = false;
+    }
+  }
+
+  async function closeGeometryGraph() {
+    if (isSavingGeometry || createBusy) return;
+    if (geometryDirty) {
+      const decision = await promptUnsavedGeometry('ปิดกราฟ');
+      if (decision === 'cancel') return;
+      if (decision === 'save') {
+        const ok = await saveGeometry();
+        if (!ok) return;
+      }
+    }
+    geometryFilePath = null;
+    geometryDoc = createGeometryDocument();
+    geometryBaseline = geometryDoc;
+    geometryDocumentKey = 'scratch';
+    geometryHasDrafts = false;
+    appMode = 'code';
+    status = 'ปิดกราฟเรียบร้อย';
+  }
+
+  async function handleNewGeometryCode() {
+    if (isSavingGeometry || createBusy || createDialog) return;
+    if (!project) {
+      status = 'กรุณาเปิดโฟลเดอร์โปรเจกต์ก่อนสร้างกราฟ';
+      return;
+    }
+    if (geometryDirty) {
+      const decision = await promptUnsavedGeometry('สร้างกราฟใหม่');
+      if (decision === 'cancel') return;
+      if (decision === 'save') {
+        const ok = await saveGeometry();
+        if (!ok) return;
+      }
+    }
+    openCreateDialog('geometry');
+  }
+
+  async function handleExportGeometry() {
+    if (geometryHasDrafts) {
+      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อน Export';
+      return;
+    }
+    const diagnostics = validateGeometryDocument(geometryDoc);
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    if (errors.length > 0) {
+      status = `กราฟมีข้อผิดพลาด (${errors.length} ข้อ) ไม่สามารถ Export ได้`;
+      return;
+    }
+    try {
+      const defaultName = geometryFilePath ? geometryFilePath.split(/[/\\]/).pop().replace(/\.gcn$/i, '') : 'main';
+      const res = await api.exportGeometryFile({
+        defaultFileName: defaultName,
+        defaultDirectory: activeExplorerFolder?.path,
+        target: geometryDoc.target,
+        document: geometryDoc
+      });
+      if (res.canceled) {
+        status = 'ยกเลิกการ Export';
+      } else {
+        const refreshError = await refreshFileProject(res.filePath);
+        status = refreshError || `Export สำเร็จ: ${res.filePath}`;
+      }
+    } catch (err) {
+      status = `Export ล้มเหลว: ${err.message}`;
+    }
+  }
+
+  async function handleSave() {
+    if (appMode === 'geometry') {
+      await saveGeometry();
+    } else {
+      await saveFile();
+    }
   }
 
   $: totalMatchCount = documentSearchResults.reduce((sum, g) => sum + (g.matches?.length || 0), 0);
@@ -143,6 +333,7 @@
   let middleStartScrollLeft = 0;
 
   $: project = projects[activeProjectIndex] ?? null;
+  $: activeExplorerFolder = findFolder(project?.tree, graphFolderId) ?? project?.tree ?? null;
   $: currentPane = panes.find((p) => p.id === activePaneId) ?? panes[0] ?? null;
   $: activeTab = currentPane?.tabs.find((tab) => tab.id === currentPane?.active) ?? null;
   $: activeFile = activeTab?.file ?? null;
@@ -183,10 +374,10 @@
     const closeContextMenuOnOutsideClick = (event) => {
       if (contextMenu && !event.target.closest('.context-menu')) contextMenu = null;
     };
-    const keydown = (event) => {
+    const keydown = async (event) => {
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'p') { event.preventDefault(); openPalette(); query = ''; }
-      if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); if (appMode === 'geometry') status = geometryUnsaved; else saveFile(); }
+      if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); await handleSave(); }
       if (appMode === 'code') {
         if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
         if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
@@ -196,7 +387,12 @@
       if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; }
     };
     const beforeUnload = (event) => {
-      if (!geometryChanged) return;
+      if (!geometryDirty) return;
+      api?.syncGeometryUnloadState?.({
+        filePath: geometryFilePath,
+        document: geometryDoc,
+        hasDrafts: geometryHasDrafts
+      });
       event.preventDefault();
       event.returnValue = '';
     };
@@ -263,13 +459,33 @@
     rebuildDocumentSearchIndex();
   }
 
-  async function refreshProject() {
-    if (!project || !api) return;
-    const rescanned = await api.scanProject(project.rootPath);
-    projects = projects.map((p, index) => index === activeProjectIndex ? rescanned : p);
+  async function refreshProject(rootPath = project?.rootPath) {
+    if (!rootPath || !api) return;
+    const rescanned = await api.scanProject(rootPath);
+    projects = projects.map((p) => p.rootPath === rootPath ? rescanned : p);
     status = `Rescanned ${rescanned.rootPath}`;
     await refreshPlugins();
     rebuildDocumentSearchIndex();
+  }
+
+  async function refreshFileProject(filePath) {
+    const owners = projects.filter((p) => isSameOrDescendant(filePath, p.rootPath));
+    try {
+      await Promise.all(owners.map((p) => refreshProject(p.rootPath)));
+    } catch (error) {
+      // The write already succeeded; do not report it as a failed save.
+      return `เขียนไฟล์สำเร็จ แต่ Refresh Explorer ไม่สำเร็จ: ${error.message}`;
+    }
+  }
+
+  function findFolder(entry, folderPath) {
+    if (entry?.type !== 'folder' || !folderPath) return null;
+    if (normalizeSearchPath(entry.path) === normalizeSearchPath(folderPath)) return entry;
+    for (const child of entry.children ?? []) {
+      const found = findFolder(child, folderPath);
+      if (found) return found;
+    }
+    return null;
   }
 
   async function refreshPlugins() {
@@ -559,9 +775,26 @@
     return 'text';
   }
 
-  function closeWorkspace(index) {
+  async function closeWorkspace(index) {
+    if (isSavingGeometry || createBusy) return;
     const closing = projects[index];
     if (!closing) return;
+    if (geometryFilePath && isSameOrDescendant(geometryFilePath, closing.rootPath) && geometryDirty) {
+      const decision = await promptUnsavedGeometry('ปิดโปรเจกต์');
+      if (decision === 'cancel') return;
+      if (decision === 'save') {
+        const ok = await saveGeometry();
+        if (!ok) return;
+      }
+    }
+    if (geometryFilePath && isSameOrDescendant(geometryFilePath, closing.rootPath)) {
+      geometryFilePath = null;
+      geometryDoc = createGeometryDocument();
+      geometryBaseline = geometryDoc;
+      geometryDocumentKey = 'scratch';
+      geometryHasDrafts = false;
+      if (appMode === 'geometry') appMode = 'code';
+    }
     projects = projects.filter((_, itemIndex) => itemIndex !== index);
     panes = panes.map((pane) => {
       const tabs = pane.tabs.filter((tab) => !tab.file.path.startsWith(closing.rootPath));
@@ -576,6 +809,10 @@
 
   async function selectFile(entry, targetPaneId = activePaneId) {
     if (entry.type !== 'file' && entry.type !== 'symbol') return;
+    if (entry.path?.toLowerCase().endsWith('.gcn')) {
+      await openGeometryFile(entry.path);
+      return;
+    }
     appMode = 'code';
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
     if (owningProject >= 0) activeProjectIndex = owningProject;
@@ -616,7 +853,9 @@
   }
 
   function isSameOrDescendant(filePath, parentPath) {
-    return filePath === parentPath || filePath.startsWith(`${parentPath}/`) || filePath.startsWith(`${parentPath}\\`);
+    const file = normalizeSearchPath(filePath);
+    const parent = normalizeSearchPath(parentPath).replace(/\/$/, '');
+    return file === parent || file.startsWith(`${parent}/`);
   }
 
   async function moveEntry(event) {
@@ -624,6 +863,13 @@
     if (!api?.movePath || (source.type !== 'file' && source.type !== 'folder')) return;
     try {
       const result = await api.movePath(source.path, target.path);
+      if (graphFolderId && isSameOrDescendant(graphFolderId, source.path)) {
+        graphFolderId = `${result.path}${graphFolderId.slice(source.path.length)}`;
+      }
+      if (geometryFilePath && isSameOrDescendant(geometryFilePath, source.path)) {
+        const suffix = geometryFilePath.slice(source.path.length);
+        geometryFilePath = `${result.path}${suffix}`;
+      }
       const targetRelativePath = target.path === project?.rootPath ? '' : target.relativePath;
       panes = panes.map((pane) => ({
         ...pane,
@@ -848,7 +1094,7 @@
       title: 'Terminal - NiZyLa',
       bounds,
       state: {
-        cwd: project?.rootPath ?? '',
+        cwd: activeExplorerFolder?.path ?? '',
         theme
       }
     });
@@ -1015,17 +1261,18 @@
     return value?.trim().replace(/^\/+/, '').replace(/\/+/g, '/') ?? '';
   }
 
-  async function openCreateDialog(type, parent = project?.tree) {
+  async function openCreateDialog(type, parent = activeExplorerFolder) {
     if (!project) return;
     createDialog = type;
     createParent = parent;
-    createPath = '';
+    createPath = type === 'geometry-save' && geometryFilePath ? geometryFileName : '';
     await tick();
     createInput?.focus();
   }
 
   function openContextMenu(event) {
     contextMenu = event.detail;
+    if (contextMenu.entry?.type === 'folder') activateExplorerFolder(contextMenu.entry);
   }
 
   function openExplorerContextMenu(event) {
@@ -1035,8 +1282,13 @@
   }
 
   function openCreateFromContext(type) {
-    const parent = contextMenu?.entry ?? project?.tree;
+    const entry = contextMenu?.entry;
+    const parent = entry?.type === 'folder' ? entry : activeExplorerFolder;
     contextMenu = null;
+    if (type === 'geometry') {
+      handleNewGeometryCode();
+      return;
+    }
     openCreateDialog(type, parent);
   }
 
@@ -1072,6 +1324,14 @@
         const tabs = pane.tabs.filter((tab) => tab.file.path !== target.path && !tab.file.path.startsWith(`${target.path}/`));
         return { ...pane, tabs, active: tabs.some((tab) => tab.id === pane.active) ? pane.active : tabs.at(-1)?.id ?? null };
       });
+      if (geometryFilePath && isSameOrDescendant(geometryFilePath, target.path)) {
+        geometryFilePath = null;
+        geometryDoc = createGeometryDocument();
+        geometryBaseline = geometryDoc;
+        geometryDocumentKey = 'scratch';
+        geometryHasDrafts = false;
+        if (appMode === 'geometry') appMode = 'code';
+      }
       status = `Deleted ${target.relativePath}`;
       deleteTarget = null;
       api.scanProject(project.rootPath).then((rescanned) => {
@@ -1082,10 +1342,14 @@
     }
   }
 
-  function closeCreateDialog() {
+  function closeCreateDialog(saved = false) {
+    if (createBusy) return;
     createDialog = null;
     createPath = '';
     createParent = null;
+    const resolve = resolveGeometrySave;
+    resolveGeometrySave = null;
+    resolve?.(saved === true);
   }
 
   function closeCreateDialogFromBackdrop(event) {
@@ -1093,12 +1357,38 @@
   }
 
   async function submitCreateDialog() {
-    if (!project || !api || !createDialog) return;
+    if (!project || !api || !createDialog || createBusy) return;
     const name = cleanRelativePath(createPath);
     if (!name) return;
     const parent = createParent ?? project.tree;
     const relativePath = parent.path === project.rootPath ? name : `${parent.relativePath}/${name}`;
+    const savingGraph = createDialog === 'geometry-save';
+    if (savingGraph && geometryHasDrafts) {
+      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนบันทึก';
+      return;
+    }
+    createBusy = true;
     try {
+      if (createDialog === 'geometry' || savingGraph) {
+        const gcnName = name.toLowerCase().endsWith('.gcn') ? name : `${name}.gcn`;
+        const filePath = `${parent.path}/${gcnName}`;
+        const initialDoc = savingGraph ? geometryDoc : createGeometryDocument();
+        const initialContent = serializeGeometryDocument(initialDoc);
+        await api.createGeometryFile(filePath, initialContent);
+        geometryFilePath = filePath;
+        geometryBaseline = initialDoc;
+        if (!savingGraph) {
+          geometryDoc = initialDoc;
+          geometryDocumentKey = crypto.randomUUID();
+          geometryHasDrafts = false;
+        }
+        setMode('geometry');
+        const refreshError = await refreshFileProject(filePath);
+        status = refreshError || `บันทึกกราฟ ${gcnName.split('/').pop()} สำเร็จ`;
+        createBusy = false;
+        closeCreateDialog(!geometryHasDrafts && sameDocument(geometryDoc, initialDoc));
+        return;
+      }
       if (createDialog === 'file' || createDialog === 'note') {
         const filePath = `${parent.path}/${name}`;
         await api.createFile(filePath);
@@ -1114,9 +1404,12 @@
         await refreshProject();
         status = `Created folder ${relativePath}`;
       }
+      createBusy = false;
       closeCreateDialog();
     } catch (error) {
       status = `Could not create ${createDialog}: ${error.message}`;
+    } finally {
+      createBusy = false;
     }
   }
 
@@ -1503,7 +1796,7 @@
         title="Scroll with mouse wheel or middle-click and drag"
       >
         <button on:click={openProject}>Open Folder</button>
-        <button on:click={refreshProject} disabled={!project}>Refresh</button>
+        <button on:click={() => refreshProject()} disabled={!project}>Refresh</button>
         <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
           <option value="structs">Structs Teal (Indie)</option>
           <option value="obsidian">Obsidian Dark</option>
@@ -1521,7 +1814,13 @@
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
         {/if}
         <button on:click={toggleGraph} disabled={geometryMode}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
-        <button class="primary" on:click={saveFile} disabled={geometryMode || !activeTab || !activeTab.dirty}>Save</button>
+        {#if geometryMode}
+          <button on:click={handleNewGeometryCode} title="Create a new Geometry Code graph in project">+ Graph</button>
+          <button on:click={() => saveGeometry(true)} disabled={geometryHasDrafts || isSavingGeometry || !!createDialog} title="Save a copy in the selected Explorer folder">Save As</button>
+          <button on:click={handleExportGeometry} disabled={!canExportGeometry} title="Export Python / GDScript">Export</button>
+          <button on:click={closeGeometryGraph} title="Close current geometry graph">Close Graph</button>
+        {/if}
+        <button class="primary" on:click={handleSave} disabled={!canSave}>Save</button>
       </div>
       <div class="window-control-box">
         <button title="Minimize" on:click={() => windowControl('minimize')}>—</button>
@@ -1767,7 +2066,19 @@
         </aside>
       {/if}
       {#if geometryOpened}
-        <GeometryWorkspace document={geometryDoc} documentKey="scratch" active={geometryMode} {theme} {preferences} {showLineNumbers} onchange={(next) => (geometryDoc = next)} />
+        <GeometryWorkspace
+          document={geometryDoc}
+          documentKey={geometryDocumentKey}
+          active={geometryMode}
+          filePath={geometryFilePath}
+          dirty={geometryDirty}
+          {theme}
+          {preferences}
+          {showLineNumbers}
+          onchange={(next) => (geometryDoc = next)}
+          ondraftchange={(hasDrafts) => (geometryHasDrafts = hasDrafts)}
+          onexport={handleExportGeometry}
+        />
       {/if}
     </main>
 
@@ -1874,7 +2185,7 @@
           </div>
         {/if}
         <div class="terminal-shell-wrap">
-          <TerminalPanel api={api} cwd={project?.rootPath ?? ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
+          <TerminalPanel api={api} cwd={activeExplorerFolder?.path ?? ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
         </div>
         {#if terminalFloating && !terminalFloat.maximized}
           <button class="float-resize" aria-label="Resize terminal" on:pointerdown={(e) => startFloatingResize(e, 'terminal')}>Resize</button>
@@ -1882,7 +2193,7 @@
       </section>
     {/if}
 
-    <footer class="statusbar">{status} · Ctrl/⌘P search · Ctrl/⌘\\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
+    <footer class="statusbar">{geometryMode ? `${geometryFileName}${geometryDirty ? ' •' : ''} · ` : ''}{status} · Ctrl/⌘P search · Ctrl/⌘\\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
 
     {#if contextMenu}
       <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
@@ -1890,6 +2201,7 @@
         {#if contextMenu.entry.type === 'folder'}
           <button on:click={() => searchFolderFromContext(contextMenu.entry)}>Search in this Folder</button>
           <button on:click={() => openCreateFromContext('file')}>New File</button>
+          <button on:click={() => openCreateFromContext('geometry')}>New Geometry Code</button>
           <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
         {/if}
         {#if contextMenu.entry.path !== project?.rootPath}
@@ -1903,6 +2215,9 @@
         <div class="modal" role="dialog" aria-label="Confirm delete">
           <h2>Delete {deleteTarget.type}?</h2>
           <p>This permanently removes <strong>{deleteTarget.relativePath}</strong>{deleteTarget.type === 'folder' ? ' and everything inside it' : ''}.</p>
+          {#if geometryFilePath && isSameOrDescendant(geometryFilePath, deleteTarget.path) && geometryDirty}
+            <p class="gcn-var-error">กราฟนี้มีงานที่ยังไม่ได้บันทึก การลบจะทำให้ข้อมูลที่ยังไม่ได้บันทึกหายไปอย่างถาวร</p>
+          {/if}
           <div class="modal-actions">
             <button on:click={() => (deleteTarget = null)}>Cancel</button>
             <button class="danger" on:click={deleteSelectedPath}>Delete permanently</button>
@@ -1914,14 +2229,31 @@
     {#if createDialog}
       <div class="modal-backdrop" role="presentation" on:click={closeCreateDialogFromBackdrop} on:keydown={(event) => event.key === 'Escape' && closeCreateDialog()}>
         <form class="modal" on:submit|preventDefault={submitCreateDialog}>
-          <h2>Create {createDialog === 'note' ? 'note' : createDialog}</h2>
+          <h2>{createDialog === 'geometry-save' ? 'Save Geometry Code' : `Create ${createDialog === 'note' ? 'note' : createDialog === 'geometry' ? 'Geometry Code' : createDialog}`}</h2>
           <p>Path inside <strong>{createParent?.relativePath ?? project?.tree.name}</strong></p>
-          <input bind:this={createInput} bind:value={createPath} placeholder={createDialog === 'folder' ? 'src/components' : createDialog === 'note' ? 'notes/my-note.md' : 'src/example.js'} />
+          <input bind:this={createInput} bind:value={createPath} disabled={createBusy} placeholder={createDialog === 'folder' ? 'src/components' : createDialog === 'note' ? 'notes/my-note.md' : createDialog.startsWith('geometry') ? 'logic.gcn' : 'src/example.js'} />
           <div class="modal-actions">
-            <button type="button" on:click={closeCreateDialog}>Cancel</button>
-            <button class="primary" type="submit">Create</button>
+            <button type="button" on:click={() => closeCreateDialog()} disabled={createBusy}>Cancel</button>
+            <button class="primary" type="submit" disabled={createBusy}>{createDialog === 'geometry-save' ? 'Save' : 'Create'}</button>
           </div>
         </form>
+      </div>
+    {/if}
+
+    {#if geometryConfirmDialog}
+      <div class="modal-backdrop" role="presentation">
+        <div class="modal" role="dialog" aria-label={geometryConfirmDialog.title}>
+          <h2>{geometryConfirmDialog.title}</h2>
+          <p>{geometryConfirmDialog.message}</p>
+          {#if geometryConfirmDialog.hasDrafts}
+            <p class="gcn-var-error">มีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) ต้องแก้ไขก่อนบันทึก</p>
+          {/if}
+          <div class="modal-actions">
+            <button type="button" on:click={() => handleGeometryConfirmChoice('cancel')}>ยกเลิก</button>
+            <button type="button" class="danger" on:click={() => handleGeometryConfirmChoice('discard')}>ทิ้งกราฟ</button>
+            <button type="button" class="primary" on:click={() => handleGeometryConfirmChoice('save')} disabled={geometryConfirmDialog.hasDrafts}>บันทึก</button>
+          </div>
+        </div>
       </div>
     {/if}
 
@@ -1929,6 +2261,7 @@
       <div class="palette-backdrop" role="presentation" on:click={closePalette} on:keydown={(event) => event.key === 'Escape' && closePalette()}>
         <div class="palette" role="dialog" tabindex="-1" aria-label="Command palette" on:click|stopPropagation on:keydown|stopPropagation>
           <input bind:this={paletteInput} bind:value={query} placeholder="Search files or type a command..." />
+          <button on:click={() => { paletteOpen = false; handleNewGeometryCode(); }}>+ New Geometry Code (.gcn)</button>
           <button on:click={() => { paletteOpen = false; showPreferences = true; }}>⚙ Preferences: Color Theme, Fonts & Syntax</button>
           <button on:click={() => { paletteOpen = false; setTheme('structs'); }}>Theme: Structs Teal (Indie Sci-Fi)</button>
           <button on:click={() => { paletteOpen = false; setTheme('obsidian'); }}>Theme: Obsidian Dark</button>

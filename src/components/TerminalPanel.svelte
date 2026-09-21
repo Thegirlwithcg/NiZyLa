@@ -41,6 +41,7 @@
 
   async function createTab() {
     if (!api || destroyed) return;
+    const targetCwd = cwd || '';
 
     const key = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
     const number = nextTabNumber++;
@@ -69,7 +70,7 @@
     });
 
     try {
-      const created = await api.createTerminal(cwd || '');
+      const created = await api.createTerminal(targetCwd);
       if (destroyed || !tabs.some((item) => item.key === key)) {
         const createdId = typeof created === 'string' ? created : created?.id;
         if (createdId) api?.closeTerminal(createdId);
@@ -79,7 +80,7 @@
       tab.terminalId = typeof created === 'string' ? created : created.id;
       tab.title = typeof created === 'string' ? `cmd.exe` : (created.title || `cmd.exe`);
       tab.sessionActive = true;
-      tab.terminal.writeln(cwd ? `\x1b[90mNiZyLa terminal tab ${number} · ${cwd}\x1b[0m` : `\x1b[90mNiZyLa terminal tab ${number}\x1b[0m`);
+      tab.terminal.writeln(targetCwd ? `\x1b[90mNiZyLa terminal tab ${number} · ${targetCwd}\x1b[0m` : `\x1b[90mNiZyLa terminal tab ${number}\x1b[0m`);
       tabs = [...tabs];
       resize(tab);
       tab.terminal.focus();

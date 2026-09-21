@@ -14,6 +14,17 @@ export const contentKey = (doc) => JSON.stringify([doc.target,
   doc.edges.map(({ id, source, sourceHandle, target, targetHandle }) => [id, source, sourceHandle, target, targetHandle])]);
 export const sameContent = (a, b) => a === b || contentKey(a) === contentKey(b);
 
+export const sameDocument = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (!sameContent(a, b)) return false;
+  const vA = a.viewport;
+  const vB = b.viewport;
+  if (vA === vB) return true;
+  if (!vA || !vB) return false;
+  return vA.x === vB.x && vA.y === vB.y && vA.zoom === vB.zoom;
+};
+
 // ---- history ----------------------------------------------------------------------------------
 
 export function createEditorState(doc) {
