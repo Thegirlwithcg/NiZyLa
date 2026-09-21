@@ -255,6 +255,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
   }
 
   function convertCstStatements(nodesList, targetGraph, startX = 200, startY = 150) {
+    const isRoot = targetGraph === doc;
     let prevId = 'start';
     let prevHandle = 'next';
     let curX = startX;
@@ -312,11 +313,26 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
         let v = targetGraph.variables.find((v) => v.name === varName);
         if (!v) {
           const mappedType = ['int', 'float', 'string', 'bool'].includes(varType) ? varType : 'int';
-          v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: mappedType, initialValue: mappedType === 'string' ? '' : mappedType === 'bool' ? false : 0 };
+          let initialValue = mappedType === 'string' ? '' : mappedType === 'bool' ? false : 0;
+          if (isRoot && valNode) {
+            const raw = source.slice(valNode.startIndex, valNode.endIndex).trim();
+            if (mappedType === 'int') {
+              const num = parseInt(raw, 10);
+              if (Number.isSafeInteger(num)) initialValue = num;
+            } else if (mappedType === 'float') {
+              const num = parseFloat(raw);
+              if (Number.isFinite(num)) initialValue = num;
+            } else if (mappedType === 'bool') {
+              initialValue = raw === 'true';
+            } else if (mappedType === 'string') {
+              initialValue = raw.replace(/^["']|["']$/g, '');
+            }
+          }
+          v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: mappedType, initialValue };
           targetGraph.variables.push(v);
         }
 
-        if (valNode) {
+        if (valNode && !isRoot) {
           const setNode = {
             id: `set_${uuid().slice(0, 8)}`,
             type: 'setVariable',

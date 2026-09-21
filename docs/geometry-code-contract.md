@@ -143,7 +143,8 @@ Diagnostic codes: `invalid-json`, `invalid-format`, `unsupported-version`,
 `port-kind`, `input-connected`, `exec-output-connected`, `exec-cycle`,
 `value-cycle`, `unused-node`, `missing-input`, `type-mismatch`,
 `comparison-type`, `zero-step`, `nested-for-variable`,
-`invalid-template`, `duplicate-dict-key`.
+`invalid-template`, `duplicate-dict-key`,
+`gdscript-ready-conflict`, `gdscript-member-conflict`.
 
 ## Code generation (stage 2, `src/core/geometry-codegen.js`)
 
@@ -155,9 +156,14 @@ diagnostics on any error, including `unsupported-target` for a bad target.
 Warnings alone still generate code and are returned unchanged. The module is
 pure (no filesystem, process or Electron use) and never evaluates graph data.
 
-- Python 3: `def main():` plus `if __name__ == "__main__":`. Godot 4:
-  `extends Node` and `func _ready():`. Four-space indentation, LF, final newline.
-  `pass` appears only in blocks with no statement.
+- Python 3: `def main():` plus `if __name__ == "__main__":`. Godot 4 v2:
+  begins with `extends Node` (unless a root Import has `gd_extends`), followed by module
+  variables, classes, and functions; then Start statements are generated inside `func _ready():`
+  at depth 1 (or `pass` if the Start chain is empty). An empty document generates
+  `extends Node\n\nfunc _ready():\n    pass\n`. If the Start chain is non-empty and a root function
+  named `_ready` exists, codegen rejects with `gdscript-ready-conflict`. Root variables clashing with
+  `Node` members (e.g. `name`, `owner`, `script`) reject with `gdscript-member-conflict`.
+  Four-space indentation, LF, final newline. `pass` appears only in blocks with no statement.
 - All variables are initialized at function entry in array order. GDScript uses
   typed locals (`int`, `float`, `String`, `bool`); float values are always
   emitted as float literals (`1.0`), and an int assigned to a float variable is
@@ -181,9 +187,9 @@ pure (no filesystem, process or Electron use) and never evaluates graph data.
   Statement chains of any length are fine (tested at 6,000).
 - Not proved statically: dynamic zero step, division by zero (Python raises;
   GDScript float division gives inf), overflow, nontermination. GDScript locals
-  may shadow `Node` members such as `name` (Godot warns); the reserved-name list
-  does not cover those. Generated `print` output differs across languages
-  (`True` vs `true`, `3.0` vs `3`).
+  inside functions may shadow `Node` members (Godot warns); root variables clashing
+  with `Node` members reject with `gdscript-member-conflict`. Generated `print` output
+  differs across languages (`True` vs `true`, `3.0` vs `3`).
 - Still not implemented: reverse conversion, migrations, UI, execution or export.
 
 ## Checks

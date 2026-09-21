@@ -17,13 +17,13 @@ const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'nizyla-accept-'));
 const projectDir = path.join(temp, 'project');
 await fs.mkdir(projectDir, { recursive: true });
 
-// Construct document containing Example 1 and Example 4
+// Construct document containing Example 1 (with player_name) and Example 4
 const docData = {
   format: 'nizyla.geometry-code',
   version: 2,
   target: 'python',
   variables: [
-    { id: 'v_name', name: 'name', type: 'string', initialValue: 'Erin' },
+    { id: 'v_name', name: 'player_name', type: 'string', initialValue: 'Erin' },
     { id: 'v_level', name: 'level', type: 'int', initialValue: 3 },
     { id: 'v_score', name: 'score', type: 'int', initialValue: 10 }
   ],
@@ -32,7 +32,7 @@ const docData = {
     // Example 1: formatText (fstring) + print
     { id: 'g_name', type: 'getVariable', position: { x: 50, y: 250 }, data: { variableId: 'v_name' } },
     { id: 'g_level', type: 'getVariable', position: { x: 50, y: 350 }, data: { variableId: 'v_level' } },
-    { id: 'fmt1', type: 'formatText', position: { x: 260, y: 250 }, data: { style: 'fstring', template: 'Player: {name}, Level: {level}' } },
+    { id: 'fmt1', type: 'formatText', position: { x: 260, y: 250 }, data: { style: 'fstring', template: 'Player: {player_name}, Level: {level}' } },
     { id: 'pr1', type: 'print', position: { x: 480, y: 100 }, data: { argCount: 1 } },
     // Example 4: formatText (concat) + print
     { id: 'g_score', type: 'getVariable', position: { x: 50, y: 480 }, data: { variableId: 'v_score' } },
@@ -41,7 +41,7 @@ const docData = {
   ],
   edges: [
     { id: 'e0', source: 'start', sourceHandle: 'next', target: 'pr1', targetHandle: 'in' },
-    { id: 'e1', source: 'g_name', sourceHandle: 'value', target: 'fmt1', targetHandle: '{name}' },
+    { id: 'e1', source: 'g_name', sourceHandle: 'value', target: 'fmt1', targetHandle: '{player_name}' },
     { id: 'e2', source: 'g_level', sourceHandle: 'value', target: 'fmt1', targetHandle: '{level}' },
     { id: 'e3', source: 'fmt1', sourceHandle: 'value', target: 'pr1', targetHandle: 'value' },
     { id: 'e4', source: 'pr1', sourceHandle: 'next', target: 'pr2', targetHandle: 'in' },
@@ -181,7 +181,7 @@ try {
   // Verify Preview shows Python code
   const pyPreview = await ui.evaluate(`document.querySelector('.gcn-preview .cm-content')?.innerText || ''`);
   console.log('Python Preview:\n', pyPreview);
-  assert.ok(pyPreview.includes('print(f"Player: {name}, Level: {level}")'));
+  assert.ok(pyPreview.includes('print(f"Player: {player_name}, Level: {level}")'));
   assert.ok(pyPreview.includes('print(("Current score: " + str(score) + " pts"))'));
 
   // Make sure Terminal panel is visible, mounted, and tall enough so all lines are visible
@@ -269,10 +269,12 @@ try {
   // Verify Preview shows GDScript code
   const gdPreview = await ui.evaluate(`document.querySelector('.gcn-preview .cm-content')?.innerText || ''`);
   console.log('GDScript Preview:\n', gdPreview);
-  assert.ok(gdPreview.includes('var name: String = "Erin"'));
+  assert.ok(gdPreview.includes('extends Node'));
+  assert.ok(gdPreview.includes('var player_name: String = "Erin"'));
   assert.ok(gdPreview.includes('var level: int = 3'));
   assert.ok(gdPreview.includes('var score: int = 10'));
-  assert.ok(gdPreview.includes('print("Player: {0}, Level: {1}".format([name, level]))'));
+  assert.ok(gdPreview.includes('func _ready():'));
+  assert.ok(gdPreview.includes('print("Player: {0}, Level: {1}".format([player_name, level]))'));
   assert.ok(gdPreview.includes('print(("Current score: " + str(score) + " pts"))'));
 
   // Screenshot the GDScript preview

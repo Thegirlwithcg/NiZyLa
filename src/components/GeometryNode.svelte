@@ -234,8 +234,11 @@
             </div>
           {/each}
           <button type="button" class="gcn-dict-add" onclick={() => {
+            const existingKeys = new Set((node.data?.entries || []).map((e) => e.key));
+            let n = 0;
+            while (existingKeys.has(`key_${n}`)) n++;
             const newId = 'k_' + crypto.randomUUID().slice(0, 8);
-            const updated = [...(node.data?.entries || []), { id: newId, key: `key_${(node.data?.entries || []).length}` }];
+            const updated = [...(node.data?.entries || []), { id: newId, key: `key_${n}` }];
             ctx.setData(id, { entries: updated });
           }}>+ Key</button>
         </div>

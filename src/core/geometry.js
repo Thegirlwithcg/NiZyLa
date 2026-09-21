@@ -345,8 +345,8 @@ function validateGraphShape(graph, path = '', isV1 = false) {
       if (Array.isArray(data.entries)) {
         const entryIds = new Set();
         for (const [eIdx, entry] of data.entries.entries()) {
-          const valid = record(entry) && identifier(entry.id) && typeof entry.key === 'string' && !entryIds.has(entry.id);
-          check(valid, `Dictionary entry at index ${eIdx} must have unique nonempty id and string key.`, location);
+          const valid = record(entry) && identifier(entry.id) && entry.id !== 'value' && typeof entry.key === 'string' && !entryIds.has(entry.id);
+          check(valid, `Dictionary entry at index ${eIdx} must have unique nonempty id (not "value") and string key.`, location);
           if (entry && identifier(entry.id)) entryIds.add(entry.id);
         }
       }

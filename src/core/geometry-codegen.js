@@ -5,6 +5,12 @@ const MAX_BLOCK_DEPTH = 50;
 const MAX_EXPRESSION_DEPTH = 64;
 const MAX_EXPRESSION_CHARS = 100000;
 
+// ponytail: Node properties only; inherited method names are not checked.
+const NODE_MEMBERS = new Set(`name owner script multiplayer process_mode process_priority
+  process_physics_priority process_thread_group process_thread_group_order
+  process_thread_messages physics_interpolation_mode auto_translate_mode
+  editor_description scene_file_path unique_name_in_owner`.split(/\s+/));
+
 class GenerationError extends Error {
   constructor(code, message, location = {}) {
     super(message);
@@ -529,6 +535,43 @@ function generateClass(node, baseDepth, context, scopePath = []) {
   emptyLine();
 }
 
+function hasExecutableStatements(graph) {
+  const startNode = graph.nodes.find((n) => n.type === 'start');
+  if (!startNode) return false;
+
+  const exits = new Map(graph.nodes.map((n) => [n.id, new Map()]));
+  for (const edge of graph.edges) {
+    if (!exits.has(edge.source)) exits.set(edge.source, new Map());
+    exits.get(edge.source).set(edge.sourceHandle, edge.target);
+  }
+
+  const nodes = new Map(graph.nodes.map((n) => [n.id, n]));
+  const visited = new Set();
+  const queue = [exits.get(startNode.id)?.get('next')];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    if (!currentId || visited.has(currentId)) continue;
+    visited.add(currentId);
+
+    const node = nodes.get(currentId);
+    if (!node) continue;
+
+    if (!['functionDef', 'classDef', 'import'].includes(node.type)) {
+      return true;
+    }
+
+    const nodeExits = exits.get(currentId);
+    if (nodeExits) {
+      for (const nextId of nodeExits.values()) {
+        queue.push(nextId);
+      }
+    }
+  }
+
+  return false;
+}
+
 function generate(doc, target) {
   // If v1, migrate first
   const workingDoc = doc.version === 1 ? migrateV1ToV2({ ...doc, target }) : doc;
@@ -607,6 +650,13 @@ function generate(doc, target) {
 
   // --- General v2 module generation ---
   // 1. Imports
+  const hasGdExtends = !python && workingDoc.nodes.some((n) => n.type === 'import' && n.data?.importType === 'gd_extends');
+  if (!python && !hasGdExtends) {
+    emitLine(0, 'extends Node');
+    emptyLine();
+  }
+
+  let importsEmitted = 0;
   for (const node of workingDoc.nodes) {
     if (node.type === 'import') {
       const d = node.data || {};
@@ -616,32 +666,46 @@ function generate(doc, target) {
           const fromMod = d.module ? `${dots}${d.module}` : dots;
           const names = (d.names || []).map((n) => n.alias ? `${n.name} as ${n.alias}` : n.name).join(', ');
           emitLine(0, `from ${fromMod} import ${names || '*'}`, node.id);
+          importsEmitted++;
         } else {
           const mod = d.module || '';
           const alias = d.names?.[0]?.alias;
           emitLine(0, alias ? `import ${mod} as ${alias}` : `import ${mod}`, node.id);
+          importsEmitted++;
         }
       } else {
         // GDScript
         if (d.importType === 'gd_extends') {
           emitLine(0, `extends ${d.module || 'Node'}`, node.id);
+          importsEmitted++;
         } else if (d.importType === 'gd_class_name') {
           emitLine(0, `class_name ${d.module || 'MyClass'}`, node.id);
+          importsEmitted++;
         } else if (d.importType === 'gd_preload') {
           const varName = d.names?.[0]?.name || 'PreloadResource';
           emitLine(0, `const ${varName} = preload("${d.module || ''}")`, node.id);
+          importsEmitted++;
         } else if (d.importType === 'gd_load') {
           const varName = d.names?.[0]?.name || 'LoadedResource';
           emitLine(0, `var ${varName} = load("${d.module || ''}")`, node.id);
+          importsEmitted++;
         }
       }
     }
   }
 
   // Separate imports from definitions if any imports were emitted
-  if (lines.length > 0) emptyLine();
+  if (importsEmitted > 0) emptyLine();
 
   // 2. Module Variables
+  if (!python) {
+    for (const variable of workingDoc.variables) {
+      if (NODE_MEMBERS.has(variable.name)) {
+        throw new GenerationError('gdscript-member-conflict', `Variable "${variable.name}" clashes with Node.name in GDScript; rename it.`);
+      }
+    }
+  }
+
   for (const variable of workingDoc.variables) {
     const value = literal(variable.type, variable.initialValue, target, {});
     const line = python
@@ -666,20 +730,39 @@ function generate(doc, target) {
 
   // 5. Root statements from Start node
   const startNode = workingDoc.nodes.find((n) => n.type === 'start');
-  if (startNode) {
-    if (python && startNode.data?.mainGuard === true) {
-      emitLine(0, 'if __name__ == "__main__":', startNode.id);
-      const count = generateGraphStatements(workingDoc, 1, context, []);
+  if (python) {
+    if (startNode) {
+      if (startNode.data?.mainGuard === true) {
+        emitLine(0, 'if __name__ == "__main__":', startNode.id);
+        const count = generateGraphStatements(workingDoc, 1, context, []);
+        if (count === 0) {
+          emitLine(1, 'pass');
+        }
+      } else {
+        generateGraphStatements(workingDoc, 0, context, []);
+      }
+    }
+
+    if (lines.length === 0) {
+      emitLine(0, 'pass');
+    }
+  } else {
+    // GDScript
+    const userReadyFunc = workingDoc.nodes.find((n) => n.type === 'functionDef' && n.data?.name === '_ready');
+    const startHasStatements = hasExecutableStatements(workingDoc);
+
+    if (startHasStatements && userReadyFunc) {
+      throw new GenerationError('gdscript-ready-conflict', 'Start statements become _ready() in GDScript; rename this function or move its body under Start.', { nodeId: userReadyFunc.id });
+    }
+
+    if (!userReadyFunc) {
+      if (workingDoc.variables.length > 0) emptyLine();
+      emitLine(0, 'func _ready():', startNode?.id);
+      const count = startNode ? generateGraphStatements(workingDoc, 1, context, []) : 0;
       if (count === 0) {
         emitLine(1, 'pass');
       }
-    } else {
-      generateGraphStatements(workingDoc, 0, context, []);
     }
-  }
-
-  if (lines.length === 0) {
-    emitLine(0, 'pass');
   }
 
   // Ensure trailing newline

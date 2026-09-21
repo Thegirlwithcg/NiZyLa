@@ -99,8 +99,9 @@ test('parseTemplate: escapes, repeats, error still returns names, {1x} is an err
 
 test('Exact generated text for Example 1: print(f"Player: {name}, Level: {level}")', () => {
   // Example 1: formatText fstring + print
-  for (const target of ['python', 'gdscript']) {
-    const doc = makeDoc(target);
+  // Python uses `name`
+  {
+    const doc = makeDoc('python');
     addVar(doc, 'v_name', 'name', 'string', '');
     addVar(doc, 'v_level', 'level', 'int', 0);
 
@@ -114,14 +115,32 @@ test('Exact generated text for Example 1: print(f"Player: {name}, Level: {level}
     addEdge(doc, 'e3', 'g_level', 'value', 'fmt', '{level}');
     addEdge(doc, 'e4', 'fmt', 'value', 'pr', 'value');
 
-    const res = generateGeometryCode(doc, target);
+    const res = generateGeometryCode(doc, 'python');
     assert.ifError(res.diagnostics.find((d) => d.severity === 'error'));
+    assert.ok(res.code.includes('print(f"Player: {name}, Level: {level}")'), `Expected python fstring in:\n${res.code}`);
+  }
 
-    if (target === 'python') {
-      assert.ok(res.code.includes('print(f"Player: {name}, Level: {level}")'), `Expected python fstring in:\n${res.code}`);
-    } else {
-      assert.ok(res.code.includes('print("Player: {0}, Level: {1}".format([name, level]))'), `Expected gdscript format in:\n${res.code}`);
-    }
+  // GDScript uses `player_name` (root variable `name` clashes with Node.name)
+  {
+    const doc = makeDoc('gdscript');
+    addVar(doc, 'v_name', 'player_name', 'string', '');
+    addVar(doc, 'v_level', 'level', 'int', 0);
+
+    addNode(doc, 'g_name', 'getVariable', { variableId: 'v_name' });
+    addNode(doc, 'g_level', 'getVariable', { variableId: 'v_level' });
+    addNode(doc, 'fmt', 'formatText', { style: 'fstring', template: 'Player: {player_name}, Level: {level}' });
+    addNode(doc, 'pr', 'print', { argCount: 1 });
+
+    addEdge(doc, 'e1', 'start', 'next', 'pr', 'in');
+    addEdge(doc, 'e2', 'g_name', 'value', 'fmt', '{player_name}');
+    addEdge(doc, 'e3', 'g_level', 'value', 'fmt', '{level}');
+    addEdge(doc, 'e4', 'fmt', 'value', 'pr', 'value');
+
+    const res = generateGeometryCode(doc, 'gdscript');
+    assert.ifError(res.diagnostics.find((d) => d.severity === 'error'));
+    assert.ok(res.code.includes('print("Player: {0}, Level: {1}".format([player_name, level]))'), `Expected gdscript format in:\n${res.code}`);
+    assert.ok(res.code.includes('func _ready():'), 'GDScript statements should be inside _ready()');
+    assert.ok(res.code.startsWith('extends Node\n\n'), 'GDScript output should start with extends Node');
   }
 });
 
@@ -160,8 +179,9 @@ test('Exact generated text for Example 2: print("Position:", x, y, "Equipment:",
 
 test('Exact generated text for Example 3: print("Rank {}: {}".format(rank, name))', () => {
   // Example 3: formatText format style + print
-  for (const target of ['python', 'gdscript']) {
-    const doc = makeDoc(target);
+  // Python uses rank and name
+  {
+    const doc = makeDoc('python');
     addVar(doc, 'v_rank', 'rank', 'int', 1);
     addVar(doc, 'v_name', 'name', 'string', '');
 
@@ -175,14 +195,31 @@ test('Exact generated text for Example 3: print("Rank {}: {}".format(rank, name)
     addEdge(doc, 'e2', 'g_name', 'value', 'fmt', '{name}');
     addEdge(doc, 'e3', 'fmt', 'value', 'pr', 'value');
 
-    const res = generateGeometryCode(doc, target);
+    const res = generateGeometryCode(doc, 'python');
     assert.ifError(res.diagnostics.find((d) => d.severity === 'error'));
+    assert.ok(res.code.includes('print("Rank {}: {}".format(rank, name))'), `Expected python format in:\n${res.code}`);
+  }
 
-    if (target === 'python') {
-      assert.ok(res.code.includes('print("Rank {}: {}".format(rank, name))'), `Expected python format in:\n${res.code}`);
-    } else {
-      assert.ok(res.code.includes('print("Rank {0}: {1}".format([rank, name]))'), `Expected gdscript format in:\n${res.code}`);
-    }
+  // GDScript uses rank and player_name (avoids Node.name member clash)
+  {
+    const doc = makeDoc('gdscript');
+    addVar(doc, 'v_rank', 'rank', 'int', 1);
+    addVar(doc, 'v_name', 'player_name', 'string', '');
+
+    addNode(doc, 'g_rank', 'getVariable', { variableId: 'v_rank' });
+    addNode(doc, 'g_name', 'getVariable', { variableId: 'v_name' });
+    addNode(doc, 'fmt', 'formatText', { style: 'format', template: 'Rank {rank}: {player_name}' });
+    addNode(doc, 'pr', 'print', { argCount: 1 });
+
+    addEdge(doc, 'e0', 'start', 'next', 'pr', 'in');
+    addEdge(doc, 'e1', 'g_rank', 'value', 'fmt', '{rank}');
+    addEdge(doc, 'e2', 'g_name', 'value', 'fmt', '{player_name}');
+    addEdge(doc, 'e3', 'fmt', 'value', 'pr', 'value');
+
+    const res = generateGeometryCode(doc, 'gdscript');
+    assert.ifError(res.diagnostics.find((d) => d.severity === 'error'));
+    assert.ok(res.code.includes('print("Rank {0}: {1}".format([rank, player_name]))'), `Expected gdscript format in:\n${res.code}`);
+    assert.ok(res.code.includes('func _ready():'), 'GDScript statements should be inside _ready()');
   }
 });
 
@@ -567,7 +604,107 @@ test('run generated Example 1 and Example 4 in real Python 3 runtime', (t) => {
   }
 });
 
+test('Schema rejects dict entry id equal to "value"', () => {
+  const doc = makeDoc('python');
+  addNode(doc, 'd', 'dict', { entries: [{ id: 'value', key: 'my_key' }] });
+  const diags = validateGeometryDocument(doc);
+  const schemaErr = diags.find((d) => d.code === 'invalid-schema');
+  assert.ok(schemaErr, 'Entry id "value" should be rejected by schema');
+
+  // Serialization throws TypeError
+  assert.throws(() => serializeGeometryDocument(doc), TypeError);
+});
+
+test('GDScript v2 exact output: empty doc, Start->print, functions+Start, gd_extends, _ready conflict, name conflict, player_name OK', () => {
+  // 1. Empty doc
+  const emptyDoc = makeDoc('gdscript');
+  const emptyRes = generateGeometryCode(emptyDoc, 'gdscript');
+  assert.equal(emptyRes.code, 'extends Node\n\nfunc _ready():\n    pass\n');
+  assert.equal(generateGeometryCode(emptyDoc, 'python').code, 'pass\n');
+
+  // 2. Start -> print
+  const printDoc = makeDoc('gdscript');
+  addNode(printDoc, 'lit', 'literal', { valueType: 'int', value: 1 });
+  addNode(printDoc, 'pr', 'print', { argCount: 1 });
+  addEdge(printDoc, 'e0', 'start', 'next', 'pr', 'in');
+  addEdge(printDoc, 'e1', 'lit', 'value', 'pr', 'value');
+  const printRes = generateGeometryCode(printDoc, 'gdscript');
+  assert.equal(printRes.code, 'extends Node\n\nfunc _ready():\n    print(1)\n');
+  assert.equal(generateGeometryCode(printDoc, 'python').code, 'print(1)\n');
+
+  // 3. Functions + Start
+  const fnDoc = makeDoc('gdscript');
+  addNode(fnDoc, 'fn', 'functionDef', { name: 'helper', parameters: [], returnType: 'void' });
+  addNode(fnDoc, 'lit', 'literal', { valueType: 'int', value: 1 });
+  addNode(fnDoc, 'pr', 'print', { argCount: 1 });
+  addEdge(fnDoc, 'e0', 'start', 'next', 'pr', 'in');
+  addEdge(fnDoc, 'e1', 'lit', 'value', 'pr', 'value');
+  const fnRes = generateGeometryCode(fnDoc, 'gdscript');
+  assert.equal(fnRes.code, 'extends Node\n\nfunc helper():\n    pass\n\nfunc _ready():\n    print(1)\n');
+  assert.equal(generateGeometryCode(fnDoc, 'python').code, 'def helper():\n    pass\n\nprint(1)\n');
+
+  // 4. gd_extends import present -> no extra extends line
+  const extDoc = makeDoc('gdscript');
+  addNode(extDoc, 'imp', 'import', { importType: 'gd_extends', module: 'CharacterBody2D' });
+  addNode(extDoc, 'lit', 'literal', { valueType: 'int', value: 1 });
+  addNode(extDoc, 'pr', 'print', { argCount: 1 });
+  addEdge(extDoc, 'e0', 'start', 'next', 'pr', 'in');
+  addEdge(extDoc, 'e1', 'lit', 'value', 'pr', 'value');
+  const extRes = generateGeometryCode(extDoc, 'gdscript');
+  assert.equal(extRes.code, 'extends CharacterBody2D\n\nfunc _ready():\n    print(1)\n');
+  assert.equal(extRes.code.split('\n').filter((l) => l.startsWith('extends')).length, 1);
+
+  // 5. _ready conflict
+  const readyConflictDoc = makeDoc('gdscript');
+  addNode(readyConflictDoc, 'fn_ready', 'functionDef', { name: '_ready', parameters: [], returnType: 'void' });
+  addNode(readyConflictDoc, 'lit', 'literal', { valueType: 'int', value: 1 });
+  addNode(readyConflictDoc, 'pr', 'print', { argCount: 1 });
+  addEdge(readyConflictDoc, 'e0', 'start', 'next', 'pr', 'in');
+  addEdge(readyConflictDoc, 'e1', 'lit', 'value', 'pr', 'value');
+  const readyConflictRes = generateGeometryCode(readyConflictDoc, 'gdscript');
+  assert.equal(readyConflictRes.code, null);
+  const readyErr = readyConflictRes.diagnostics.find((d) => d.code === 'gdscript-ready-conflict');
+  assert.ok(readyErr);
+  assert.equal(readyErr.nodeId, 'fn_ready');
+  assert.equal(readyErr.message, 'Start statements become _ready() in GDScript; rename this function or move its body under Start.');
+
+  // Start chain empty + user-defined _ready -> emit only user's
+  const emptyStartReadyDoc = makeDoc('gdscript');
+  addNode(emptyStartReadyDoc, 'fn_ready2', 'functionDef', { name: '_ready', parameters: [], returnType: 'void' });
+  const emptyStartReadyRes = generateGeometryCode(emptyStartReadyDoc, 'gdscript');
+  assert.ok(emptyStartReadyRes.code !== null);
+  assert.equal(emptyStartReadyRes.code.split('\n').filter((l) => l.includes('func _ready')).length, 1);
+
+  // 6. name conflict on root variable and player_name OK
+  const nameClashDoc = makeDoc('gdscript');
+  addVar(nameClashDoc, 'v_name', 'name', 'string', 'Erin');
+  const nameClashRes = generateGeometryCode(nameClashDoc, 'gdscript');
+  assert.equal(nameClashRes.code, null);
+  const memberErr = nameClashRes.diagnostics.find((d) => d.code === 'gdscript-member-conflict');
+  assert.ok(memberErr);
+  assert.equal(memberErr.nodeId, undefined);
+  assert.equal(memberErr.message, 'Variable "name" clashes with Node.name in GDScript; rename it.');
+
+  // Python output for the same doc with "name" is unchanged and valid
+  const pyNameRes = generateGeometryCode(nameClashDoc, 'python');
+  assert.ifError(pyNameRes.diagnostics.find((d) => d.severity === 'error'));
+  assert.ok(pyNameRes.code.includes('name = "Erin"'));
+
+  // player_name generates cleanly
+  const playerNameDoc = makeDoc('gdscript');
+  addVar(playerNameDoc, 'v_pname', 'player_name', 'string', 'Erin');
+  const playerNameRes = generateGeometryCode(playerNameDoc, 'gdscript');
+  assert.ifError(playerNameRes.diagnostics.find((d) => d.severity === 'error'));
+  assert.ok(playerNameRes.code.includes('var player_name: String = "Erin"'));
+});
+
 test('run generated Example 1 and Example 2 in Godot 4 runtime (when GODOT_BIN is set)', (t) => {
+  // Verify that root variable 'name' gives gdscript-member-conflict
+  const docClash = makeDoc('gdscript');
+  addVar(docClash, 'v_name', 'name', 'string', 'Erin');
+  const clashRes = generateGeometryCode(docClash, 'gdscript');
+  assert.ok(clashRes.diagnostics.some((d) => d.code === 'gdscript-member-conflict'));
+
   if (!godotBin) return t.skip('Godot 4 not found (set GODOT_BIN to a console executable, or put godot on PATH)');
 
   const scratchDir = mkdtempSync(join(tmpdir(), 'nizyla-godot-collections-'));
@@ -577,16 +714,16 @@ test('run generated Example 1 and Example 2 in Godot 4 runtime (when GODOT_BIN i
   writeFileSync(join(scratchDir, 'main.tscn'), '[gd_scene load_steps=2 format=3]\n\n[ext_resource type="Script" path="res://generated.gd" id="1"]\n\n[node name="Main" type="Node"]\nscript = ExtResource("1")\n');
   writeFileSync(join(scratchDir, 'harness.gd'), 'extends SceneTree\n\nfunc _init():\n    print("<<<BEGIN")\n    var scene = load("res://main.tscn").instantiate()\n    root.add_child(scene)\n    await process_frame\n    print("<<<END")\n    quit()\n');
 
-  // Example 1 in GDScript
+  // Example 1 in GDScript (using player_name)
   const doc = makeDoc('gdscript');
-  addVar(doc, 'v_name', 'name', 'string', 'Erin');
+  addVar(doc, 'v_name', 'player_name', 'string', 'Erin');
   addVar(doc, 'v_level', 'level', 'int', 3);
   addNode(doc, 'g_name', 'getVariable', { variableId: 'v_name' });
   addNode(doc, 'g_level', 'getVariable', { variableId: 'v_level' });
-  addNode(doc, 'fmt', 'formatText', { style: 'fstring', template: 'Player: {name}, Level: {level}' });
+  addNode(doc, 'fmt', 'formatText', { style: 'fstring', template: 'Player: {player_name}, Level: {level}' });
   addNode(doc, 'pr', 'print', { argCount: 1 });
   addEdge(doc, 'e1', 'start', 'next', 'pr', 'in');
-  addEdge(doc, 'e2', 'g_name', 'value', 'fmt', '{name}');
+  addEdge(doc, 'e2', 'g_name', 'value', 'fmt', '{player_name}');
   addEdge(doc, 'e3', 'g_level', 'value', 'fmt', '{level}');
   addEdge(doc, 'e4', 'fmt', 'value', 'pr', 'value');
 
