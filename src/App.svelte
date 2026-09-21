@@ -105,6 +105,9 @@
   let geometryHasDrafts = false;
   let isSavingGeometry = false;
   let geometryConfirmDialog = null;
+  let isPythonRunning = false;
+  let activeRunId = null;
+  let terminalPanelRef = null;
 
   $: geometryMode = appMode === 'geometry';
   $: geometryDirty = geometryHasDrafts || !sameDocument(geometryDoc, geometryBaseline);
@@ -263,6 +266,114 @@
     openCreateDialog('geometry');
   }
 
+  async function handleConvertSourceToGeometry(file) {
+    if (!file || !file.path) return;
+    const isPy = /\.py$/i.test(file.name);
+    const isGd = /\.gd$/i.test(file.name);
+    if (!isPy && !isGd) return;
+
+    let source = '';
+    const openTab = panes.flatMap((p) => p.tabs).find((t) => t.file?.path === file.path);
+    if (openTab) {
+      source = openTab.content;
+    } else {
+      source = await api.readFile(file.path);
+    }
+
+    status = `กำลังแปลง ${file.name} เป็น Geometry Code...`;
+    try {
+      let res;
+      if (isPy) {
+        res = await api.convertPython({
+          source,
+          sourceFile: file.path,
+          preferredInterpreter: preferences?.pythonInterpreter,
+          projectRoot: project?.rootPath
+        });
+      } else {
+        res = await api.convertGdscript({
+          source,
+          sourceFile: file.path
+        });
+      }
+
+      if (!res || !res.ok || !res.document) {
+        status = `การแปลงล้มเหลว: ${res?.error || 'Unknown error'}`;
+        return;
+      }
+
+      geometryDoc = res.document;
+      geometryBaseline = null;
+      geometryFilePath = file.path.replace(/\.(py|gd)$/i, '.gcn');
+      geometryDocumentKey = crypto.randomUUID();
+      geometryHasDrafts = false;
+      setMode('geometry');
+      status = `แปลง ${file.name} สำเร็จ! เปิดเป็น .gcn ที่ยังไม่บันทึก`;
+    } catch (err) {
+      status = `ข้อผิดพลาดในการแปลง: ${err.message}`;
+    }
+  }
+
+  async function handleRunPython() {
+    if (isPythonRunning) return;
+    if (geometryDoc.target !== 'python') {
+      status = 'NiZyLa รองรับการรันเฉพาะภาษา Python ในรุ่นนี้';
+      return;
+    }
+
+    if (geometryHasDrafts) {
+      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนรัน';
+      return;
+    }
+
+    const diags = validateGeometryDocument(geometryDoc);
+    const errors = diags.filter((d) => d.severity === 'error');
+    if (errors.length > 0) {
+      status = `กราฟมีข้อผิดพลาด (${errors.length} ข้อ) ไม่สามารถรันได้`;
+      return;
+    }
+
+    status = 'กำลังเริ่มต้นการรัน Python...';
+    try {
+      const res = await api.runPython({
+        document: geometryDoc,
+        filePath: geometryFilePath,
+        projectRoot: project?.rootPath,
+        sourceFile: geometryDoc.sourceFile,
+        preferredInterpreter: preferences?.pythonInterpreter
+      });
+
+      if (!res || !res.ok) {
+        status = `รันไม่สำเร็จ: ${res?.error || 'Unknown error'}`;
+        if (res?.noInterpreter) {
+          showPreferences = true;
+        }
+        return;
+      }
+
+      isPythonRunning = true;
+      activeRunId = res.runId;
+      terminalVisible = true;
+      await tick();
+      terminalPanelRef?.openRunTab(res.runId);
+      status = 'กำลังรันโปรแกรม...';
+    } catch (err) {
+      status = `รันล้มเหลว: ${err.message}`;
+    }
+  }
+
+  async function handleStopPython() {
+    if (!isPythonRunning || !activeRunId) return;
+    try {
+      await api.stopPython(activeRunId);
+      isPythonRunning = false;
+      activeRunId = null;
+      status = 'หยุดโปรแกรมแล้ว';
+    } catch (err) {
+      status = `หยุดโปรแกรมไม่สำเร็จ: ${err.message}`;
+    }
+  }
+
   async function handleExportGeometry() {
     if (geometryHasDrafts) {
       status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อน Export';
@@ -370,6 +481,13 @@
     const unlistenClosed = api?.onDetachedClosed?.((data) => handleDetachedClosed(data));
     const unlistenOpenFile = api?.onMainOpenFile?.((file) => selectFile(file));
     const unlistenSyncFolder = api?.onMainSyncFolder?.((folderPath) => { graphFolderId = folderPath; });
+    const unlistenRunExit = api?.onRunExit?.(({ runId, exitCode }) => {
+      if (activeRunId === runId) {
+        isPythonRunning = false;
+        activeRunId = null;
+        status = `โปรแกรมสิ้นสุด (exit code ${exitCode})`;
+      }
+    });
 
     const closeContextMenuOnOutsideClick = (event) => {
       if (contextMenu && !event.target.closest('.context-menu')) contextMenu = null;
@@ -408,6 +526,7 @@
       unlistenClosed?.();
       unlistenOpenFile?.();
       unlistenSyncFolder?.();
+      unlistenRunExit?.();
     };
   });
 
@@ -1808,7 +1927,7 @@
         <button on:click={() => addPane(false)} disabled={geometryMode} title="Add a new editor window">+ Editor</button>
         <button on:click={() => addPane(true)} disabled={geometryMode} title="Add a floating editor window">+ Float Editor</button>
         <button on:click={toggleSplit} disabled={geometryMode} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
-        <button on:click={toggleTerminal} disabled={geometryMode} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
+        <button on:click={toggleTerminal} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
@@ -1819,6 +1938,8 @@
           <button on:click={() => saveGeometry(true)} disabled={geometryHasDrafts || isSavingGeometry || !!createDialog} title="Save a copy in the selected Explorer folder">Save As</button>
           <button on:click={handleExportGeometry} disabled={!canExportGeometry} title="Export Python / GDScript">Export</button>
           <button on:click={closeGeometryGraph} title="Close current geometry graph">Close Graph</button>
+        {:else if activeFile && /\.(py|gd)$/i.test(activeFile.name)}
+          <button class="primary" on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code (.gcn)">⇄ Convert to .gcn</button>
         {/if}
         <button class="primary" on:click={handleSave} disabled={!canSave}>Save</button>
       </div>
@@ -2078,6 +2199,9 @@
           onchange={(next) => (geometryDoc = next)}
           ondraftchange={(hasDrafts) => (geometryHasDrafts = hasDrafts)}
           onexport={handleExportGeometry}
+          onrun={handleRunPython}
+          onstop={handleStopPython}
+          isRunning={isPythonRunning}
         />
       {/if}
     </main>
@@ -2185,7 +2309,7 @@
           </div>
         {/if}
         <div class="terminal-shell-wrap">
-          <TerminalPanel api={api} cwd={activeExplorerFolder?.path ?? ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
+          <TerminalPanel bind:this={terminalPanelRef} api={api} cwd={activeExplorerFolder?.path ?? ''} onLastTabClose={closeTerminalWorkspaceFromLastTab} />
         </div>
         {#if terminalFloating && !terminalFloat.maximized}
           <button class="float-resize" aria-label="Resize terminal" on:pointerdown={(e) => startFloatingResize(e, 'terminal')}>Resize</button>
@@ -2203,6 +2327,8 @@
           <button on:click={() => openCreateFromContext('file')}>New File</button>
           <button on:click={() => openCreateFromContext('geometry')}>New Geometry Code</button>
           <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
+        {:else if contextMenu.entry.type === 'file' && /\.(py|gd)$/i.test(contextMenu.entry.name)}
+          <button on:click={() => handleConvertSourceToGeometry(contextMenu.entry)}>Convert to Geometry Code (.gcn)</button>
         {/if}
         {#if contextMenu.entry.path !== project?.rootPath}
           <button class="danger" on:click={() => askDelete(contextMenu.entry)}>Delete {contextMenu.entry.type}</button>

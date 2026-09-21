@@ -57,5 +57,25 @@ contextBridge.exposeInMainWorld('nizyla', {
   createGeometryFile: (filePath, initialContent) => ipcRenderer.invoke('geometry:create', filePath, initialContent),
   exportGeometryFile: (options) => ipcRenderer.invoke('geometry:export', options),
   syncGeometryUnloadState: (state) => ipcRenderer.sendSync('geometry:sync-unload-state', state),
+  convertPython: (options) => ipcRenderer.invoke('convert:python', options),
+  convertGdscript: (options) => ipcRenderer.invoke('convert:gdscript', options),
+  runPython: (options) => ipcRenderer.invoke('run:python', options),
+  inputPython: (runId, text) => ipcRenderer.invoke('run:input', { runId, text }),
+  stopPython: (runId) => ipcRenderer.invoke('run:stop', { runId }),
+  onRunStdout: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('run:stdout', handler);
+    return () => ipcRenderer.removeListener('run:stdout', handler);
+  },
+  onRunStderr: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('run:stderr', handler);
+    return () => ipcRenderer.removeListener('run:stderr', handler);
+  },
+  onRunExit: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('run:exit', handler);
+    return () => ipcRenderer.removeListener('run:exit', handler);
+  },
   windowControl: (action) => ipcRenderer.send('window:control', action)
 });

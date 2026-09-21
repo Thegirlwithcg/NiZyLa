@@ -1,7 +1,8 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec } from 'node:child_process';
+import { exec, spawn, spawnSync } from 'node:child_process';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -10,6 +11,8 @@ import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './sca
 import { discoverPlugins } from './plugins.js';
 import { parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
+import { convertPythonAstToGcn } from '../src/core/python-converter.js';
+import { convertGdscriptToGcn } from '../src/core/gdscript-converter.js';
 
 const execAsync = promisify(exec);
 let ptyModule;
@@ -277,6 +280,7 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => {
+    stopActiveRun();
     mainWindow = null;
     for (const win of detachedWindows.values()) {
       if (!win.isDestroyed()) win.close();
@@ -538,6 +542,263 @@ ipcMain.handle('terminal:create', async (event, cwd) => {
 ipcMain.on('terminal:input', (_event, id, data) => terminals.get(id)?.write(data));
 ipcMain.on('terminal:resize', (_event, id, cols, rows) => terminals.get(id)?.resize(cols, rows));
 ipcMain.on('terminal:close', (_event, id) => terminals.get(id)?.kill());
+
+let activeRunSession = null;
+
+function killProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F']);
+    } catch (_) {}
+  } else {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch (_) {
+      try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+    }
+  }
+}
+
+function stopActiveRun() {
+  if (activeRunSession && activeRunSession.process) {
+    killProcessTree(activeRunSession.process.pid);
+    if (activeRunSession.tempDir) {
+      try { fsSync.rmSync(activeRunSession.tempDir, { recursive: true, force: true }); } catch (_) {}
+    }
+    activeRunSession = null;
+    return true;
+  }
+  return false;
+}
+
+app.on('before-quit', () => {
+  stopActiveRun();
+});
+
+function resolvePythonInterpreter(projectRoot = null, preferredPath = null) {
+  if (preferredPath && typeof preferredPath === 'string' && preferredPath.trim()) {
+    const candidate = preferredPath.trim();
+    try {
+      const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      if (probe.status === 0) return { bin: candidate, args: [] };
+    } catch (_) {}
+  }
+
+  if (projectRoot) {
+    const venvPaths = process.platform === 'win32'
+      ? [
+          path.join(projectRoot, '.venv', 'Scripts', 'python.exe'),
+          path.join(projectRoot, 'venv', 'Scripts', 'python.exe')
+        ]
+      : [
+          path.join(projectRoot, '.venv', 'bin', 'python'),
+          path.join(projectRoot, 'venv', 'bin', 'python')
+        ];
+    for (const vp of venvPaths) {
+      if (fsSync.existsSync(vp)) {
+        try {
+          const probe = spawnSync(vp, ['--version'], { encoding: 'utf8', timeout: 5000 });
+          if (probe.status === 0) return { bin: vp, args: [] };
+        } catch (_) {}
+      }
+    }
+  }
+
+  try {
+    const probe = spawnSync('python', ['--version'], { encoding: 'utf8', timeout: 5000 });
+    if (probe.status === 0) return { bin: 'python', args: [] };
+  } catch (_) {}
+
+  if (process.platform === 'win32') {
+    try {
+      const probe = spawnSync('py', ['-3', '--version'], { encoding: 'utf8', timeout: 5000 });
+      if (probe.status === 0) return { bin: 'py', args: ['-3'] };
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+ipcMain.handle('run:python', async (event, { document, filePath, projectRoot, sourceFile, preferredInterpreter }) => {
+  validateSender(event);
+  if (!document || typeof document !== 'object') throw new TypeError('Invalid document payload');
+
+  if (activeRunSession && activeRunSession.process) {
+    throw new Error('A Python program is already running. Please stop it first.');
+  }
+
+  const { code, diagnostics, sourceMap } = generateGeometryCode(document, 'python');
+  const errors = diagnostics.filter((d) => d.severity === 'error');
+  if (errors.length > 0 || code === null) {
+    return { ok: false, error: `Cannot run graph with errors: ${errors.map((e) => e.message).join(', ')}`, diagnostics };
+  }
+
+  const interpreter = resolvePythonInterpreter(projectRoot, preferredInterpreter);
+  if (!interpreter) {
+    return { ok: false, error: 'No working Python interpreter found. Please install Python 3.10+ or configure interpreter in Preferences.', noInterpreter: true };
+  }
+
+  let cwd;
+  let logicalFile;
+  if (sourceFile) {
+    cwd = path.dirname(path.resolve(sourceFile));
+    logicalFile = path.resolve(sourceFile);
+  } else if (filePath) {
+    cwd = path.dirname(path.resolve(filePath));
+    logicalFile = path.resolve(filePath);
+  } else {
+    if (!projectRoot) {
+      return { ok: false, error: 'Unsaved graph requires an open project folder to run.' };
+    }
+    cwd = path.resolve(projectRoot);
+    logicalFile = path.join(cwd, 'scratch.py');
+  }
+
+  const runId = randomUUID();
+  const tempDir = path.join(os.tmpdir(), 'nizyla-runs', runId);
+  await fs.mkdir(tempDir, { recursive: true });
+  const snapshotFile = path.join(tempDir, 'snapshot.py');
+  await fs.writeFile(snapshotFile, code, 'utf8');
+
+  const runnerScript = path.join(tempDir, 'runner.py');
+  const runnerCode = `import sys
+sys.path.insert(0, ${JSON.stringify(cwd)})
+sys.argv = [${JSON.stringify(logicalFile)}]
+with open(${JSON.stringify(snapshotFile)}, "rb") as f:
+    source_bytes = f.read()
+code_obj = compile(source_bytes, ${JSON.stringify(logicalFile)}, "exec")
+exec(code_obj, {"__name__": "__main__", "__file__": ${JSON.stringify(logicalFile)}, "__doc__": None})
+`;
+  await fs.writeFile(runnerScript, runnerCode, 'utf8');
+
+  const args = [...interpreter.args, '-u', runnerScript];
+  const win = BrowserWindow.fromWebContents(event.sender);
+
+  const proc = spawn(interpreter.bin, args, {
+    cwd,
+    shell: false,
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      PYTHONIOENCODING: 'utf-8'
+    },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  activeRunSession = {
+    runId,
+    process: proc,
+    tempDir,
+    window: win,
+    sourceMap
+  };
+
+  proc.stdout.on('data', (chunk) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('run:stdout', { runId, text: chunk.toString('utf8') });
+    }
+  });
+
+  proc.stderr.on('data', (chunk) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('run:stderr', { runId, text: chunk.toString('utf8') });
+    }
+  });
+
+  proc.on('close', (exitCode, signal) => {
+    try { fsSync.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+    if (activeRunSession?.runId === runId) {
+      activeRunSession = null;
+    }
+    if (!win.isDestroyed()) {
+      win.webContents.send('run:exit', { runId, exitCode: exitCode ?? (signal ? 1 : 0), signal });
+    }
+  });
+
+  return { ok: true, runId, sourceMap };
+});
+
+ipcMain.handle('run:input', async (event, { runId, text }) => {
+  validateSender(event);
+  if (!activeRunSession || activeRunSession.runId !== runId || !activeRunSession.process) {
+    return { ok: false, error: 'No active running process for this runId.' };
+  }
+  activeRunSession.process.stdin.write(text + '\n');
+  return { ok: true };
+});
+
+ipcMain.handle('run:stop', async (event, { runId }) => {
+  validateSender(event);
+  if (!activeRunSession || activeRunSession.runId !== runId || !activeRunSession.process) {
+    return { ok: false, error: 'No active running process.' };
+  }
+  stopActiveRun();
+  return { ok: true };
+});
+
+ipcMain.handle('convert:python', async (event, { source, sourceFile, preferredInterpreter, projectRoot }) => {
+  validateSender(event);
+  if (typeof source !== 'string') throw new TypeError('Source must be a string');
+
+  const interpreter = resolvePythonInterpreter(projectRoot, preferredInterpreter);
+  if (!interpreter) {
+    return { ok: false, error: 'Python interpreter not found. Python 3.10+ is required to parse Python files.' };
+  }
+
+  const parserScriptCandidates = [
+    path.join(__dirname, '..', 'resource', 'python-parser.py'),
+    path.join(process.resourcesPath || '', 'resource', 'python-parser.py'),
+    path.join(__dirname, 'python-parser.py')
+  ];
+  let scriptPath = parserScriptCandidates.find((p) => fsSync.existsSync(p));
+  if (!scriptPath) {
+    const tempParser = path.join(os.tmpdir(), 'nizyla-python-parser.py');
+    fsSync.writeFileSync(tempParser, fsSync.readFileSync(path.join(__dirname, 'python-parser.py')));
+    scriptPath = tempParser;
+  }
+
+  const proc = spawnSync(interpreter.bin, [...interpreter.args, scriptPath], {
+    input: source,
+    encoding: 'utf8',
+    shell: false,
+    timeout: 15000
+  });
+
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(proc.stdout || proc.stderr || '{}');
+  } catch (err) {
+    return { ok: false, error: `Failed to parse Python AST: ${proc.stderr || err.message}` };
+  }
+
+  if (parsedJson.error) {
+    return {
+      ok: false,
+      error: parsedJson.message || 'SyntaxError in Python file.',
+      line: parsedJson.line,
+      col: parsedJson.col
+    };
+  }
+
+  const { document, error } = convertPythonAstToGcn(parsedJson, source, sourceFile);
+  if (error) return { ok: false, error };
+
+  return { ok: true, document };
+});
+
+ipcMain.handle('convert:gdscript', async (event, { source, sourceFile }) => {
+  validateSender(event);
+  if (typeof source !== 'string') throw new TypeError('Source must be a string');
+
+  const wasmDir = isDev
+    ? path.join(__dirname, '..', 'resource', 'wasm')
+    : path.join(process.resourcesPath, 'resource', 'wasm');
+
+  const { document, error } = await convertGdscriptToGcn(source, sourceFile, wasmDir);
+  if (error) return { ok: false, error };
+  return { ok: true, document };
+});
 
 ipcMain.handle('terminal:run', async (_event, command, cwd) => {
   try {

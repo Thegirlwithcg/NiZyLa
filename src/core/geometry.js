@@ -4,6 +4,7 @@ const operators = {
   compare: ['==', '!=', '<', '<=', '>', '>='],
   boolean: ['and', 'or', 'not']
 };
+
 // Union of Python and Godot 4 keywords, literals, and names used by code generation.
 const reservedNames = new Set(`False None True and as assert async await break class
   continue def del elif else except finally for from global if import in is lambda
@@ -26,25 +27,92 @@ const numeric = (type) => type === 'int' || type === 'float';
 export const nodeDefinitions = {
   start: { label: 'Start', category: 'Entry', defaults: {}, ports: [port('next', 'out', 'exec')] },
   literal: { label: 'Value', category: 'Value', defaults: { valueType: 'int', value: 0 }, valueTypes,
-    ports: (node) => [output(node.data.valueType)] },
+    ports: (node) => [output(node.data?.valueType ?? 'int')] },
   getVariable: { label: 'Get Variable', category: 'Variable', defaults: { variableId: '' },
-    ports: (node, variables) => [output(variables.find((v) => v.id === node.data.variableId)?.type ?? 'unknown')] },
+    ports: (node, variables) => [output(variables.find((v) => v.id === node.data?.variableId)?.type ?? 'unknown')] },
   setVariable: { label: 'Set Variable', category: 'Variable', defaults: { variableId: '' },
-    ports: (node, variables) => [...execution('next'), input('value', variables.find((v) => v.id === node.data.variableId)?.type ?? 'unknown')] },
+    ports: (node, variables) => [...execution('next'), input('value', variables.find((v) => v.id === node.data?.variableId)?.type ?? 'unknown')] },
   binary: { label: 'Math', category: 'Math', defaults: { operator: '+' }, operators: operators.binary,
     ports: (node, _variables, types) => [input('a', 'number'), input('b', 'number'),
-      output(node.data.operator === '/' ? 'float' : numeric(types.a) && numeric(types.b)
+      output(node.data?.operator === '/' ? 'float' : numeric(types?.a) && numeric(types?.b)
         ? (types.a === 'int' && types.b === 'int' ? 'int' : 'float') : 'unknown')] },
   compare: { label: 'Compare', category: 'Logic', defaults: { operator: '==' }, operators: operators.compare,
-    ports: (node) => [input('a', ['==', '!='].includes(node.data.operator) ? 'any' : 'number'),
-      input('b', ['==', '!='].includes(node.data.operator) ? 'any' : 'number'), output('bool')] },
+    ports: (node) => [input('a', ['==', '!='].includes(node.data?.operator) ? 'any' : 'number'),
+      input('b', ['==', '!='].includes(node.data?.operator) ? 'any' : 'number'), output('bool')] },
   boolean: { label: 'Boolean Logic', category: 'Logic', defaults: { operator: 'and' }, operators: operators.boolean,
-    ports: (node) => [input('a', 'bool'), ...(node.data.operator === 'not' ? [] : [input('b', 'bool')]), output('bool')] },
+    ports: (node) => [input('a', 'bool'), ...(node.data?.operator === 'not' ? [] : [input('b', 'bool')]), output('bool')] },
   if: { label: 'If / Else', category: 'Control', defaults: {}, ports: [...execution('then', 'else', 'next'), input('condition', 'bool')] },
   while: { label: 'While', category: 'Control', defaults: {}, ports: [...execution('body', 'next'), input('condition', 'bool')] },
   forRange: { label: 'For Range', category: 'Control', defaults: { variableId: '' },
     ports: [...execution('body', 'next'), input('start', 'int'), input('stop', 'int'), input('step', 'int')] },
-  print: { label: 'Print', category: 'Output', defaults: {}, ports: [...execution('next'), input('value', 'any')] }
+  print: { label: 'Print', category: 'Output', defaults: {}, ports: [...execution('next'), input('value', 'any')] },
+
+  // --- v2 nodes ---
+  functionDef: {
+    label: 'Function', category: 'Function',
+    defaults: { name: 'my_function', parameters: [], returnType: 'any', isAsync: false, decorators: [], graph: null },
+    ports: () => execution('next')
+  },
+  parameter: {
+    label: 'Parameter', category: 'Function',
+    defaults: { parameterId: '', name: '', paramType: 'any' },
+    ports: (node) => [output(node.data?.paramType || 'any')]
+  },
+  return: {
+    label: 'Return', category: 'Function',
+    defaults: { hasValue: true },
+    ports: (node) => [port('in', 'in', 'exec'), ...(node.data?.hasValue !== false ? [input('value', 'any')] : [])]
+  },
+  classDef: {
+    label: 'Class', category: 'Class',
+    defaults: { name: 'MyClass', baseClass: '', decorators: [], graph: null },
+    ports: () => execution('next')
+  },
+  functionCall: {
+    label: 'Call Function', category: 'Function',
+    defaults: { targetId: '', name: 'call', argumentNames: [], isMethod: false },
+    ports: (node) => {
+      const args = (node.data?.argumentNames || []).map((name, i) => input(name || `arg_${i}`, 'any'));
+      const targetInput = node.data?.isMethod ? [input('target', 'any')] : [];
+      return [...execution('next'), ...targetInput, ...args, output('any')];
+    }
+  },
+  instantiate: {
+    label: 'New Instance', category: 'Class',
+    defaults: { targetId: '', className: 'MyClass', argumentNames: [] },
+    ports: (node) => {
+      const args = (node.data?.argumentNames || []).map((name, i) => input(name || `arg_${i}`, 'any'));
+      return [...execution('next'), ...args, output('any')];
+    }
+  },
+  import: {
+    label: 'Import', category: 'Module',
+    defaults: { importType: 'module', module: '', names: [], isRelative: false, level: 0 },
+    ports: () => execution('next')
+  },
+  symbolRef: {
+    label: 'Symbol', category: 'Module',
+    defaults: { importNodeId: '', symbol: '' },
+    ports: () => [output('any')]
+  },
+  getMember: {
+    label: 'Get Member', category: 'Member',
+    defaults: { memberName: '' },
+    ports: () => [input('object', 'any'), output('any')]
+  },
+  setMember: {
+    label: 'Set Member', category: 'Member',
+    defaults: { memberName: '' },
+    ports: () => [...execution('next'), input('object', 'any'), input('value', 'any')]
+  },
+  codeNode: {
+    label: 'Code', category: 'Code',
+    defaults: { codeKind: 'statement', code: 'pass', language: 'python', sourceLocation: null },
+    ports: (node) => {
+      if (node.data?.codeKind === 'expression') return [output('any')];
+      return execution('next');
+    }
+  }
 };
 
 /** inputTypes contains inferred source types by input handle; no graph evaluation. */
@@ -55,11 +123,24 @@ export function getNodePorts(node, variables = [], inputTypes = {}) {
   return ports.map((item) => ({ ...item }));
 }
 
-export function createGeometryDocument() {
+export function createChildGraph() {
   return {
-    format: 'nizyla.geometry-code', version: 1, target: 'python', variables: [],
     nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} }],
-    edges: [], viewport: { x: 0, y: 0, zoom: 1 }
+    edges: [],
+    variables: [],
+    viewport: { x: 0, y: 0, zoom: 1 }
+  };
+}
+
+export function createGeometryDocument(target = 'python', version = 2) {
+  return {
+    format: 'nizyla.geometry-code',
+    version,
+    target,
+    variables: [],
+    nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} }],
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 1 }
   };
 }
 
@@ -70,42 +151,200 @@ const literalMatches = (type, value) => type === 'int' ? Number.isSafeInteger(va
     : type === 'string' ? typeof value === 'string' : type === 'bool' && typeof value === 'boolean';
 const diagnostic = (code, message, location = {}, severity = 'error') => ({ severity, code, message, ...location });
 
-// File shape is deliberately separate from editable graph errors.
-function schemaDiagnostics(doc) {
+function validateGraphShape(graph, path = '', isV1 = false) {
+  const result = [];
+  const p = path ? `${path}.` : '';
+  const check = (valid, message, location = {}) => {
+    if (!valid) result.push(diagnostic('invalid-schema', message, location));
+  };
+  check(record(graph.viewport) && Number.isFinite(graph.viewport.x) && Number.isFinite(graph.viewport.y)
+    && Number.isFinite(graph.viewport.zoom) && graph.viewport.zoom > 0, `${p}viewport requires finite x/y and positive zoom.`);
+  for (const key of ['variables', 'nodes', 'edges']) check(Array.isArray(graph[key]), `${p}${key} must be an array.`);
+  if (!['variables', 'nodes', 'edges'].every((key) => Array.isArray(graph[key]))) return result;
+
+  for (const [index, variable] of graph.variables.entries()) {
+    check(record(variable) && identifier(variable.id) && typeof variable.name === 'string'
+      && valueTypes.includes(variable.type) && literalMatches(variable.type, variable.initialValue),
+    `${p}variables[${index}] requires id, name, type and a matching initialValue.`);
+  }
+
+  for (const [index, node] of graph.nodes.entries()) {
+    const location = identifier(node?.id) ? { nodeId: node.id } : {};
+    if (!record(node) || !identifier(node.id) || !Object.hasOwn(nodeDefinitions, node.type)
+      || !record(node.position) || !Number.isFinite(node.position.x) || !Number.isFinite(node.position.y) || !record(node.data)) {
+      check(false, `${p}nodes[${index}] requires id, known type, finite position and data.`, location);
+      continue;
+    }
+    if (isV1) {
+      // In v1, only the original 11 nodes were valid
+      const v1Types = ['start', 'literal', 'getVariable', 'setVariable', 'binary', 'compare', 'boolean', 'if', 'while', 'forRange', 'print'];
+      if (!v1Types.includes(node.type)) {
+        check(false, `${p}nodes[${index}] has unsupported type for v1: ${node.type}`, location);
+      }
+    }
+    const data = node.data;
+    if (node.type === 'literal') {
+      check(valueTypes.includes(data.valueType) && literalMatches(data.valueType, data.value), 'Literal value must match valueType.', location);
+    }
+    if (Object.hasOwn(operators, node.type)) {
+      check(operators[node.type].includes(data.operator), 'Unknown or missing operator.', location);
+    }
+    if (['getVariable', 'setVariable', 'forRange'].includes(node.type)) {
+      check(typeof data.variableId === 'string', 'variableId must be a string.', location);
+    }
+    if (node.type === 'functionDef') {
+      check(typeof data.name === 'string' && data.name.trim().length > 0, 'Function requires a name.', location);
+      check(Array.isArray(data.parameters), 'Function parameters must be an array.', location);
+      if (data.graph) {
+        check(record(data.graph), 'Function graph must be an object.', location);
+        if (record(data.graph)) {
+          result.push(...validateGraphShape(data.graph, `${p}nodes[${index}].data.graph`, isV1));
+        }
+      }
+    }
+    if (node.type === 'classDef') {
+      check(typeof data.name === 'string' && data.name.trim().length > 0, 'Class requires a name.', location);
+      if (data.graph) {
+        check(record(data.graph), 'Class graph must be an object.', location);
+        if (record(data.graph)) {
+          result.push(...validateGraphShape(data.graph, `${p}nodes[${index}].data.graph`, isV1));
+        }
+      }
+    }
+    if (node.type === 'parameter') {
+      check(typeof data.parameterId === 'string', 'Parameter node requires parameterId string.', location);
+    }
+    if (node.type === 'codeNode') {
+      check(['statement', 'expression', 'block'].includes(data.codeKind), 'Code node codeKind must be statement, expression, or block.', location);
+      check(typeof data.code === 'string', 'Code node requires code string.', location);
+    }
+  }
+
+  for (const [index, edge] of graph.edges.entries()) {
+    check(record(edge) && ['id', 'source', 'sourceHandle', 'target', 'targetHandle'].every((key) => identifier(edge[key])),
+      `${p}edges[${index}] requires nonempty id, source, sourceHandle, target and targetHandle.`, identifier(edge?.id) ? { edgeId: edge.id } : {});
+  }
+  return result;
+}
+
+export function schemaDiagnostics(doc) {
   if (!record(doc)) return [diagnostic('invalid-schema', 'Document must be an object.')];
   if (doc.format !== 'nizyla.geometry-code') return [diagnostic('invalid-format', 'Not a Geometry Code document.')];
-  if (doc.version !== 1) return [diagnostic('unsupported-version', 'Only Geometry Code version 1 is supported.')];
+  if (doc.version !== 1 && doc.version !== 2) return [diagnostic('unsupported-version', 'Only Geometry Code versions 1 and 2 are supported.')];
   const result = [];
   const check = (valid, message, location) => {
     if (!valid) result.push(diagnostic('invalid-schema', message, location));
   };
   check(['python', 'gdscript'].includes(doc.target), 'target must be python or gdscript.');
-  check(record(doc.viewport) && Number.isFinite(doc.viewport.x) && Number.isFinite(doc.viewport.y)
-    && Number.isFinite(doc.viewport.zoom) && doc.viewport.zoom > 0, 'viewport requires finite x/y and positive zoom.');
-  for (const key of ['variables', 'nodes', 'edges']) check(Array.isArray(doc[key]), `${key} must be an array.`);
-  if (!['variables', 'nodes', 'edges'].every((key) => Array.isArray(doc[key]))) return result;
-  for (const [index, variable] of doc.variables.entries()) {
-    check(record(variable) && identifier(variable.id) && typeof variable.name === 'string'
-      && valueTypes.includes(variable.type) && literalMatches(variable.type, variable.initialValue),
-    `variables[${index}] requires id, name, type and a matching initialValue.`);
-  }
-  for (const [index, node] of doc.nodes.entries()) {
-    const location = identifier(node?.id) ? { nodeId: node.id } : {};
-    if (!record(node) || !identifier(node.id) || !Object.hasOwn(nodeDefinitions, node.type)
-      || !record(node.position) || !Number.isFinite(node.position.x) || !Number.isFinite(node.position.y) || !record(node.data)) {
-      check(false, `nodes[${index}] requires id, known type, finite position and data.`, location);
-      continue;
-    }
-    const data = node.data;
-    if (node.type === 'literal') check(valueTypes.includes(data.valueType) && literalMatches(data.valueType, data.value), 'Literal value must match valueType.', location);
-    if (Object.hasOwn(operators, node.type)) check(operators[node.type].includes(data.operator), 'Unknown or missing operator.', location);
-    if (['getVariable', 'setVariable', 'forRange'].includes(node.type)) check(typeof data.variableId === 'string', 'variableId must be a string.', location);
-  }
-  for (const [index, edge] of doc.edges.entries()) {
-    check(record(edge) && ['id', 'source', 'sourceHandle', 'target', 'targetHandle'].every((key) => identifier(edge[key])),
-      `edges[${index}] requires nonempty id, source, sourceHandle, target and targetHandle.`, identifier(edge?.id) ? { edgeId: edge.id } : {});
-  }
+  result.push(...validateGraphShape(doc, '', doc.version === 1));
   return result;
+}
+
+/**
+ * Migrates a valid v1 document to v2 in-memory.
+ * Python: puts the original graph into `main` and calls it under `if __name__ == "__main__": main()`.
+ * GDScript: puts the original graph into `_ready` of a script that `extends Node`.
+ */
+export function migrateV1ToV2(doc) {
+  if (doc.version === 2) return doc;
+  const childGraph = {
+    nodes: doc.nodes.map((n) => structuredClone(n)),
+    edges: doc.edges.map((e) => structuredClone(e)),
+    variables: doc.variables.map((v) => structuredClone(v)),
+    viewport: { ...doc.viewport }
+  };
+
+  if (doc.target === 'python') {
+    const mainFuncId = 'def_main';
+    const guardId = 'main_guard';
+    const rootNodes = [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: mainFuncId,
+        type: 'functionDef',
+        position: { x: 200, y: 0 },
+        data: {
+          name: 'main',
+          parameters: [],
+          returnType: 'void',
+          isAsync: false,
+          decorators: [],
+          graph: childGraph
+        }
+      },
+      {
+        id: guardId,
+        type: 'codeNode',
+        position: { x: 450, y: 0 },
+        data: {
+          codeKind: 'statement',
+          code: 'if __name__ == "__main__":\n    main()',
+          language: 'python',
+          sourceLocation: null
+        }
+      }
+    ];
+    const rootEdges = [
+      { id: 'e_start_def', source: 'start', sourceHandle: 'next', target: mainFuncId, targetHandle: 'in' },
+      { id: 'e_def_guard', source: mainFuncId, sourceHandle: 'next', target: guardId, targetHandle: 'in' }
+    ];
+    return {
+      format: 'nizyla.geometry-code',
+      version: 2,
+      target: 'python',
+      variables: [],
+      nodes: rootNodes,
+      edges: rootEdges,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      isMigratedV1: true
+    };
+  } else {
+    // GDScript
+    const extendsId = 'ext_node';
+    const readyFuncId = 'def_ready';
+    const rootNodes = [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: extendsId,
+        type: 'import',
+        position: { x: 200, y: 0 },
+        data: {
+          importType: 'gd_extends',
+          module: 'Node',
+          names: [],
+          isRelative: false,
+          level: 0
+        }
+      },
+      {
+        id: readyFuncId,
+        type: 'functionDef',
+        position: { x: 450, y: 0 },
+        data: {
+          name: '_ready',
+          parameters: [],
+          returnType: 'void',
+          isAsync: false,
+          decorators: [],
+          graph: childGraph
+        }
+      }
+    ];
+    const rootEdges = [
+      { id: 'e_start_ext', source: 'start', sourceHandle: 'next', target: extendsId, targetHandle: 'in' },
+      { id: 'e_ext_ready', source: extendsId, sourceHandle: 'next', target: readyFuncId, targetHandle: 'in' }
+    ];
+    return {
+      format: 'nizyla.geometry-code',
+      version: 2,
+      target: 'gdscript',
+      variables: [],
+      nodes: rootNodes,
+      edges: rootEdges,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      isMigratedV1: true
+    };
+  }
 }
 
 export function parseGeometryDocument(text) {
@@ -117,21 +356,65 @@ export function parseGeometryDocument(text) {
     return { document: null, diagnostics: [diagnostic('invalid-json', 'Could not parse Geometry Code JSON.')] };
   }
   const errors = schemaDiagnostics(document);
-  return errors.length ? { document: null, diagnostics: errors }
-    : { document, diagnostics: validateGeometryDocument(document) };
+  if (errors.length) return { document: null, diagnostics: errors };
+
+  if (document.version === 1) {
+    const migrated = migrateV1ToV2(document);
+    return { document: migrated, diagnostics: validateGeometryDocument(migrated) };
+  }
+
+  return { document, diagnostics: validateGeometryDocument(document) };
+}
+
+function serializeNode(node) {
+  const def = nodeDefinitions[node.type];
+  const defaults = def ? def.defaults : {};
+  const data = {};
+  for (const key of Object.keys(defaults)) {
+    if (key === 'graph' && node.data?.graph) {
+      data.graph = {
+        nodes: node.data.graph.nodes.map(serializeNode),
+        edges: node.data.graph.edges.map(({ id, source, sourceHandle, target, targetHandle }) => ({ id, source, sourceHandle, target, targetHandle })),
+        variables: node.data.graph.variables.map(({ id, name, type, initialValue }) => ({ id, name, type, initialValue })),
+        viewport: { x: node.data.graph.viewport.x, y: node.data.graph.viewport.y, zoom: node.data.graph.viewport.zoom }
+      };
+    } else if (node.data && node.data[key] !== undefined) {
+      data[key] = node.data[key];
+    } else if (defaults[key] !== undefined) {
+      data[key] = defaults[key];
+    }
+  }
+  // Extra properties for specific nodes like functionDef parameters
+  if (node.type === 'functionDef' && Array.isArray(node.data?.parameters)) {
+    data.parameters = node.data.parameters.map(({ id, name, type, defaultValue }) => ({
+      id, name, type: type || 'any', ...(defaultValue !== undefined ? { defaultValue } : {})
+    }));
+  }
+  if (node.type === 'classDef') {
+    data.baseClass = node.data?.baseClass || '';
+  }
+  return {
+    id: node.id,
+    type: node.type,
+    position: { x: node.position.x, y: node.position.y },
+    data
+  };
 }
 
 export function serializeGeometryDocument(document) {
   const errors = schemaDiagnostics(document);
   if (errors.length) throw new TypeError(errors.map((item) => item.message).join(' '));
   const { format, version, target, variables, nodes, edges, viewport } = document;
-  return JSON.stringify({ format, version, target,
+  const out = {
+    format,
+    version,
+    target,
     variables: variables.map(({ id, name, type, initialValue }) => ({ id, name, type, initialValue })),
-    nodes: nodes.map(({ id, type, position, data }) => ({ id, type, position: { x: position.x, y: position.y },
-      data: Object.fromEntries(Object.keys(nodeDefinitions[type].defaults).map((key) => [key, data[key]])) })),
+    nodes: nodes.map(serializeNode),
     edges: edges.map(({ id, source, sourceHandle, target, targetHandle }) => ({ id, source, sourceHandle, target, targetHandle })),
     viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
-  }, null, 2) + '\n';
+  };
+  return JSON.stringify(out, null, 2) + '\n';
 }
 
 // Iterative topological ordering handles long chains and cycles without recursion.
@@ -148,44 +431,67 @@ function orderNodes(nodes, outgoing) {
   return order;
 }
 
-export function validateGeometryDocument(doc) {
-  const diagnostics = schemaDiagnostics(doc);
-  if (diagnostics.length) return diagnostics;
-  const error = (code, message, location) => diagnostics.push(diagnostic(code, message, location));
+function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map(), diagnostics = []) {
+  const error = (code, message, location = {}) => diagnostics.push(diagnostic(code, message, { ...location, scopePath }));
+  const isRoot = scopePath.length === 0;
+
   for (const key of ['nodes', 'edges', 'variables']) {
     const seen = new Set();
-    for (const item of doc[key]) {
+    for (const item of graph[key]) {
       if (seen.has(item.id)) error('duplicate-id', `Duplicate ${key} ID: ${item.id}.`, key === 'nodes' ? { nodeId: item.id } : key === 'edges' ? { edgeId: item.id } : {});
       seen.add(item.id);
     }
   }
-  // References are ambiguous with duplicate IDs; keep the document editable.
-  if (diagnostics.length) return diagnostics;
-  const nodes = new Map(doc.nodes.map((node) => [node.id, node]));
-  const variables = new Map(doc.variables.map((variable) => [variable.id, variable]));
+
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const localVariables = new Map(graph.variables.map((variable) => [variable.id, variable]));
   const names = new Set();
-  for (const variable of doc.variables) {
+  for (const variable of graph.variables) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name) || reservedNames.has(variable.name) || variable.name.startsWith('_gcn_')) {
       error('invalid-variable-name', `Variable ${variable.id} has an invalid or reserved name: ${variable.name}.`);
     }
     if (names.has(variable.name)) error('duplicate-variable-name', `Duplicate variable name: ${variable.name}.`);
     names.add(variable.name);
   }
-  const starts = doc.nodes.filter((node) => node.type === 'start');
+
+  const starts = graph.nodes.filter((node) => node.type === 'start');
   if (starts.length !== 1) error('start-count', 'A graph requires exactly one Start node.');
-  for (const node of doc.nodes) {
+
+  // Combined variables for lexical scoping: local first, then enclosing
+  const accessibleVariables = new Map([...enclosingSymbols, ...localVariables]);
+
+  for (const node of graph.nodes) {
     if (['getVariable', 'setVariable', 'forRange'].includes(node.type)) {
-      const variable = variables.get(node.data.variableId);
-      if (!variable) error('missing-variable', `Variable ${node.data.variableId || '(unselected)'} does not exist.`, { nodeId: node.id });
+      const variable = accessibleVariables.get(node.data?.variableId);
+      if (!variable) error('missing-variable', `Variable ${node.data?.variableId || '(unselected)'} does not exist.`, { nodeId: node.id });
       else if (node.type === 'forRange' && variable.type !== 'int') error('for-variable-type', 'For Range requires an int variable.', { nodeId: node.id });
     }
+    if (node.type === 'parameter') {
+      const enclosingFunction = enclosingSymbols.get('_current_function');
+      if (!enclosingFunction) {
+        error('orphan-parameter', 'Parameter node is only allowed inside a function.', { nodeId: node.id });
+      } else {
+        const param = (enclosingFunction.parameters || []).find((p) => p.id === node.data?.parameterId);
+        if (!param) {
+          error('missing-parameter', `Parameter "${node.data?.name || node.data?.parameterId}" does not exist in function signature.`, { nodeId: node.id });
+        }
+      }
+    }
+    if (node.type === 'return') {
+      const enclosingFunction = enclosingSymbols.get('_current_function');
+      if (!enclosingFunction) {
+        error('orphan-return', 'Return node is only allowed inside a function.', { nodeId: node.id });
+      }
+    }
   }
-  const portMaps = new Map(doc.nodes.map((node) => [node.id, new Map(getNodePorts(node, doc.variables).map((p) => [p.id, p]))]));
-  const execOut = new Map(doc.nodes.map((node) => [node.id, []]));
-  const valueOut = new Map(doc.nodes.map((node) => [node.id, []]));
-  const incoming = new Map(doc.nodes.map((node) => [node.id, new Map()]));
-  const execPorts = new Map(doc.nodes.map((node) => [node.id, new Set()]));
-  for (const edge of doc.edges) {
+
+  const portMaps = new Map(graph.nodes.map((node) => [node.id, new Map(getNodePorts(node, [...accessibleVariables.values()]).map((p) => [p.id, p]))]));
+  const execOut = new Map(graph.nodes.map((node) => [node.id, []]));
+  const valueOut = new Map(graph.nodes.map((node) => [node.id, []]));
+  const incoming = new Map(graph.nodes.map((node) => [node.id, new Map()]));
+  const execPorts = new Map(graph.nodes.map((node) => [node.id, new Set()]));
+
+  for (const edge of graph.edges) {
     const location = { edgeId: edge.id, nodeId: edge.target };
     if (!nodes.has(edge.source) || !nodes.has(edge.target)) {
       error('missing-node', 'Edge refers to a missing node.', location);
@@ -204,27 +510,41 @@ export function validateGeometryDocument(doc) {
     }
     (source.kind === 'exec' ? execOut : valueOut).get(edge.source).push(edge);
   }
-  const execOrder = orderNodes(doc.nodes, execOut);
-  const valueOrder = orderNodes(doc.nodes, valueOut);
-  if (execOrder.length !== doc.nodes.length) error('exec-cycle', 'Execution connections contain a cycle. Use body/next instead of a back edge.');
-  if (valueOrder.length !== doc.nodes.length) error('value-cycle', 'Value connections contain a cycle.');
+
+  const execOrder = orderNodes(graph.nodes, execOut);
+  const valueOrder = orderNodes(graph.nodes, valueOut);
+  if (execOrder.length !== graph.nodes.length) error('exec-cycle', 'Execution connections contain a cycle. Use body/next instead of a back edge.');
+  if (valueOrder.length !== graph.nodes.length) error('value-cycle', 'Value connections contain a cycle.');
 
   const used = new Set();
   const pending = starts.map((node) => node.id);
+  // Function and class definitions at root module level are considered entry points / used
+  for (const node of graph.nodes) {
+    if (['functionDef', 'classDef', 'import'].includes(node.type)) {
+      pending.push(node.id);
+    }
+  }
+
   while (pending.length) {
     const id = pending.pop();
     if (used.has(id)) continue;
     used.add(id);
-    for (const edge of execOut.get(id)) pending.push(edge.target);
-    for (const [handle, edge] of incoming.get(id)) if (portMaps.get(id).get(handle).kind === 'value') pending.push(edge.source);
+    for (const edge of execOut.get(id) || []) pending.push(edge.target);
+    for (const [handle, edge] of incoming.get(id) || []) {
+      if (portMaps.get(id)?.get(handle)?.kind === 'value') pending.push(edge.source);
+    }
   }
-  for (const node of doc.nodes) {
+
+  for (const node of graph.nodes) {
     if (!used.has(node.id)) {
-      diagnostics.push(diagnostic('unused-node', 'Node is not used by Start and will not be generated.', { nodeId: node.id }, 'warning'));
+      diagnostics.push(diagnostic('unused-node', 'Node is not used by Start and will not be generated.', { nodeId: node.id, scopePath }, 'warning'));
       continue;
     }
-    for (const p of portMaps.get(node.id).values()) {
-      if (p.direction === 'in' && p.kind === 'value' && !incoming.get(node.id).has(p.id)) error('missing-input', `Connect input ${p.id}.`, { nodeId: node.id });
+    for (const p of portMaps.get(node.id)?.values() || []) {
+      if (p.direction === 'in' && p.kind === 'value' && !incoming.get(node.id).has(p.id)) {
+        // Special case: optional inputs like method target or arguments can be checked
+        error('missing-input', `Connect input ${p.id}.`, { nodeId: node.id });
+      }
     }
   }
 
@@ -232,38 +552,63 @@ export function validateGeometryDocument(doc) {
   for (const id of valueOrder) {
     const node = nodes.get(id);
     const types = {};
-    for (const [handle, edge] of incoming.get(id)) {
-      if (portMaps.get(id).get(handle).kind === 'value') types[handle] = outputTypes.get(edge.source) ?? 'unknown';
+    for (const [handle, edge] of incoming.get(id) || []) {
+      if (portMaps.get(id)?.get(handle)?.kind === 'value') types[handle] = outputTypes.get(edge.source) ?? 'unknown';
     }
-    const ports = getNodePorts(node, doc.variables, types);
+    const ports = getNodePorts(node, [...accessibleVariables.values()], types);
     outputTypes.set(id, ports.find((p) => p.direction === 'out' && p.kind === 'value')?.valueType ?? 'unknown');
     for (const p of ports.filter((p) => p.direction === 'in' && p.kind === 'value')) {
       const actual = types[p.id];
       if (!actual || actual === 'unknown' || p.valueType === 'unknown') continue;
-      const matches = p.valueType === 'any' || p.valueType === actual || p.valueType === 'number' && numeric(actual)
+      const matches = p.valueType === 'any' || actual === 'any' || p.valueType === actual || p.valueType === 'number' && numeric(actual)
         || p.valueType === 'float' && actual === 'int';
-      if (!matches) error('type-mismatch', `${p.id} expects ${p.valueType}, received ${actual}.`, { nodeId: id, edgeId: incoming.get(id).get(p.id).id });
+      if (!matches) error('type-mismatch', `${p.id} expects ${p.valueType}, received ${actual}.`, { nodeId: id, edgeId: incoming.get(id)?.get(p.id)?.id });
     }
-    if (node.type === 'compare' && ['==', '!='].includes(node.data.operator) && types.a && types.b
+    if (node.type === 'compare' && ['==', '!='].includes(node.data?.operator) && types.a && types.b
       && types.a !== 'unknown' && types.b !== 'unknown' && types.a !== types.b && !(numeric(types.a) && numeric(types.b))) {
       error('comparison-type', 'Equality requires matching types or an int/float pair.', { nodeId: id });
     }
     if (node.type === 'forRange') {
-      const step = nodes.get(incoming.get(id).get('step')?.source);
-      if (step?.type === 'literal' && step.data.value === 0) error('zero-step', 'For Range step must not be zero.', { nodeId: id });
+      const step = nodes.get(incoming.get(id)?.get('step')?.source);
+      if (step?.type === 'literal' && step.data?.value === 0) error('zero-step', 'For Range step must not be zero.', { nodeId: id });
     }
   }
+
   const scopes = new Map();
   for (const id of execOrder) {
     const node = nodes.get(id);
     const scope = scopes.get(id) ?? new Set();
-    if (node.type === 'forRange' && scope.has(node.data.variableId)) error('nested-for-variable', 'Nested For Range nodes must use different variables.', { nodeId: id });
-    for (const edge of execOut.get(id)) {
+    if (node.type === 'forRange' && scope.has(node.data?.variableId)) error('nested-for-variable', 'Nested For Range nodes must use different variables.', { nodeId: id });
+    for (const edge of execOut.get(id) || []) {
       if (node.type === 'forRange' && edge.sourceHandle === 'body') {
-        // ponytail: copies grow with nesting depth; use parent-linked scopes if deep nesting matters.
-        scopes.set(edge.target, new Set([...scope, node.data.variableId]));
+        scopes.set(edge.target, new Set([...scope, node.data?.variableId]));
       } else scopes.set(edge.target, scope);
     }
   }
+
+  // Recursive validation of child graphs
+  for (const node of graph.nodes) {
+    if (node.type === 'functionDef' && node.data?.graph) {
+      const childSymbols = new Map(accessibleVariables);
+      childSymbols.set('_current_function', { id: node.id, name: node.data.name, parameters: node.data.parameters || [] });
+      for (const p of node.data.parameters || []) {
+        childSymbols.set(p.id, { id: p.id, name: p.name, type: p.type || 'any' });
+      }
+      validateSingleGraph(node.data.graph, [...scopePath, node.id], childSymbols, diagnostics);
+    }
+    if (node.type === 'classDef' && node.data?.graph) {
+      const childSymbols = new Map(accessibleVariables);
+      childSymbols.set('_current_class', { id: node.id, name: node.data.name });
+      validateSingleGraph(node.data.graph, [...scopePath, node.id], childSymbols, diagnostics);
+    }
+  }
+
+  return diagnostics;
+}
+
+export function validateGeometryDocument(doc) {
+  const diagnostics = schemaDiagnostics(doc);
+  if (diagnostics.length) return diagnostics;
+  validateSingleGraph(doc, [], new Map(), diagnostics);
   return diagnostics;
 }

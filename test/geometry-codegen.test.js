@@ -10,7 +10,7 @@ import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 const targets = ['python', 'gdscript'];
 
 // ---- graph builders (real contract documents) ----
-const graph = (target = 'python') => Object.assign(createGeometryDocument(), { target });
+const graph = (target = 'python') => Object.assign(createGeometryDocument(target, 1), { target });
 function add(doc, id, type, data = {}) {
   doc.nodes.push({ id, type, position: { x: 0, y: 0 }, data: { ...nodeDefinitions[type].defaults, ...data } });
 }

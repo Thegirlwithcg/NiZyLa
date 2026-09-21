@@ -80,7 +80,7 @@ test('malformed JSON, unsupported format/version and invalid schema are rejected
     assert.equal(parseGeometryDocument(text).document, null);
   }
   for (const change of [
-    (d) => { d.format = 'other'; }, (d) => { d.version = 2; },
+    (d) => { d.format = 'other'; }, (d) => { d.version = 999; },
     (d) => { d.target = 'javascript'; }, (d) => { delete d.nodes; },
     (d) => { d.variables = {}; }, (d) => { d.edges = null; },
     (d) => { d.viewport.zoom = 0; }, (d) => { delete d.viewport.x; },

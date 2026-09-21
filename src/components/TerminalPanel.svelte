@@ -12,9 +12,13 @@
   let resizeObserver;
   let removeDataListener;
   let removeExitListener;
+  let removeRunStdout;
+  let removeRunStderr;
+  let removeRunExit;
   let nextTabNumber = 1;
   let deck;
   let destroyed = false;
+  let runInputText = '';
 
   $: activeTab = tabs.find((tab) => tab.key === activeKey) ?? tabs[0] ?? null;
 
@@ -39,6 +43,41 @@
     });
   }
 
+  export async function openRunTab(runId) {
+    let runTab = tabs.find((t) => t.type === 'run');
+    if (runTab) {
+      runTab.runId = runId;
+      runTab.sessionActive = true;
+      runTab.terminal.writeln(`\r\n\x1b[32m=== Starting Python Run ===\x1b[0m\r\n`);
+      activeKey = runTab.key;
+      await tick();
+      resize(runTab);
+      return;
+    }
+
+    const key = 'run-session';
+    runTab = {
+      key,
+      title: 'Python Run',
+      type: 'run',
+      runId,
+      terminal: makeTerminal(),
+      terminalId: null,
+      host: null,
+      isStarting: false,
+      sessionActive: true
+    };
+
+    tabs = [...tabs, runTab];
+    activeKey = key;
+    await tick();
+
+    if (destroyed || !runTab.host) return;
+    runTab.terminal.open(runTab.host);
+    runTab.terminal.writeln(`\x1b[32m=== Starting Python Run ===\x1b[0m\r\n`);
+    resize(runTab);
+  }
+
   async function createTab() {
     if (!api || destroyed) return;
     const targetCwd = cwd || '';
@@ -48,6 +87,7 @@
     const tab = {
       key,
       title: `cmd.exe`,
+      type: 'pty',
       terminal: makeTerminal(),
       terminalId: null,
       host: null,
@@ -125,6 +165,15 @@
     if (remaining.length === 0) onLastTabClose?.();
   }
 
+  function sendRunInput() {
+    const runTab = tabs.find((t) => t.type === 'run');
+    if (!runTab || !runTab.runId || !runTab.sessionActive) return;
+    const text = runInputText;
+    runInputText = '';
+    runTab.terminal.writeln(`\x1b[36m${text}\x1b[0m`);
+    api?.inputPython(runTab.runId, text);
+  }
+
   onMount(async () => {
     destroyed = false;
     removeDataListener = api?.onTerminalData((id, data) => {
@@ -141,6 +190,29 @@
       }
     });
 
+    removeRunStdout = api?.onRunStdout(({ text }) => {
+      const runTab = tabs.find((t) => t.type === 'run');
+      if (runTab) {
+        runTab.terminal.write(text.replace(/\r?\n/g, '\r\n'));
+      }
+    });
+
+    removeRunStderr = api?.onRunStderr(({ text }) => {
+      const runTab = tabs.find((t) => t.type === 'run');
+      if (runTab) {
+        runTab.terminal.write(`\x1b[31m${text.replace(/\r?\n/g, '\r\n')}\x1b[0m`);
+      }
+    });
+
+    removeRunExit = api?.onRunExit(({ exitCode, signal }) => {
+      const runTab = tabs.find((t) => t.type === 'run');
+      if (runTab) {
+        runTab.terminal.writeln(`\r\n\x1b[90m[Process finished with exit code ${exitCode}${signal ? ` (${signal})` : ''}]\x1b[0m\r\n`);
+        runTab.sessionActive = false;
+        tabs = [...tabs];
+      }
+    });
+
     await createTab();
 
     resizeObserver = new ResizeObserver(() => resize(activeTab));
@@ -152,6 +224,9 @@
     resizeObserver?.disconnect();
     removeDataListener?.();
     removeExitListener?.();
+    removeRunStdout?.();
+    removeRunStderr?.();
+    removeRunExit?.();
     for (const tab of tabs) {
       tab.sessionActive = false;
       const terminalId = tab.terminalId;
@@ -167,7 +242,7 @@
   function resize(tab = activeTab) {
     if (!tab?.terminal || !tab.host) return;
     const cols = Math.max(20, Math.floor(tab.host.clientWidth / 8));
-    const rows = Math.max(4, Math.floor((tab.host.clientHeight - 18) / 18));
+    const rows = Math.max(4, Math.floor((tab.host.clientHeight - (tab.type === 'run' ? 50 : 18)) / 18));
     tab.terminal.resize(cols, rows);
     if (tab.terminalId) api.terminalResize(tab.terminalId, cols, rows);
   }
@@ -176,8 +251,14 @@
 <div class="terminal-panel system-terminal-shell">
   <div class="terminal-tabbar" aria-label="Terminal tabs">
     {#each tabs as tab (tab.key)}
-      <div class="terminal-tab" class:active={tab.key === activeKey}>
-        <button class="terminal-tab-label" on:click={() => activateTab(tab.key)}>{tab.title}{tab.isStarting ? '…' : ''}</button>
+      <div class="terminal-tab" class:active={tab.key === activeKey} class:run-tab={tab.type === 'run'}>
+        <button class="terminal-tab-label" on:click={() => activateTab(tab.key)}>
+          {#if tab.type === 'run'}
+            ▶ {tab.title} {tab.sessionActive ? '(Running)' : ''}
+          {:else}
+            {tab.title}{tab.isStarting ? '…' : ''}
+          {/if}
+        </button>
         <button class="terminal-tab-close" aria-label="Close terminal tab" on:click={() => closeTab(tab.key)}>×</button>
       </div>
     {/each}
@@ -192,7 +273,15 @@
       </div>
     {:else}
       {#each tabs as tab (tab.key)}
-        <div class="terminal-pane" class:active={tab.key === activeKey} bind:this={tab.host}></div>
+        <div class="terminal-pane-wrapper" class:active={tab.key === activeKey}>
+          <div class="terminal-pane" bind:this={tab.host}></div>
+          {#if tab.type === 'run'}
+            <form class="terminal-run-input-bar" on:submit|preventDefault={sendRunInput}>
+              <input bind:value={runInputText} placeholder="Send input to input() and press Enter..." spellcheck="false" disabled={!tab.sessionActive} />
+              <button type="submit" disabled={!tab.sessionActive}>Send</button>
+            </form>
+          {/if}
+        </div>
       {/each}
     {/if}
   </div>

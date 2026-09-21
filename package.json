@@ -1,6 +1,6 @@
 {
   "name": "nizyla",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NiZyLa - a graph-aware programming editor built with Node, Electron, and Svelte.",
   "homepage": "https://github.com/Thegirlwithcg/NiZyLa",
   "author": {
@@ -50,7 +50,9 @@
     "@codemirror/state": "latest",
     "@codemirror/view": "latest",
     "@xterm/xterm": "^6.0.0",
-    "@xyflow/svelte": "^1.6.6"
+    "@xyflow/svelte": "^1.6.6",
+    "tree-sitter-wasm": "^2.0.1",
+    "web-tree-sitter": "^0.25.1"
   },
   "optionalDependencies": {
     "node-pty": "^1.1.0"
