@@ -217,7 +217,7 @@ keeps the document (key `"scratch"`) and computes "changed" with `sameContent`.
 
 Shortcuts (only when focus is not in an input/textarea/select/CodeMirror):
 Shift+A add-node menu (canvas focus; at the pointer, else canvas center; Add Node
-button uses the center), Delete/Backspace delete selection (canvas focus),
+button uses the center), Shift+D duplicate selection (canvas focus), Delete/Backspace delete selection (canvas focus),
 Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo. Menu: search, Up/Down, Enter, Esc.
 
 Undo/Redo: snapshots of plain .gcn content, 100 transactions. One transaction =

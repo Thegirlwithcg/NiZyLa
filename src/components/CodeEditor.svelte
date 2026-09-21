@@ -20,6 +20,7 @@
   export let searchHighlight = '';
   export let searchLine = null;
   export let readOnly = false;
+  export let onchange = null;
 
   const dispatch = createEventDispatcher();
   let host;
@@ -291,7 +292,9 @@
         }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged || readOnly) return;
-          dispatch('change', update.state.doc.toString());
+          const text = update.state.doc.toString();
+          dispatch('change', text);
+          onchange?.(text);
           maybeInsertTableDivider(update);
         })
       ]

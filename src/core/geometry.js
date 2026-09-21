@@ -107,7 +107,7 @@ export const nodeDefinitions = {
   },
   codeNode: {
     label: 'Code', category: 'Code',
-    defaults: { codeKind: 'statement', code: 'pass', language: 'python', sourceLocation: null },
+    defaults: { title: '', codeKind: 'statement', code: 'pass', language: 'python', sourceLocation: null },
     ports: (node) => {
       if (node.data?.codeKind === 'expression') return [output('any')];
       return execution('next');
@@ -215,6 +215,9 @@ function validateGraphShape(graph, path = '', isV1 = false) {
       check(typeof data.parameterId === 'string', 'Parameter node requires parameterId string.', location);
     }
     if (node.type === 'codeNode') {
+      if (data.title !== undefined) {
+        check(typeof data.title === 'string', 'Code node title must be a string.', location);
+      }
       check(['statement', 'expression', 'block'].includes(data.codeKind), 'Code node codeKind must be statement, expression, or block.', location);
       check(typeof data.code === 'string', 'Code node requires code string.', location);
     }

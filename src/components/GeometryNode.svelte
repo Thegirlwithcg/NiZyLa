@@ -3,6 +3,7 @@
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
   import { nodeDefinitions } from '../core/geometry.js';
   import GeometryField from './GeometryField.svelte';
+  import CodeEditor from './CodeEditor.svelte';
 
   let { id } = $props();
   const ctx = getContext('gcn');
@@ -42,8 +43,11 @@
 {#if node && definition}
   <div class="gcn-node" class:has-error={diagnostics.some((d) => d.severity === 'error')} data-node-type={node.type} {ondblclick} role="presentation">
     <header class="gcn-node-head">
-      <strong>{node.type === 'functionDef' ? `def ${node.data?.name || 'func'}` : node.type === 'classDef' ? `class ${node.data?.name || 'Class'}` : definition.label}</strong>
-      <span class="gcn-category">{definition.category}</span>
+      <div class="gcn-node-head-main">
+        <strong>{node.type === 'functionDef' ? `def ${node.data?.name || 'func'}` : node.type === 'classDef' ? `class ${node.data?.name || 'Class'}` : node.type === 'codeNode' ? `</> ${node.data?.title || 'Code'}` : definition.label}</strong>
+        <span class="gcn-category">{definition.category}</span>
+      </div>
+      <button type="button" class="gcn-node-help-btn nodrag" aria-label={`Help for ${definition.label}`} onclick={(e) => { e.stopPropagation(); ctx.showHelp(id); }}>?</button>
     </header>
 
     <div class="gcn-node-form nodrag nopan nowheel">
@@ -135,13 +139,30 @@
           oninput={onInputData('memberName')} onblur={ctx.endEdit} spellcheck="false" />
 
       {:else if node.type === 'codeNode'}
+        {@const ext = ctx.target === 'gdscript' ? 'gd' : 'py'}
+        <input aria-label="Code name" value={node.data?.title || ''} placeholder="Code name (optional)"
+          oninput={onInputData('title')} onblur={ctx.endEdit} spellcheck="false" />
         <select aria-label="Code kind" value={node.data?.codeKind || 'statement'} onchange={onSelectData('codeKind')}>
           <option value="statement">Statement</option>
           <option value="expression">Expression</option>
           <option value="block">Block</option>
         </select>
-        <textarea aria-label="Code" rows="3" spellcheck="false" value={node.data?.code || ''}
-          oninput={onInputData('code')} onblur={ctx.endEdit}></textarea>
+        <div class="gcn-code-tools">
+          <button type="button" class="gcn-btn-lines" class:active={ctx.codeLineNumbers} aria-pressed={ctx.codeLineNumbers}
+            onclick={ctx.toggleCodeLineNumbers} title="Toggle line numbers">#</button>
+          <button type="button" class="gcn-btn-expand" onclick={() => ctx.openCode(id)} title="Expand code editor">⤢ Expand</button>
+        </div>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div class="gcn-code-host" onfocusout={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) ctx.endEdit(); }}>
+          <CodeEditor
+            file={{ name: `node.${ext}`, path: `gcn-code:${id}.${ext}` }}
+            content={node.data?.code ?? ''}
+            showLineNumbers={ctx.codeLineNumbers}
+            theme={ctx.theme}
+            preferences={ctx.preferences}
+            onchange={(code) => ctx.setData(id, { code }, true)}
+          />
+        </div>
 
       {:else if definition.operators}
         <select aria-label="Operator" value={node.data?.operator} onchange={onSelectData('operator')}>

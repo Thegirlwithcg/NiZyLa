@@ -209,6 +209,63 @@ export function removeItems(doc, { nodeIds = [], edgeIds = [] } = {}) {
   return nodes.length === doc.nodes.length && edges.length === doc.edges.length ? null : { ...doc, nodes, edges };
 }
 
+export function duplicateNodes(graph, nodeIds, offset = { x: 40, y: 40 }) {
+  if (!graph || !Array.isArray(nodeIds)) return null;
+  const targetIds = new Set(nodeIds);
+  const toDuplicate = (graph.nodes || []).filter((n) => targetIds.has(n.id) && n.type !== 'start');
+  if (toDuplicate.length === 0) return null;
+
+  const idMap = new Map();
+  const newNodes = [];
+  const offX = offset?.x ?? 40;
+  const offY = offset?.y ?? 40;
+
+  for (const orig of toDuplicate) {
+    const newId = uuid();
+    idMap.set(orig.id, newId);
+    const newPos = finitePoint({ x: (orig.position?.x ?? 0) + offX, y: (orig.position?.y ?? 0) + offY });
+    const newData = orig.data ? structuredClone(orig.data) : {};
+    newNodes.push({
+      ...orig,
+      id: newId,
+      position: newPos,
+      data: newData
+    });
+  }
+
+  const newEdges = [];
+  for (const edge of graph.edges || []) {
+    if (idMap.has(edge.source) && idMap.has(edge.target)) {
+      newEdges.push({
+        id: uuid(),
+        source: idMap.get(edge.source),
+        sourceHandle: edge.sourceHandle,
+        target: idMap.get(edge.target),
+        targetHandle: edge.targetHandle
+      });
+    }
+  }
+
+  const nextDoc = {
+    ...graph,
+    nodes: [...(graph.nodes || []), ...newNodes],
+    edges: [...(graph.edges || []), ...newEdges]
+  };
+
+  return { doc: nextDoc, nodeIds: newNodes.map((n) => n.id) };
+}
+
+export function duplicateNodesAtScope(doc, scopePath, nodeIds, offset) {
+  let createdNodeIds = null;
+  const nextDoc = updateGraphAtScope(doc, scopePath, (graph) => {
+    const res = duplicateNodes(graph, nodeIds, offset);
+    if (!res) return graph;
+    createdNodeIds = res.nodeIds;
+    return res.doc;
+  });
+  return createdNodeIds ? { doc: nextDoc, nodeIds: createdNodeIds } : null;
+}
+
 export function removeItemsAtScope(doc, scopePath, { nodeIds = [], edgeIds = [] } = {}) {
   return updateGraphAtScope(doc, scopePath, (graph) => removeItems(graph, { nodeIds, edgeIds }) || graph);
 }

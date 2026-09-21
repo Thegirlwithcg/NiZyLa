@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
-  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable,
+  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable, duplicateNodes,
   endEdit, moveNodes, positionsFromFlow, redo, removeItems, sameContent, setLiteralType, setNodeData, setTarget,
   setViewport, undo, updateVariable, variableUsage
 } from '../src/core/geometry-editor.js';
@@ -327,4 +327,53 @@ test('Undo -> live edit -> revert -> end keeps Redo and adds no history; a real 
     assert.equal(real.past.length, past + 1, `${name}: one entry`);
     assert.equal(real.future.length, 0, `${name}: Redo cleared`);
   }
+});
+
+test('duplicateNodes copies selected non-start nodes and internal edges, deep cloning data.graph', () => {
+  let doc = createGeometryDocument();
+  const ext = add(doc, 'print', 10, 20); doc = ext.doc;
+  const a = add(doc, 'function', 100, 150); doc = a.doc;
+  const b = add(doc, 'print', 300, 150); doc = b.doc;
+  doc = wire(doc, ext.nodeId, 'next', a.nodeId, 'in');
+  doc = wire(doc, a.nodeId, 'next', b.nodeId, 'in');
+
+  const origSnapshot = structuredClone(doc);
+  freeze(doc);
+
+  const result = duplicateNodes(doc, ['start', a.nodeId, b.nodeId]);
+  assert.ok(result);
+  const { doc: nextDoc, nodeIds: newIds } = result;
+
+  // ได้ node ใหม่ 2 ตัว ตำแหน่งขยับไป +40,+40
+  assert.equal(newIds.length, 2);
+  const nodeA = doc.nodes.find((n) => n.id === a.nodeId);
+  const nodeB = doc.nodes.find((n) => n.id === b.nodeId);
+  const newA = nextDoc.nodes.find((n) => n.id === newIds[0]);
+  const newB = nextDoc.nodes.find((n) => n.id === newIds[1]);
+  assert.ok(newA && newB);
+  assert.deepEqual(newA.position, { x: nodeA.position.x + 40, y: nodeA.position.y + 40 });
+  assert.deepEqual(newB.position, { x: nodeB.position.x + 40, y: nodeB.position.y + 40 });
+
+  // ได้ edge ใหม่ A'→B' 1 เส้น และไม่มี edge จากข้างนอกเข้า A'
+  const newEdges = nextDoc.edges.filter((e) => !doc.edges.some((orig) => orig.id === e.id));
+  assert.equal(newEdges.length, 1);
+  assert.equal(newEdges[0].source, newA.id);
+  assert.equal(newEdges[0].target, newB.id);
+  assert.equal(newEdges[0].sourceHandle, 'next');
+  assert.equal(newEdges[0].targetHandle, 'in');
+  assert.equal(nextDoc.edges.some((e) => e.target === newA.id), false);
+
+  // id ใหม่ทั้งหมดไม่ซ้ำ
+  const allIds = nextDoc.nodes.map((n) => n.id);
+  assert.equal(new Set(allIds).size, allIds.length);
+  const allEdgeIds = nextDoc.edges.map((e) => e.id);
+  assert.equal(new Set(allEdgeIds).size, allEdgeIds.length);
+
+  // graph เดิมไม่เปลี่ยน
+  assert.deepEqual(doc, origSnapshot);
+
+  // แก้ data.graph ของ functionDef ตัวที่คัดลอกแล้ว ตัวต้นฉบับต้องไม่เปลี่ยนตาม
+  assert.ok(newA.data?.graph);
+  newA.data.graph.nodes.push({ id: 'child_in_new', type: 'start', position: { x: 0, y: 0 }, data: {} });
+  assert.equal(nodeA.data.graph.nodes.some((n) => n.id === 'child_in_new'), false);
 });

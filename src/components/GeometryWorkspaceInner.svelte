@@ -4,8 +4,9 @@
   import '@xyflow/svelte/dist/style.css';
   import { nodeDefinitions } from '../core/geometry.js';
   import { generateGeometryCode } from '../core/geometry-codegen.js';
+  import { nodeHelp } from '../core/node-help.js';
   import {
-    addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable, endEdit,
+    addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable, duplicateNodes, endEdit,
     getGraphAtScope, moveNodes, positionsFromFlow, redo, removeItems, setLiteralType, setNodeData, setTarget,
     setViewport, setViewportAtScope, undo, updateGraphAtScope, updateVariable, variableUsage,
     addFunctionParameter, updateFunctionParameter, removeFunctionParameter
@@ -57,8 +58,37 @@
     try { return JSON.parse(localStorage.getItem('nizyla.gcnLayout') || '{}'); } catch { return {}; }
   })();
   let gcnLayout = $state({ side: savedLayout.side ?? 360, details: savedLayout.details ?? 260 });
-  let collapsed = $state({ variables: false, parameters: false, diagnostics: false, ...(savedLayout.collapsed || {}) });
+  let collapsed = $state({ help: false, variables: false, parameters: false, diagnostics: false, ...(savedLayout.collapsed || {}) });
+  let codeLineNumbers = $state(savedLayout.codeLineNumbers ?? true);
   let resizing = null;
+
+  let helpSectionEl;
+  let codeModalNodeId = $state(null);
+  let codeDialogEl;
+  const codeModalNode = $derived(codeModalNodeId ? activeGraph.nodes.find((n) => n.id === codeModalNodeId && n.type === 'codeNode') : null);
+
+  $effect(() => {
+    if (codeModalNodeId && !codeModalNode) {
+      codeDialogEl?.close();
+      codeModalNodeId = null;
+    }
+  });
+
+  function openCodeModal(id) {
+    codeModalNodeId = id;
+    tick().then(() => {
+      codeDialogEl?.showModal();
+    });
+  }
+
+  function showNodeHelp(id) {
+    selectOnly([id]);
+    collapsed = { ...collapsed, help: false };
+    saveGcnLayout();
+    tick().then(() => {
+      helpSectionEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
 
   const doc = $derived(editor.present);
   const scopePathIds = $derived(scopeStack.map((s) => s.id));
@@ -73,6 +103,12 @@
   const previewFile = $derived(doc.target === 'python' ? { name: 'generated.py', path: 'generated.py' } : { name: 'generated.gd', path: 'generated.gd' });
 
   const selectedNode = $derived(nodes.find((n) => n.selected));
+  const selectedNodes = $derived(nodes.filter((n) => n.selected));
+  const isSingleNodeSelected = $derived(selectedNodes.length === 1);
+  const singleSelectedNode = $derived(isSingleNodeSelected ? activeGraph.nodes.find((n) => n.id === selectedNodes[0].id) : null);
+  const singleSelectedDef = $derived(singleSelectedNode ? nodeDefinitions[singleSelectedNode.type] : null);
+  const singleSelectedHelp = $derived(singleSelectedNode ? nodeHelp[singleSelectedNode.type] : null);
+  const singleSelectedPorts = $derived(singleSelectedNode ? (view.ports.get(singleSelectedNode.id) || []) : []);
   const selectedFunctionNode = $derived(selectedNode && activeGraph.nodes.find((n) => n.id === selectedNode.id && n.type === 'functionDef'));
   const canEnterSelected = $derived(selectedNode && ['functionDef', 'classDef'].includes(activeGraph.nodes.find((n) => n.id === selectedNode.id)?.type));
 
@@ -88,7 +124,7 @@
   });
 
   function saveGcnLayout() {
-    try { localStorage.setItem('nizyla.gcnLayout', JSON.stringify({ ...gcnLayout, collapsed })); } catch (_) {}
+    try { localStorage.setItem('nizyla.gcnLayout', JSON.stringify({ ...gcnLayout, collapsed, codeLineNumbers })); } catch (_) {}
   }
 
   function startPanelResize(event, type) {
@@ -131,7 +167,8 @@
 
   function resetLayout() {
     gcnLayout = { side: 360, details: 260 };
-    collapsed = { variables: false, parameters: false, diagnostics: false };
+    collapsed = { help: false, variables: false, parameters: false, diagnostics: false };
+    codeLineNumbers = true;
     saveGcnLayout();
   }
 
@@ -284,6 +321,12 @@
     get view() { return view; },
     get isRoot() { return scopePathIds.length === 0; },
     get target() { return doc.target; },
+    get theme() { return theme; },
+    get preferences() { return preferences; },
+    get codeLineNumbers() { return codeLineNumbers; },
+    toggleCodeLineNumbers: () => { codeLineNumbers = !codeLineNumbers; saveGcnLayout(); },
+    openCode: (id) => openCodeModal(id),
+    showHelp: (id) => showNodeHelp(id),
     describe: (item) => describe(item),
     setData,
     setLiteralType: (id, type) => {
@@ -313,6 +356,23 @@
     const next = removeItems(activeGraph, { nodeIds, edgeIds });
     if (!next) { if (nodeIds.length) say('The Start node cannot be deleted.'); return; }
     applyScoped(() => next);
+    canvasEl?.focus();
+  }
+
+  async function duplicateSelection() {
+    const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+    if (!selectedIds.length) return;
+    const result = duplicateNodes(activeGraph, selectedIds);
+    if (!result) {
+      const selectedStart = selectedIds.some((id) => activeGraph.nodes.find((n) => n.id === id)?.type === 'start');
+      if (selectedStart) {
+        say('The Start node cannot be duplicated.');
+      }
+      return;
+    }
+    applyScoped(() => result.doc);
+    await tick();
+    selectOnly(result.nodeIds);
     canvasEl?.focus();
   }
 
@@ -381,6 +441,9 @@
     } else if (inCanvas && !mod && !event.altKey && event.shiftKey && key === 'a') {
       event.preventDefault();
       openMenu(false);
+    } else if (inCanvas && !mod && !event.altKey && event.shiftKey && key === 'd') {
+      event.preventDefault();
+      duplicateSelection();
     } else if (inCanvas && !mod && (event.key === 'Delete' || event.key === 'Backspace')) {
       event.preventDefault();
       deleteSelection();
@@ -502,12 +565,12 @@
 
   <!-- Breadcrumbs navigation -->
   <nav class="gcn-breadcrumbs" aria-label="Graph hierarchy">
-    <button type="button" class="gcn-crumb" class:active={scopeStack.length === 0} onclick={() => exitTo(0)}>
+    <button type="button" class="gcn-crumb" aria-current={scopeStack.length === 0 ? 'location' : undefined} onclick={() => exitTo(0)}>
       Module
     </button>
     {#each scopeStack as item, idx}
       <span class="gcn-crumb-sep">/</span>
-      <button type="button" class="gcn-crumb" class:active={idx === scopeStack.length - 1} onclick={() => exitTo(idx + 1)}>
+      <button type="button" class="gcn-crumb" aria-current={idx === scopeStack.length - 1 ? 'location' : undefined} onclick={() => exitTo(idx + 1)}>
         {item.label}
       </button>
     {/each}
@@ -560,6 +623,43 @@
           {/if}
         </section>
       {/if}
+
+      <section bind:this={helpSectionEl} aria-labelledby="gcn-help" class:collapsed={collapsed.help}>
+        <div class="gcn-section-head">
+          <button type="button" class="gcn-collapse" aria-expanded={!collapsed.help} onclick={() => togglePanel('help')}>{collapsed.help ? '▸' : '▾'}</button>
+          <h3 id="gcn-help">Node Help</h3>
+        </div>
+        {#if !collapsed.help}
+          {#if isSingleNodeSelected && singleSelectedNode && singleSelectedDef && singleSelectedHelp}
+            <div class="gcn-help-content">
+              <div class="gcn-help-header">
+                <strong>{singleSelectedNode.type === 'codeNode' ? `</> ${singleSelectedNode.data?.title || 'Code'}` : singleSelectedDef.label}</strong>
+                <span class="gcn-category">{singleSelectedDef.category}</span>
+              </div>
+              <p class="gcn-help-summary">{singleSelectedHelp.summary}</p>
+              {#if singleSelectedPorts.length > 0}
+                <ul class="gcn-help-ports">
+                  {#each singleSelectedPorts as p (p.id + p.direction)}
+                    <li class="gcn-help-port">{p.direction} {p.id} · {p.kind === 'exec' ? 'exec' : p.valueType}</li>
+                  {/each}
+                </ul>
+              {/if}
+              <div class="gcn-help-code">
+                <CodeEditor
+                  file={{ name: doc.target === 'gdscript' ? 'help.gd' : 'help.py', path: `gcn-help:${singleSelectedNode.id}.${doc.target === 'gdscript' ? 'gd' : 'py'}` }}
+                  content={doc.target === 'gdscript' ? singleSelectedHelp.gdscript : singleSelectedHelp.python}
+                  readOnly={true}
+                  showLineNumbers={false}
+                  {theme}
+                  {preferences}
+                />
+              </div>
+            </div>
+          {:else}
+            <p class="gcn-empty">Select one node to see what it does.</p>
+          {/if}
+        {/if}
+      </section>
 
       <section aria-labelledby="gcn-vars" class:collapsed={collapsed.variables}>
         <div class="gcn-section-head">
@@ -657,4 +757,29 @@
   {#if menu}
     <GeometryAddMenu x={menu.x} y={menu.y} onpick={pick} onclose={closeMenu} />
   {/if}
+
+  <dialog bind:this={codeDialogEl} class="gcn-code-dialog" onclose={() => { finishEdit(); codeModalNodeId = null; canvasEl?.focus(); }}>
+    {#if codeModalNode}
+      {@const ext = doc.target === 'gdscript' ? 'gd' : 'py'}
+      {@const title = codeModalNode.data?.title || 'Code'}
+      <div class="gcn-code-dialog-header">
+        <h3>&lt;/&gt; {title} · Code</h3>
+        <div class="gcn-code-dialog-actions">
+          <button type="button" class="gcn-btn-lines" class:active={codeLineNumbers} aria-pressed={codeLineNumbers}
+            onclick={() => { codeLineNumbers = !codeLineNumbers; saveGcnLayout(); }} title="Toggle line numbers">#</button>
+          <button type="button" class="gcn-btn-close" onclick={() => codeDialogEl?.close()}>Close</button>
+        </div>
+      </div>
+      <div class="gcn-code-dialog-body">
+        <CodeEditor
+          file={{ name: `node.${ext}`, path: `gcn-code:${codeModalNode.id}.${ext}` }}
+          content={codeModalNode.data?.code ?? ''}
+          showLineNumbers={codeLineNumbers}
+          {theme}
+          {preferences}
+          onchange={(code) => setData(codeModalNode.id, { code }, true)}
+        />
+      </div>
+    {/if}
+  </dialog>
 </div>
