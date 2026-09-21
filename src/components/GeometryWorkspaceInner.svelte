@@ -614,6 +614,8 @@
                 <option value="float">float</option>
                 <option value="string">string</option>
                 <option value="bool">bool</option>
+                <option value="list">list</option>
+                <option value="dict">dict</option>
               </select>
               <button onclick={() => removeParam(p.id)} aria-label={`Remove parameter ${p.name}`}>×</button>
             </div>
@@ -674,7 +676,7 @@
               <input aria-label="Variable name" value={variable.name} spellcheck="false"
                 oninput={(e) => applyScoped((g) => updateVariable(g, variable.id, { name: e.currentTarget.value }), true)} onblur={finishEdit} />
               <select aria-label="Variable type" value={variable.type} onchange={(e) => applyScoped((g) => updateVariable(g, variable.id, { type: e.currentTarget.value }))}>
-                {#each ['int', 'float', 'string', 'bool'] as type}<option value={type}>{type}</option>{/each}
+                {#each ['int', 'float', 'string', 'bool', 'list', 'dict'] as type}<option value={type}>{type}</option>{/each}
               </select>
               <button onclick={() => requestDelete(variable)} aria-label={`Delete variable ${variable.name}`}>Delete</button>
             </div>
@@ -686,9 +688,13 @@
               {:else if variable.type === 'string'}
                 <input aria-label="Initial value" value={variable.initialValue} spellcheck="false"
                   oninput={(e) => applyScoped((g) => updateVariable(g, variable.id, { initialValue: e.currentTarget.value }), true)} onblur={finishEdit} />
-              {:else}
+              {:else if variable.type === 'bool'}
                 <label class="gcn-check"><input type="checkbox" checked={variable.initialValue}
                   onchange={(e) => applyScoped((g) => updateVariable(g, variable.id, { initialValue: e.currentTarget.checked }))} /> {variable.initialValue ? 'true' : 'false'}</label>
+              {:else if variable.type === 'list'}
+                <input aria-label="Initial value" value="[]" readonly disabled style="opacity: 0.7;" />
+              {:else if variable.type === 'dict'}
+                <input aria-label="Initial value" value="{'{}'}" readonly disabled style="opacity: 0.7;" />
               {/if}
             </div>
             {#each variableProblems(variable) as problem}<div class="gcn-var-error" role="alert">{friendly(problem.message)}</div>{/each}

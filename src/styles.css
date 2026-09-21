@@ -1721,6 +1721,18 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
 .gcn-field input[aria-invalid="true"] { border-color: var(--gcn-error); }
 .gcn-field-error { color: var(--gcn-error); font-size: 11px; }
 .gcn-check { display: flex; align-items: center; gap: 6px; }
+.gcn-counter { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 2px 0; }
+.gcn-counter-btn { width: 24px; height: 22px; padding: 0; font-size: 14px; font-weight: bold; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--button); color: var(--text); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.gcn-counter-btn:hover:not(:disabled) { background: var(--button-hover); border-color: var(--border-strong); }
+.gcn-counter-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.gcn-counter-val { min-width: 20px; text-align: center; font-weight: 600; font-size: 12px; }
+.gcn-dict-entries { display: grid; gap: 4px; }
+.gcn-dict-row { display: flex; align-items: center; gap: 4px; }
+.gcn-dict-row input { flex: 1 1 auto; min-width: 0; }
+.gcn-dict-remove { width: 22px; height: 22px; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--button); color: var(--text); cursor: pointer; }
+.gcn-dict-remove:hover { background: color-mix(in srgb, var(--gcn-error) 20%, transparent); color: var(--gcn-error); border-color: var(--gcn-error); }
+.gcn-dict-add { padding: 3px 6px; font-size: 11px; border: 1px dashed var(--border-strong); border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; text-align: center; }
+.gcn-dict-add:hover { border-color: var(--accent); color: var(--accent); }
 .gcn-ports { display: flex; justify-content: space-between; gap: 14px; padding: 6px 0; }
 .gcn-ports-in, .gcn-ports-out { display: grid; gap: 4px; align-content: start; }
 .gcn-ports-out { text-align: right; }

@@ -37,6 +37,7 @@ UTF-8 JSON, two-space indentation and a final newline. Example new document:
 - Positions and viewport coordinates are finite numbers; zoom is positive.
 - Value types: `int` (JS safe integer), `float` (finite number), `string`, `bool`.
   A float may store `1`; its type must remain float when generating code.
+- Variable types: `int`, `float`, `string`, `bool`, `list` (initialValue `[]`), `dict` (initialValue `{}`).
 - JSON serialization normalizes negative zero to zero.
 - Missing fields, wrong field types, unknown node types/operators, nonmatching
   literal/initial values and unsupported versions are file-shape errors.
@@ -86,7 +87,13 @@ Each value output below has ID `value`; execution inputs have ID `in`.
 | `if` | `{}` | in; out `then`, `else`, `next` | bool in `condition` |
 | `while` | `{}` | in; out `body`, `next` | bool in `condition` |
 | `forRange` | `{ variableId }` | in; out `body`, `next` | int in `start`, `stop`, `step` |
-| `print` | `{}` | in; out `next` | in `value`: any supported type |
+| `print` | `{ argCount }` (default 1, 0..16) | in; out `next` | in `value`, `value_1`..`value_{n-1}`: any |
+| `formatText` | `{ style, template }` | none | in `{name}`: any per placeholder; out declared `string` |
+| `list` | `{ itemCount }` (default 0, 0..64) | none | in `item_0`..: any; out `list` |
+| `array` | `{ elementType, itemCount }` (default int/0, 0..64) | none | in `item_0`..: elementType; out `list` |
+| `dict` | `{ entries: [{ id, key }] }` | none | in `{entry.id}` (labeled `key`): any; out `dict` |
+| `getItem` | `{}` | none | in `container`: any, `key`: any; out `any` |
+| `setItem` | `{}` | in; out `next` | in `container`: any, `key`: any, `value`: any |
 
 Defaults: int literal 0; binary `+`; compare `==`; boolean `and`;
 variable references `''` (unselected). An empty variable reference is a
@@ -135,7 +142,8 @@ Diagnostic codes: `invalid-json`, `invalid-format`, `unsupported-version`,
 `for-variable-type`, `missing-node`, `missing-port`, `port-direction`,
 `port-kind`, `input-connected`, `exec-output-connected`, `exec-cycle`,
 `value-cycle`, `unused-node`, `missing-input`, `type-mismatch`,
-`comparison-type`, `zero-step`, `nested-for-variable`.
+`comparison-type`, `zero-step`, `nested-for-variable`,
+`invalid-template`, `duplicate-dict-key`.
 
 ## Code generation (stage 2, `src/core/geometry-codegen.js`)
 

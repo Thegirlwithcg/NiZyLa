@@ -164,6 +164,82 @@
           />
         </div>
 
+      {:else if node.type === 'print'}
+        {@const count = node.data?.argCount ?? 1}
+        <div class="gcn-counter nodrag">
+          <button type="button" class="gcn-counter-btn" aria-label="Decrease arguments"
+            disabled={count <= 0}
+            onclick={() => ctx.setData(id, { argCount: Math.max(0, count - 1) })}>−</button>
+          <span class="gcn-counter-val" aria-label="Argument count">{count}</span>
+          <button type="button" class="gcn-counter-btn" aria-label="Increase arguments"
+            disabled={count >= 16}
+            onclick={() => ctx.setData(id, { argCount: Math.min(16, count + 1) })}>+</button>
+        </div>
+
+      {:else if node.type === 'formatText'}
+        <select aria-label="Format style" value={node.data?.style ?? 'fstring'} onchange={onSelectData('style')}>
+          <option value="fstring">f-string</option>
+          <option value="format">.format()</option>
+          <option value="concat">+ concat</option>
+        </select>
+        <input aria-label="Format template" value={node.data?.template ?? 'Value: {x}'} spellcheck="false"
+          onchange={(e) => ctx.setData(id, { template: e.currentTarget.value })} />
+
+      {:else if node.type === 'list'}
+        {@const count = node.data?.itemCount ?? 0}
+        <div class="gcn-counter nodrag">
+          <button type="button" class="gcn-counter-btn" aria-label="Decrease items"
+            disabled={count <= 0}
+            onclick={() => ctx.setData(id, { itemCount: Math.max(0, count - 1) })}>−</button>
+          <span class="gcn-counter-val" aria-label="Item count">{count}</span>
+          <button type="button" class="gcn-counter-btn" aria-label="Increase items"
+            disabled={count >= 64}
+            onclick={() => ctx.setData(id, { itemCount: Math.min(64, count + 1) })}>+</button>
+        </div>
+
+      {:else if node.type === 'array'}
+        {@const count = node.data?.itemCount ?? 0}
+        <select aria-label="Element type" value={node.data?.elementType ?? 'int'} onchange={onSelectData('elementType')}>
+          <option value="int">int</option>
+          <option value="float">float</option>
+          <option value="string">string</option>
+          <option value="bool">bool</option>
+        </select>
+        <div class="gcn-counter nodrag">
+          <button type="button" class="gcn-counter-btn" aria-label="Decrease items"
+            disabled={count <= 0}
+            onclick={() => ctx.setData(id, { itemCount: Math.max(0, count - 1) })}>−</button>
+          <span class="gcn-counter-val" aria-label="Item count">{count}</span>
+          <button type="button" class="gcn-counter-btn" aria-label="Increase items"
+            disabled={count >= 64}
+            onclick={() => ctx.setData(id, { itemCount: Math.min(64, count + 1) })}>+</button>
+        </div>
+
+      {:else if node.type === 'dict'}
+        <div class="gcn-dict-entries nodrag">
+          {#each (node.data?.entries || []) as entry (entry.id)}
+            <div class="gcn-dict-row">
+              <input aria-label="Entry key" value={entry.key} placeholder="key" spellcheck="false"
+                onchange={(e) => {
+                  const updated = (node.data?.entries || []).map((item) =>
+                    item.id === entry.id ? { ...item, key: e.currentTarget.value } : item
+                  );
+                  ctx.setData(id, { entries: updated });
+                }} />
+              <button type="button" class="gcn-dict-remove" aria-label={`Remove key ${entry.key}`}
+                onclick={() => {
+                  const updated = (node.data?.entries || []).filter((item) => item.id !== entry.id);
+                  ctx.setData(id, { entries: updated });
+                }}>×</button>
+            </div>
+          {/each}
+          <button type="button" class="gcn-dict-add" onclick={() => {
+            const newId = 'k_' + crypto.randomUUID().slice(0, 8);
+            const updated = [...(node.data?.entries || []), { id: newId, key: `key_${(node.data?.entries || []).length}` }];
+            ctx.setData(id, { entries: updated });
+          }}>+ Key</button>
+        </div>
+
       {:else if definition.operators}
         <select aria-label="Operator" value={node.data?.operator} onchange={onSelectData('operator')}>
           {#each definition.operators as operator}<option value={operator}>{operatorLabels[operator] ?? operator}</option>{/each}
@@ -176,14 +252,14 @@
         {#each inputs as port (port.id)}
           <div class="gcn-port in" data-port={port.id}>
             <Handle type="target" position={Position.Left} id={port.id} class={`gcn-handle ${port.kind}`} />
-            <span class="gcn-port-name">{port.id}</span><span class="gcn-port-type">{typeLabel(port)}</span>
+            <span class="gcn-port-name">{port.label ?? port.id}</span><span class="gcn-port-type">{typeLabel(port)}</span>
           </div>
         {/each}
       </div>
       <div class="gcn-ports-out">
         {#each outputs as port (port.id)}
           <div class="gcn-port out" data-port={port.id}>
-            <span class="gcn-port-type">{typeLabel(port)}</span><span class="gcn-port-name">{port.id}</span>
+            <span class="gcn-port-type">{typeLabel(port)}</span><span class="gcn-port-name">{port.label ?? port.id}</span>
             <Handle type="source" position={Position.Right} id={port.id} class={`gcn-handle ${port.kind}`} />
           </div>
         {/each}

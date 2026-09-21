@@ -1,4 +1,4 @@
-import { getNodePorts, validateGeometryDocument, migrateV1ToV2 } from './geometry.js';
+import { getNodePorts, validateGeometryDocument, migrateV1ToV2, parseTemplate } from './geometry.js';
 
 // Limits keep output inside what Python (100 indent levels, 200 nested parentheses) accepts.
 const MAX_BLOCK_DEPTH = 50;
@@ -15,6 +15,33 @@ class GenerationError extends Error {
 const escapes = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
 const hex = (char, width) => char.charCodeAt(0).toString(16).padStart(width, '0');
 
+const TYPE_NAMES = {
+  python: {
+    int: 'int',
+    float: 'float',
+    string: 'str',
+    bool: 'bool',
+    list: 'list',
+    dict: 'dict'
+  },
+  gdscript: {
+    int: 'int',
+    float: 'float',
+    string: 'String',
+    bool: 'bool',
+    list: 'Array',
+    dict: 'Dictionary',
+    any: 'Variant'
+  }
+};
+
+export function typeName(type, target) {
+  if (!type) return '';
+  const table = TYPE_NAMES[target];
+  if (table && Object.hasOwn(table, type)) return table[type];
+  return type;
+}
+
 function stringLiteral(value, target, location) {
   if (typeof value !== 'string') return '""';
   if (!value.isWellFormed() || (target === 'gdscript' && value.includes('\0'))) {
@@ -25,6 +52,8 @@ function stringLiteral(value, target, location) {
 }
 
 function literal(type, value, target, location) {
+  if (type === 'list') return '[]';
+  if (type === 'dict') return '{}';
   if (type === 'string') return stringLiteral(value, target, location);
   if (type === 'bool') return target === 'python' ? (value ? 'True' : 'False') : String(Boolean(value));
   const text = type === 'float' && Number.isInteger(value) && Math.abs(value) < 1e21 ? value.toFixed(1) : String(value ?? 0);
@@ -82,6 +111,119 @@ function render(node, sources, context) {
     }
   } else if (node.type === 'codeNode') {
     text = `(${node.data?.code || 'None'})`;
+  } else if (node.type === 'list') {
+    const count = Number.isSafeInteger(node.data?.itemCount) ? node.data.itemCount : 0;
+    const items = [];
+    for (let i = 0; i < count; i++) {
+      items.push(inputs[`item_${i}`]?.text ?? 'None');
+    }
+    text = `[${items.join(', ')}]`;
+  } else if (node.type === 'array') {
+    const count = Number.isSafeInteger(node.data?.itemCount) ? node.data.itemCount : 0;
+    const elemType = node.data?.elementType ?? 'int';
+    const items = [];
+    for (let i = 0; i < count; i++) {
+      const itemVal = inputs[`item_${i}`];
+      const itemText = itemVal ? ((elemType === 'float' && itemVal.type === 'int') ? `float(${itemVal.text})` : itemVal.text) : 'None';
+      items.push(itemText);
+    }
+    text = `[${items.join(', ')}]`;
+  } else if (node.type === 'dict') {
+    const entries = Array.isArray(node.data?.entries) ? node.data.entries : [];
+    if (entries.length === 0) {
+      text = '{}';
+    } else {
+      const pairs = entries.map((entry) => `${stringLiteral(entry.key, target, location)}: ${inputs[entry.id]?.text ?? 'None'}`);
+      text = `{${pairs.join(', ')}}`;
+    }
+  } else if (node.type === 'getItem') {
+    const container = inputs.container?.text ?? 'None';
+    const key = inputs.key?.text ?? 'None';
+    text = `${container}[${key}]`;
+  } else if (node.type === 'formatText') {
+    const parsed = parseTemplate(node.data?.template ?? 'Value: {x}');
+    const { parts, names } = parsed;
+    const style = node.data?.style ?? 'fstring';
+
+    if (names.length === 0) {
+      const fullText = parts.map((p) => p.text ?? '').join('');
+      text = stringLiteral(fullText, target, location);
+    } else if (style === 'concat') {
+      const pieces = [];
+      for (const p of parts) {
+        if (p.text !== undefined) {
+          if (p.text !== '') {
+            pieces.push(stringLiteral(p.text, target, location));
+          }
+        } else if (p.name !== undefined) {
+          const val = inputs[`{${p.name}}`];
+          const valText = val?.text ?? 'None';
+          if (val?.type === 'string') {
+            pieces.push(valText);
+          } else {
+            pieces.push(`str(${valText})`);
+          }
+        }
+      }
+      if (pieces.length === 0) text = '""';
+      else if (pieces.length === 1) text = pieces[0];
+      else text = `(${pieces.join(' + ')})`;
+    } else if (target === 'gdscript') {
+      // ponytail: GDScript .format() also replaces a literal {0} in the text
+      let gdTemplate = '';
+      for (const p of parts) {
+        if (p.text !== undefined) {
+          gdTemplate += p.text;
+        } else if (p.name !== undefined) {
+          gdTemplate += `{${names.indexOf(p.name)}}`;
+        }
+      }
+      const gdLit = stringLiteral(gdTemplate, 'gdscript', location);
+      const gdArgs = names.map((n) => inputs[`{${n}}`]?.text ?? 'None');
+      text = `${gdLit}.format([${gdArgs.join(', ')}])`;
+    } else {
+      // Python: fstring or format
+      const fstringForbidden = /["'\\{}#\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/;
+      const hasRepeats = parts.filter((p) => p.name !== undefined).length > names.length;
+      const hasFallback = names.some((n) => {
+        const inp = inputs[`{${n}}`]?.text ?? '';
+        return fstringForbidden.test(inp);
+      });
+      const useFormat = style === 'format' || (style === 'fstring' && hasFallback);
+
+      if (useFormat) {
+        let pyTemplate = '';
+        for (const p of parts) {
+          if (p.text !== undefined) {
+            pyTemplate += p.text.replace(/\{/g, '{{').replace(/\}/g, '}}');
+          } else if (p.name !== undefined) {
+            pyTemplate += hasRepeats ? `{${names.indexOf(p.name)}}` : '{}';
+          }
+        }
+        const pyLit = stringLiteral(pyTemplate, 'python', location);
+        const argNames = hasRepeats ? names : parts.filter((p) => p.name !== undefined).map((p) => p.name);
+        const pyArgs = argNames.map((n) => inputs[`{${n}}`]?.text ?? 'None');
+        text = `${pyLit}.format(${pyArgs.join(', ')})`;
+      } else {
+        // Python fstring
+        let pyBody = '';
+        for (const p of parts) {
+          if (p.text !== undefined) {
+            const braceEscaped = p.text.replace(/\{/g, '{{').replace(/\}/g, '}}');
+            if (!braceEscaped.isWellFormed()) {
+              throw new GenerationError('invalid-string-literal', 'String contains a lone surrogate.', location);
+            }
+            const escaped = braceEscaped.replace(/[\\"\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/g, (char) =>
+              escapes[char] ?? (char < 'Ā' ? `\\x${hex(char, 2)}` : `\\u${hex(char, 4)}`)
+            );
+            pyBody += escaped;
+          } else if (p.name !== undefined) {
+            pyBody += `{${inputs[`{${p.name}}`]?.text ?? 'None'}}`;
+          }
+        }
+        text = `f"${pyBody}"`;
+      }
+    }
   } else {
     text = 'None';
   }
@@ -143,15 +285,13 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
     cache: new Map()
   };
 
-  const declared = { int: 'int', float: 'float', string: 'String', bool: 'bool', any: 'Variant' };
-
   // Emit variable declarations (for child scopes like function/class bodies; root variables are emitted in step 2)
   if (scopePath.length > 0) {
     for (const variable of graph.variables) {
       const value = literal(variable.type, variable.initialValue, target, {});
       const line = python
         ? (isClass ? `${variable.name} = ${value}` : `${variable.name} = ${value}`)
-        : `var ${variable.name}: ${declared[variable.type] || 'Variant'} = ${value}`;
+        : `var ${variable.name}: ${typeName(variable.type, 'gdscript') || 'Variant'} = ${value}`;
       emitLine(baseDepth, line, null, scopePath);
     }
   }
@@ -192,7 +332,28 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       statementsEmitted++;
       schedule(chain(exit('next'), depth));
     } else if (node.type === 'print') {
-      emitLine(depth, `print(${inputVal('value').text})`, id, scopePath);
+      const count = Number.isSafeInteger(node.data?.argCount) ? node.data.argCount : 1;
+      const args = [];
+      if (count >= 1) args.push(inputVal('value').text);
+      for (let i = 1; i < count; i++) {
+        args.push(inputVal(`value_${i}`).text);
+      }
+      if (python) {
+        emitLine(depth, `print(${args.join(', ')})`, id, scopePath);
+      } else {
+        if (count >= 2) {
+          emitLine(depth, `prints(${args.join(', ')})`, id, scopePath);
+        } else {
+          emitLine(depth, `print(${args.join(', ')})`, id, scopePath);
+        }
+      }
+      statementsEmitted++;
+      schedule(chain(exit('next'), depth));
+    } else if (node.type === 'setItem') {
+      const container = inputVal('container').text;
+      const key = inputVal('key').text;
+      const val = inputVal('value').text;
+      emitLine(depth, `${container}[${key}] = ${val}`, id, scopePath);
       statementsEmitted++;
       schedule(chain(exit('next'), depth));
     } else if (node.type === 'if') {
@@ -278,7 +439,7 @@ function generateFunction(node, baseDepth, context, scopePath = [], isClassMetho
   const formattedParams = paramsList.map((p) => {
     let s = p.name;
     if (p.type && p.type !== 'any') {
-      s += target === 'gdscript' ? `: ${p.type}` : `: ${p.type}`;
+      s += `: ${typeName(p.type, target)}`;
     }
     if (p.defaultValue !== undefined && p.defaultValue !== null && p.defaultValue !== '') {
       s += ` = ${p.defaultValue}`;
@@ -293,11 +454,13 @@ function generateFunction(node, baseDepth, context, scopePath = [], isClassMetho
 
   let sig;
   if (python) {
-    const ret = returnType && returnType !== 'any' && returnType !== 'void' ? ` -> ${returnType}` : '';
+    const retType = typeName(returnType, 'python');
+    const ret = returnType && returnType !== 'any' && returnType !== 'void' && retType ? ` -> ${retType}` : '';
     const asyncKw = node.data?.isAsync ? 'async ' : '';
     sig = `${asyncKw}def ${name}(${formattedParams})${ret}:`;
   } else {
-    const ret = returnType && returnType !== 'any' && returnType !== 'void' ? ` -> ${returnType}` : '';
+    const retType = typeName(returnType, 'gdscript');
+    const ret = returnType && returnType !== 'any' && returnType !== 'void' && retType ? ` -> ${retType}` : '';
     sig = `func ${name}(${formattedParams})${ret}:`;
   }
 
@@ -338,12 +501,11 @@ function generateClass(node, baseDepth, context, scopePath = []) {
 
   if (graph) {
     // Generate class-level variables
-    const declared = { int: 'int', float: 'float', string: 'String', bool: 'bool', any: 'Variant' };
     for (const variable of graph.variables || []) {
       const value = literal(variable.type, variable.initialValue, target, {});
       const line = python
         ? `${variable.name} = ${value}`
-        : `var ${variable.name}: ${declared[variable.type] || 'Variant'} = ${value}`;
+        : `var ${variable.name}: ${typeName(variable.type, 'gdscript') || 'Variant'} = ${value}`;
       emitLine(baseDepth + 1, line, null, childScope);
       itemsEmitted++;
     }
@@ -480,12 +642,11 @@ function generate(doc, target) {
   if (lines.length > 0) emptyLine();
 
   // 2. Module Variables
-  const declared = { int: 'int', float: 'float', string: 'String', bool: 'bool', any: 'Variant' };
   for (const variable of workingDoc.variables) {
     const value = literal(variable.type, variable.initialValue, target, {});
     const line = python
       ? `${variable.name} = ${value}`
-      : `var ${variable.name}: ${declared[variable.type] || 'Variant'} = ${value}`;
+      : `var ${variable.name}: ${typeName(variable.type, 'gdscript') || 'Variant'} = ${value}`;
     emitLine(0, line);
   }
 

@@ -1,4 +1,5 @@
-const valueTypes = ['int', 'float', 'string', 'bool'];
+export const valueTypes = ['int', 'float', 'string', 'bool'];
+export const variableTypes = [...valueTypes, 'list', 'dict'];
 const operators = {
   binary: ['+', '-', '*', '/'],
   compare: ['==', '!=', '<', '<=', '>', '>='],
@@ -12,17 +13,82 @@ const reservedNames = new Set(`False None True and as assert async await break c
   breakpoint class_name const enum extends func namespace preload self signal static
   super trait var void when abstract export onready setget tool remote master puppet
   remotesync mastersync puppetsync sync true false null PI TAU INF NAN
-  main print range float int bool str String StringName NodePath RID Object Callable
+  main print prints range float int bool str String StringName NodePath RID Object Callable
   Signal Dictionary Array Variant Vector2 Vector2i Rect2 Rect2i Vector3 Vector3i
   Transform2D Vector4 Vector4i Plane Quaternion AABB Basis Transform3D Projection Color
   PackedByteArray PackedInt32Array PackedInt64Array PackedFloat32Array PackedFloat64Array
   PackedStringArray PackedVector2Array PackedVector3Array PackedColorArray PackedVector4Array`.split(/\s+/));
 
-const port = (id, direction, kind, valueType = null) => ({ id, direction, kind, valueType });
-const input = (id, type) => port(id, 'in', 'value', type);
+const port = (id, direction, kind, valueType = null, label = null) => ({ id, direction, kind, valueType, ...(label !== null && label !== undefined ? { label } : {}) });
+const input = (id, type, label = null) => port(id, 'in', 'value', type, label);
 const output = (type) => port('value', 'out', 'value', type);
 const execution = (...exits) => [port('in', 'in', 'exec'), ...exits.map((id) => port(id, 'out', 'exec'))];
 const numeric = (type) => type === 'int' || type === 'float';
+
+export function parseTemplate(template) {
+  if (typeof template !== 'string') {
+    return { parts: [], names: [], error: 'Template must be a string.' };
+  }
+  const parts = [];
+  const names = [];
+  const seenNames = new Set();
+  let currentText = '';
+  let error = null;
+  let i = 0;
+
+  const flushText = () => {
+    if (currentText.length > 0) {
+      parts.push({ text: currentText });
+      currentText = '';
+    }
+  };
+
+  while (i < template.length) {
+    const ch = template[i];
+    if (ch === '{') {
+      if (i + 1 < template.length && template[i + 1] === '{') {
+        currentText += '{';
+        i += 2;
+      } else {
+        const closeIdx = template.indexOf('}', i + 1);
+        if (closeIdx === -1) {
+          error = error ?? 'Unclosed brace in template.';
+          currentText += '{';
+          i++;
+        } else {
+          const inner = template.slice(i + 1, closeIdx);
+          if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(inner)) {
+            flushText();
+            parts.push({ name: inner });
+            if (!seenNames.has(inner)) {
+              seenNames.add(inner);
+              names.push(inner);
+            }
+            i = closeIdx + 1;
+          } else {
+            error = error ?? `Invalid placeholder "{${inner}}".`;
+            currentText += '{';
+            i++;
+          }
+        }
+      }
+    } else if (ch === '}') {
+      if (i + 1 < template.length && template[i + 1] === '}') {
+        currentText += '}';
+        i += 2;
+      } else {
+        error = error ?? 'Unexpected closing brace "}".';
+        currentText += '}';
+        i++;
+      }
+    } else {
+      currentText += ch;
+      i++;
+    }
+  }
+  flushText();
+  return { parts, names, error };
+}
 
 export const nodeDefinitions = {
   start: { label: 'Start', category: 'Entry', defaults: {}, ports: [port('next', 'out', 'exec')] },
@@ -45,7 +111,74 @@ export const nodeDefinitions = {
   while: { label: 'While', category: 'Control', defaults: {}, ports: [...execution('body', 'next'), input('condition', 'bool')] },
   forRange: { label: 'For Range', category: 'Control', defaults: { variableId: '' },
     ports: [...execution('body', 'next'), input('start', 'int'), input('stop', 'int'), input('step', 'int')] },
-  print: { label: 'Print', category: 'Output', defaults: {}, ports: [...execution('next'), input('value', 'any')] },
+  print: {
+    label: 'Print', category: 'Output',
+    defaults: { argCount: 1 },
+    ports: (node) => {
+      const count = Number.isSafeInteger(node.data?.argCount) ? node.data.argCount : 1;
+      const inputs = [];
+      if (count >= 1) inputs.push(input('value', 'any'));
+      for (let i = 1; i < count; i++) {
+        inputs.push(input(`value_${i}`, 'any'));
+      }
+      return [...execution('next'), ...inputs];
+    }
+  },
+  formatText: {
+    label: 'Format Text', category: 'Text',
+    defaults: { style: 'fstring', template: 'Value: {x}' },
+    ports: (node) => {
+      const template = typeof node.data?.template === 'string' ? node.data.template : 'Value: {x}';
+      const { names } = parseTemplate(template);
+      return [...names.map((name) => input(`{${name}}`, 'any')), output('string')];
+    }
+  },
+  list: {
+    label: 'List', category: 'Collection',
+    defaults: { itemCount: 0 },
+    ports: (node) => {
+      const count = Number.isSafeInteger(node.data?.itemCount) ? node.data.itemCount : 0;
+      const inputs = [];
+      for (let i = 0; i < count; i++) {
+        inputs.push(input(`item_${i}`, 'any'));
+      }
+      return [...inputs, output('list')];
+    }
+  },
+  array: {
+    label: 'Array', category: 'Collection',
+    defaults: { elementType: 'int', itemCount: 0 },
+    ports: (node) => {
+      const count = Number.isSafeInteger(node.data?.itemCount) ? node.data.itemCount : 0;
+      const elemType = valueTypes.includes(node.data?.elementType) ? node.data.elementType : 'int';
+      const inputs = [];
+      for (let i = 0; i < count; i++) {
+        inputs.push(input(`item_${i}`, elemType));
+      }
+      return [...inputs, output('list')];
+    }
+  },
+  dict: {
+    label: 'Dictionary', category: 'Collection',
+    defaults: { entries: [] },
+    ports: (node) => {
+      const entries = Array.isArray(node.data?.entries) ? node.data.entries : [];
+      return [
+        ...entries.map((entry) => port(entry.id, 'in', 'value', 'any', entry.key)),
+        output('dict')
+      ];
+    }
+  },
+  getItem: {
+    label: 'Get Item', category: 'Collection',
+    defaults: {},
+    ports: [input('container', 'any'), input('key', 'any'), output('any')]
+  },
+  setItem: {
+    label: 'Set Item', category: 'Collection',
+    defaults: {},
+    ports: [...execution('next'), input('container', 'any'), input('key', 'any'), input('value', 'any')]
+  },
 
   // --- v2 nodes ---
   functionDef: {
@@ -146,9 +279,14 @@ export function createGeometryDocument(target = 'python', version = 2) {
 
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const identifier = (value) => typeof value === 'string' && value.trim().length > 0;
-const literalMatches = (type, value) => type === 'int' ? Number.isSafeInteger(value)
+const literalMatches = (type, value) =>
+  type === 'int' ? Number.isSafeInteger(value)
   : type === 'float' ? Number.isFinite(value)
-    : type === 'string' ? typeof value === 'string' : type === 'bool' && typeof value === 'boolean';
+  : type === 'string' ? typeof value === 'string'
+  : type === 'bool' ? typeof value === 'boolean'
+  : type === 'list' ? Array.isArray(value) && value.length === 0
+  : type === 'dict' ? record(value) && Object.keys(value).length === 0
+  : false;
 const diagnostic = (code, message, location = {}, severity = 'error') => ({ severity, code, message, ...location });
 
 function validateGraphShape(graph, path = '', isV1 = false) {
@@ -164,7 +302,7 @@ function validateGraphShape(graph, path = '', isV1 = false) {
 
   for (const [index, variable] of graph.variables.entries()) {
     check(record(variable) && identifier(variable.id) && typeof variable.name === 'string'
-      && valueTypes.includes(variable.type) && literalMatches(variable.type, variable.initialValue),
+      && variableTypes.includes(variable.type) && literalMatches(variable.type, variable.initialValue),
     `${p}variables[${index}] requires id, name, type and a matching initialValue.`);
   }
 
@@ -185,6 +323,33 @@ function validateGraphShape(graph, path = '', isV1 = false) {
     const data = node.data;
     if (node.type === 'literal') {
       check(valueTypes.includes(data.valueType) && literalMatches(data.valueType, data.value), 'Literal value must match valueType.', location);
+    }
+    if (node.type === 'print') {
+      if (data.argCount !== undefined) {
+        check(Number.isSafeInteger(data.argCount) && data.argCount >= 0 && data.argCount <= 16, 'Print argCount must be an integer between 0 and 16.', location);
+      }
+    }
+    if (node.type === 'formatText') {
+      check(['fstring', 'format', 'concat'].includes(data.style), 'formatText style must be fstring, format, or concat.', location);
+      check(typeof data.template === 'string', 'formatText template must be a string.', location);
+    }
+    if (node.type === 'list') {
+      check(Number.isSafeInteger(data.itemCount) && data.itemCount >= 0 && data.itemCount <= 64, 'List itemCount must be an integer between 0 and 64.', location);
+    }
+    if (node.type === 'array') {
+      check(valueTypes.includes(data.elementType), 'Array elementType must be int, float, string, or bool.', location);
+      check(Number.isSafeInteger(data.itemCount) && data.itemCount >= 0 && data.itemCount <= 64, 'Array itemCount must be an integer between 0 and 64.', location);
+    }
+    if (node.type === 'dict') {
+      check(Array.isArray(data.entries), 'Dictionary entries must be an array.', location);
+      if (Array.isArray(data.entries)) {
+        const entryIds = new Set();
+        for (const [eIdx, entry] of data.entries.entries()) {
+          const valid = record(entry) && identifier(entry.id) && typeof entry.key === 'string' && !entryIds.has(entry.id);
+          check(valid, `Dictionary entry at index ${eIdx} must have unique nonempty id and string key.`, location);
+          if (entry && identifier(entry.id)) entryIds.add(entry.id);
+        }
+      }
     }
     if (Object.hasOwn(operators, node.type)) {
       check(operators[node.type].includes(data.operator), 'Unknown or missing operator.', location);
@@ -378,7 +543,10 @@ function serializeNode(node) {
       data.graph = {
         nodes: node.data.graph.nodes.map(serializeNode),
         edges: node.data.graph.edges.map(({ id, source, sourceHandle, target, targetHandle }) => ({ id, source, sourceHandle, target, targetHandle })),
-        variables: node.data.graph.variables.map(({ id, name, type, initialValue }) => ({ id, name, type, initialValue })),
+        variables: node.data.graph.variables.map(({ id, name, type, initialValue }) => ({
+          id, name, type,
+          initialValue: type === 'list' ? [] : type === 'dict' ? {} : initialValue
+        })),
         viewport: { x: node.data.graph.viewport.x, y: node.data.graph.viewport.y, zoom: node.data.graph.viewport.zoom }
       };
     } else if (node.data && node.data[key] !== undefined) {
@@ -388,6 +556,9 @@ function serializeNode(node) {
     }
   }
   // Extra properties for specific nodes like functionDef parameters
+  if (node.type === 'dict') {
+    data.entries = (node.data?.entries || []).map(({ id, key }) => ({ id: String(id), key: String(key ?? '') }));
+  }
   if (node.type === 'start' && node.data?.mainGuard === true) {
     data.mainGuard = true;
   }
@@ -415,7 +586,10 @@ export function serializeGeometryDocument(document) {
     format,
     version,
     target,
-    variables: variables.map(({ id, name, type, initialValue }) => ({ id, name, type, initialValue })),
+    variables: variables.map(({ id, name, type, initialValue }) => ({
+      id, name, type,
+      initialValue: type === 'list' ? [] : type === 'dict' ? {} : initialValue
+    })),
     nodes: nodes.map(serializeNode),
     edges: edges.map(({ id, source, sourceHandle, target, targetHandle }) => ({ id, source, sourceHandle, target, targetHandle })),
     viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
@@ -467,6 +641,21 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
   const accessibleVariables = new Map([...enclosingSymbols, ...localVariables]);
 
   for (const node of graph.nodes) {
+    if (node.type === 'formatText') {
+      const parsed = parseTemplate(node.data?.template ?? '');
+      if (parsed.error) {
+        error('invalid-template', parsed.error, { nodeId: node.id });
+      }
+    }
+    if (node.type === 'dict') {
+      const seenKeys = new Set();
+      for (const entry of node.data?.entries || []) {
+        if (seenKeys.has(entry.key)) {
+          error('duplicate-dict-key', `Duplicate dictionary key: "${entry.key}".`, { nodeId: node.id });
+        }
+        seenKeys.add(entry.key);
+      }
+    }
     if (['getVariable', 'setVariable', 'forRange'].includes(node.type)) {
       const variable = accessibleVariables.get(node.data?.variableId);
       if (!variable) error('missing-variable', `Variable ${node.data?.variableId || '(unselected)'} does not exist.`, { nodeId: node.id });
@@ -549,7 +738,7 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     for (const p of portMaps.get(node.id)?.values() || []) {
       if (p.direction === 'in' && p.kind === 'value' && !incoming.get(node.id).has(p.id)) {
         // Special case: optional inputs like method target or arguments can be checked
-        error('missing-input', `Connect input ${p.id}.`, { nodeId: node.id });
+        error('missing-input', `Connect input ${p.label ?? p.id}.`, { nodeId: node.id });
       }
     }
   }

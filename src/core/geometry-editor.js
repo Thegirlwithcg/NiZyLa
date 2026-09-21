@@ -4,7 +4,14 @@ import { createChildGraph, getNodePorts, nodeDefinitions, validateGeometryDocume
 // every function takes a plain .gcn document and returns a new one (inputs are never mutated).
 
 export const HISTORY_LIMIT = 100;
-export const defaultValues = { int: 0, float: 0, string: '', bool: false };
+export const defaultValues = {
+  int: 0,
+  float: 0,
+  string: '',
+  bool: false,
+  get list() { return []; },
+  get dict() { return {}; }
+};
 
 function serializeGraphContent(graph) {
   if (!graph) return null;
@@ -155,6 +162,14 @@ export const nodePresets = [
   preset('for', 'For Range', 'Control', 'forRange'),
   preset('while', 'While', 'Control', 'while'),
   preset('print', 'Print', 'Output', 'print'),
+  preset('fstring', 'F-String', 'Text', 'formatText', { style: 'fstring', template: 'Value: {x}' }),
+  preset('format-string', 'Format String', 'Text', 'formatText', { style: 'format', template: 'Value: {x}' }),
+  preset('concat-text', 'Concat Text', 'Text', 'formatText', { style: 'concat', template: 'Value: {x}' }),
+  preset('list', 'List', 'Collection', 'list', { itemCount: 0 }),
+  preset('array', 'Array', 'Collection', 'array', { elementType: 'int', itemCount: 0 }),
+  preset('dict', 'Dictionary', 'Collection', 'dict', { entries: [] }),
+  preset('get-item', 'Get Item', 'Collection', 'getItem'),
+  preset('set-item', 'Set Item', 'Collection', 'setItem'),
 
   // v2 presets
   preset('function', 'Function', 'Function', 'functionDef', { name: 'my_function', parameters: [], returnType: 'any' }),

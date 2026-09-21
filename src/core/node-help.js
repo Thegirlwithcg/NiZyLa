@@ -108,5 +108,35 @@ export const nodeHelp = {
     summary: 'Executes or evaluates a custom snippet of raw target code directly inside the graph.',
     python: 'for key, val in data.items():\n    print(key, val)',
     gdscript: 'for key in data:\n    print(key, data[key])'
+  },
+  formatText: {
+    summary: 'Builds formatted text using f-strings, format(), or concatenation. Note: GDScript .format() also replaces a literal {0} in the text.',
+    python: 'name = "Erin"\nlevel = 3\nmsg = f"Player: {name}, Level: {level}"\nprint(msg)',
+    gdscript: 'var name = "Erin"\nvar level = 3\nvar msg = "Player: {0}, Level: {1}".format([name, level])\nprint(msg)'
+  },
+  list: {
+    summary: 'Constructs a mixed-type list collection from input elements.',
+    python: 'items = [1, "two", 3.0]\nprint(items)',
+    gdscript: 'var items = [1, "two", 3.0]\nprint(items)'
+  },
+  array: {
+    summary: 'Constructs a typed array collection with elements converted or checked against the element type.',
+    python: 'numbers = [1, 2, 3]\nprint(numbers)',
+    gdscript: 'var numbers = [1, 2, 3]\nprint(numbers)'
+  },
+  dict: {
+    summary: 'Constructs a dictionary / key-value map collection.',
+    python: 'player = {"name": "Hero", "level": 1}\nprint(player)',
+    gdscript: 'var player = {"name": "Hero", "level": 1}\nprint(player)'
+  },
+  getItem: {
+    summary: 'Accesses an element in a collection or dictionary by index or key.',
+    python: 'items = [10, 20, 30]\nval = items[0]\nprint(val)',
+    gdscript: 'var items = [10, 20, 30]\nvar val = items[0]\nprint(val)'
+  },
+  setItem: {
+    summary: 'Assigns an element into a collection or dictionary at a specific index or key.',
+    python: 'items = [1, 2]\nitems[0] = 99\nprint(items)',
+    gdscript: 'var items = [1, 2]\nitems[0] = 99\nprint(items)'
   }
 };
