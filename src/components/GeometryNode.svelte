@@ -47,7 +47,13 @@
     </header>
 
     <div class="gcn-node-form nodrag nopan nowheel">
-      {#if node.type === 'literal'}
+      {#if node.type === 'start'}
+        {#if ctx.isRoot && ctx.target === 'python'}
+          <label class="gcn-check"><input type="checkbox" checked={node.data?.mainGuard === true}
+            onchange={(event) => ctx.setData(id, { mainGuard: event.currentTarget.checked })} /> if __name__ == "__main__"</label>
+        {/if}
+
+      {:else if node.type === 'literal'}
         <select aria-label="Value type" value={node.data?.valueType} onchange={onValueType}>
           {#each definition.valueTypes as type}<option value={type}>{type}</option>{/each}
         </select>

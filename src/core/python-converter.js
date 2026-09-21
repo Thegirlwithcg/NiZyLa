@@ -17,11 +17,8 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
   doc.variables = [];
 
   const statements = astResult.statements || [];
-  let prevExecNodeId = 'start';
-  let prevExecHandle = 'next';
   let currentX = 250;
   let currentY = 150;
-  const Y_STEP = 120;
   const X_STEP = 280;
   const symbolDefinitions = new Map();
 
@@ -301,7 +298,8 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     let curX = startX;
     let curY = startY;
 
-    for (const stmt of stmts) {
+    for (let stmtIndex = 0; stmtIndex < stmts.length; stmtIndex++) {
+      const stmt = stmts[stmtIndex];
       if (!stmt) continue;
       const k = stmt.kind;
 
@@ -566,6 +564,22 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       }
 
       if (k === 'If') {
+        const isModuleLevel = targetGraph === doc;
+        const isMainGuard = stmt.is_main_guard === true;
+        const orelseEmpty = !stmt.orelse || stmt.orelse.length === 0;
+        const priorValid = stmts.slice(0, stmtIndex).every((s) => !s || ['Import', 'ImportFrom', 'FunctionDef', 'ClassDef', 'Pass'].includes(s.kind));
+        const restArePass = stmts.slice(stmtIndex + 1).every((s) => !s || s.kind === 'Pass');
+
+        // ponytail: collapse only when nothing executable precedes the guard; otherwise literal If nodes. Widen if real files need it.
+        if (isModuleLevel && isMainGuard && orelseEmpty && restArePass && priorValid) {
+          const rootStart = doc.nodes.find((n) => n.id === 'start');
+          if (rootStart) {
+            rootStart.data = { ...rootStart.data, mainGuard: true };
+          }
+          convertStatements(stmt.body || [], doc, curX, curY, { prevId, prevHandle });
+          continue;
+        }
+
         const ifNode = {
           id: `if_${uuid().slice(0, 8)}`,
           type: 'if',
@@ -763,124 +777,6 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       prevHandle = 'next';
       curX += X_STEP;
     }
-  }
-
-  function convertSingleStatement(stmt, targetGraph, prevId, prevHandle, posX, posY) {
-    if (!stmt || stmt.kind === 'Pass') return null;
-    const k = stmt.kind;
-
-    if (k === 'AssignVar') {
-      let v = targetGraph.variables.find((v) => v.name === stmt.name);
-      if (!v) {
-        v = { id: `v_${uuid().slice(0, 8)}`, name: stmt.name, type: 'int', initialValue: 0 };
-        targetGraph.variables.push(v);
-      }
-      const setNode = {
-        id: `set_${uuid().slice(0, 8)}`,
-        type: 'setVariable',
-        position: { x: posX, y: posY },
-        data: { variableId: v.id }
-      };
-      targetGraph.nodes.push(setNode);
-      targetGraph.edges.push({
-        id: `e_${uuid().slice(0, 8)}`,
-        source: prevId,
-        sourceHandle: prevHandle,
-        target: setNode.id,
-        targetHandle: 'in'
-      });
-      const val = buildExpression(stmt.value, targetGraph, posX - 180, posY + 40);
-      if (val) {
-        targetGraph.edges.push({
-          id: `e_${uuid().slice(0, 8)}`,
-          source: val.node.id,
-          sourceHandle: val.outputHandle,
-          target: setNode.id,
-          targetHandle: 'value'
-        });
-      }
-      return { id: setNode.id, handle: 'next' };
-    }
-
-    if (k === 'Print') {
-      const pNode = {
-        id: `print_${uuid().slice(0, 8)}`,
-        type: 'print',
-        position: { x: posX, y: posY },
-        data: {}
-      };
-      targetGraph.nodes.push(pNode);
-      targetGraph.edges.push({
-        id: `e_${uuid().slice(0, 8)}`,
-        source: prevId,
-        sourceHandle: prevHandle,
-        target: pNode.id,
-        targetHandle: 'in'
-      });
-      const val = buildExpression(stmt.value, targetGraph, posX - 180, posY + 40);
-      if (val) {
-        targetGraph.edges.push({
-          id: `e_${uuid().slice(0, 8)}`,
-          source: val.node.id,
-          sourceHandle: val.outputHandle,
-          target: pNode.id,
-          targetHandle: 'value'
-        });
-      }
-      return { id: pNode.id, handle: 'next' };
-    }
-
-    if (k === 'Return') {
-      const retNode = {
-        id: `ret_${uuid().slice(0, 8)}`,
-        type: 'return',
-        position: { x: posX, y: posY },
-        data: { hasValue: Boolean(stmt.value) }
-      };
-      targetGraph.nodes.push(retNode);
-      targetGraph.edges.push({
-        id: `e_${uuid().slice(0, 8)}`,
-        source: prevId,
-        sourceHandle: prevHandle,
-        target: retNode.id,
-        targetHandle: 'in'
-      });
-      if (stmt.value) {
-        const val = buildExpression(stmt.value, targetGraph, posX - 180, posY + 40);
-        if (val) {
-          targetGraph.edges.push({
-            id: `e_${uuid().slice(0, 8)}`,
-            source: val.node.id,
-            sourceHandle: val.outputHandle,
-            target: retNode.id,
-            targetHandle: 'value'
-          });
-        }
-      }
-      return null;
-    }
-
-    // Fallback code node
-    const cNode = {
-      id: `code_${uuid().slice(0, 8)}`,
-      type: 'codeNode',
-      position: { x: posX, y: posY },
-      data: {
-        codeKind: stmt.codeKind || 'statement',
-        code: stmt.code || stmt.segment || 'pass',
-        language: 'python',
-        sourceLocation: stmt.loc || null
-      }
-    };
-    targetGraph.nodes.push(cNode);
-    targetGraph.edges.push({
-      id: `e_${uuid().slice(0, 8)}`,
-      source: prevId,
-      sourceHandle: prevHandle,
-      target: cNode.id,
-      targetHandle: 'in'
-    });
-    return { id: cNode.id, handle: 'next' };
   }
 
   convertStatements(statements, doc, currentX, currentY);

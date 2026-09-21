@@ -145,13 +145,15 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
 
   const declared = { int: 'int', float: 'float', string: 'String', bool: 'bool', any: 'Variant' };
 
-  // Emit variable declarations
-  for (const variable of graph.variables) {
-    const value = literal(variable.type, variable.initialValue, target, {});
-    const line = python
-      ? (isClass ? `${variable.name} = ${value}` : `${variable.name} = ${value}`)
-      : `var ${variable.name}: ${declared[variable.type] || 'Variant'} = ${value}`;
-    emitLine(baseDepth, line, null, scopePath);
+  // Emit variable declarations (for child scopes like function/class bodies; root variables are emitted in step 2)
+  if (scopePath.length > 0) {
+    for (const variable of graph.variables) {
+      const value = literal(variable.type, variable.initialValue, target, {});
+      const line = python
+        ? (isClass ? `${variable.name} = ${value}` : `${variable.name} = ${value}`)
+        : `var ${variable.name}: ${declared[variable.type] || 'Variant'} = ${value}`;
+      emitLine(baseDepth, line, null, scopePath);
+    }
   }
 
   // Work stack for statement execution
@@ -504,7 +506,15 @@ function generate(doc, target) {
   // 5. Root statements from Start node
   const startNode = workingDoc.nodes.find((n) => n.type === 'start');
   if (startNode) {
-    generateGraphStatements(workingDoc, 0, context, []);
+    if (python && startNode.data?.mainGuard === true) {
+      emitLine(0, 'if __name__ == "__main__":', startNode.id);
+      const count = generateGraphStatements(workingDoc, 1, context, []);
+      if (count === 0) {
+        emitLine(1, 'pass');
+      }
+    } else {
+      generateGraphStatements(workingDoc, 0, context, []);
+    }
   }
 
   if (lines.length === 0) {

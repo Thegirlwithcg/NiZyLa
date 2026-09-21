@@ -385,6 +385,9 @@ function serializeNode(node) {
     }
   }
   // Extra properties for specific nodes like functionDef parameters
+  if (node.type === 'start' && node.data?.mainGuard === true) {
+    data.mainGuard = true;
+  }
   if (node.type === 'functionDef' && Array.isArray(node.data?.parameters)) {
     data.parameters = node.data.parameters.map(({ id, name, type, defaultValue }) => ({
       id, name, type: type || 'any', ...(defaultValue !== undefined ? { defaultValue } : {})

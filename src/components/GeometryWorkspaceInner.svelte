@@ -282,6 +282,8 @@
 
   setContext('gcn', {
     get view() { return view; },
+    get isRoot() { return scopePathIds.length === 0; },
+    get target() { return doc.target; },
     describe: (item) => describe(item),
     setData,
     setLiteralType: (id, type) => {

@@ -20,6 +20,9 @@ function serializeGraphContent(graph) {
         }
         return node.data ? node.data[k] : undefined;
       });
+      if (node.type === 'start') {
+        dataValues.push(node.data?.mainGuard === true);
+      }
       return [node.id, node.type, node.position?.x, node.position?.y, dataValues];
     }),
     (graph.edges || []).map(({ id, source, sourceHandle, target, targetHandle }) => [id, source, sourceHandle, target, targetHandle])
