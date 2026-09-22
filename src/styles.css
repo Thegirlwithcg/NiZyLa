@@ -1699,6 +1699,7 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
   font-family: var(--ui-font, var(--mono-font));
 }
 .gcn-canvas .svelte-flow__node { cursor: default; }
+.gcn-canvas.grabbing, .gcn-canvas.grabbing * { cursor: grabbing !important; }
 .svelte-flow__edge.gcn-edge-exec .svelte-flow__edge-path { stroke-width: 3; stroke: var(--text); }
 .svelte-flow__edge.gcn-edge-value .svelte-flow__edge-path { stroke-width: 1.5; stroke-dasharray: 5 3; }
 .svelte-flow__edge.gcn-edge-error .svelte-flow__edge-path { stroke: var(--gcn-error); stroke-width: 3; }

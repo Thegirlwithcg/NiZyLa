@@ -150,6 +150,17 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
         graph.nodes.push(paramNode);
         return { node: paramNode, outputHandle: 'value' };
       }
+      const enclosingVar = graph !== doc ? (doc.variables || []).find((v) => v.name === text) : null;
+      if (enclosingVar) {
+        const getVarNode = {
+          id: `get_${uuid().slice(0, 8)}`,
+          type: 'getVariable',
+          position: { x: posX, y: posY },
+          data: { variableId: enclosingVar.id }
+        };
+        graph.nodes.push(getVarNode);
+        return { node: getVarNode, outputHandle: 'value' };
+      }
       const symNode = {
         id: `sym_${uuid().slice(0, 8)}`,
         type: 'symbolRef',
@@ -254,10 +265,142 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
     return { node: codeNode, outputHandle: 'value' };
   }
 
-  function convertCstStatements(nodesList, targetGraph, startX = 200, startY = 150) {
+  const INT_REGEX = /^-?\d+$/;
+  const FLOAT_REGEX = /^-?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$/;
+  const BOOL_REGEX = /^(true|false)$/;
+  const STRING_REGEX = /^"[^"\\]*"$/;
+
+  function defaultInitialValue(type) {
+    switch (type) {
+      case 'int': return 0;
+      case 'float': return 0.0;
+      case 'string': return '';
+      case 'bool': return false;
+      case 'list': return [];
+      case 'dict': return {};
+      default: return 0;
+    }
+  }
+
+  function mapDeclaredType(typeStr) {
+    if (!typeStr) return null;
+    switch (typeStr) {
+      case 'int': return 'int';
+      case 'float': return 'float';
+      case 'String':
+      case 'string': return 'string';
+      case 'bool': return 'bool';
+      case 'Array':
+      case 'list': return 'list';
+      case 'Dictionary':
+      case 'dict': return 'dict';
+      default: return 'int'; // today's fallback for other declared types
+    }
+  }
+
+  function parseRootVarInitializer(mappedType, raw) {
+    if (!raw) {
+      const type = mappedType || 'int';
+      return { type, initialValue: defaultInitialValue(type), isLiteral: false };
+    }
+
+    if (!mappedType) {
+      // Untyped: infer from literal
+      if (INT_REGEX.test(raw)) {
+        return { type: 'int', initialValue: parseInt(raw, 10), isLiteral: true };
+      }
+      if (FLOAT_REGEX.test(raw)) {
+        return { type: 'float', initialValue: parseFloat(raw), isLiteral: true };
+      }
+      if (BOOL_REGEX.test(raw)) {
+        return { type: 'bool', initialValue: raw === 'true', isLiteral: true };
+      }
+      if (STRING_REGEX.test(raw)) {
+        return { type: 'string', initialValue: raw.slice(1, -1), isLiteral: true };
+      }
+      if (raw === '[]') {
+        return { type: 'list', initialValue: [], isLiteral: true };
+      }
+      if (raw === '{}') {
+        return { type: 'dict', initialValue: {}, isLiteral: true };
+      }
+      return { type: 'int', initialValue: 0, isLiteral: false };
+    }
+
+    // Declared type: literal kind must fit the variable type (int literal into float is OK)
+    if (mappedType === 'int') {
+      if (INT_REGEX.test(raw)) return { type: 'int', initialValue: parseInt(raw, 10), isLiteral: true };
+      return { type: 'int', initialValue: 0, isLiteral: false };
+    }
+    if (mappedType === 'float') {
+      if (FLOAT_REGEX.test(raw) || INT_REGEX.test(raw)) {
+        return { type: 'float', initialValue: parseFloat(raw), isLiteral: true };
+      }
+      return { type: 'float', initialValue: 0.0, isLiteral: false };
+    }
+    if (mappedType === 'string') {
+      if (STRING_REGEX.test(raw)) return { type: 'string', initialValue: raw.slice(1, -1), isLiteral: true };
+      return { type: 'string', initialValue: '', isLiteral: false };
+    }
+    if (mappedType === 'bool') {
+      if (BOOL_REGEX.test(raw)) return { type: 'bool', initialValue: raw === 'true', isLiteral: true };
+      return { type: 'bool', initialValue: false, isLiteral: false };
+    }
+    if (mappedType === 'list') {
+      if (raw === '[]') return { type: 'list', initialValue: [], isLiteral: true };
+      return { type: 'list', initialValue: [], isLiteral: false };
+    }
+    if (mappedType === 'dict') {
+      if (raw === '{}') return { type: 'dict', initialValue: {}, isLiteral: true };
+      return { type: 'dict', initialValue: {}, isLiteral: false };
+    }
+
+    return { type: 'int', initialValue: 0, isLiteral: false };
+  }
+
+  const topLevelChildren = [];
+  for (let i = 0; i < root.namedChildCount; i++) {
+    topLevelChildren.push(root.namedChild(i));
+  }
+
+  const hasRootReady = topLevelChildren.some((child) => {
+    if (child?.type !== 'function_definition') return false;
+    const nameNode = child.childForFieldName('name') || child.namedChild(0);
+    const fnName = nameNode ? source.slice(nameNode.startIndex, nameNode.endIndex).trim() : '';
+    return fnName === '_ready';
+  });
+
+  const rootVarInits = [];
+  for (const node of topLevelChildren) {
+    if (node?.type === 'variable_statement') {
+      const nameNode = node.childForFieldName('name') || node.namedChild(0);
+      const varName = nameNode ? source.slice(nameNode.startIndex, nameNode.endIndex).trim() : 'v';
+      const typeNode = node.childForFieldName('type');
+      const valNode = node.childForFieldName('value');
+      const rawType = typeNode ? source.slice(typeNode.startIndex, typeNode.endIndex).trim() : null;
+      const mappedDeclared = mapDeclaredType(rawType);
+      const rawVal = valNode ? source.slice(valNode.startIndex, valNode.endIndex).trim() : null;
+
+      const { type: varType, initialValue, isLiteral } = parseRootVarInitializer(mappedDeclared, rawVal);
+
+      let v = doc.variables.find((v) => v.name === varName);
+      if (!v) {
+        v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: varType, initialValue };
+        doc.variables.push(v);
+      }
+
+      if (valNode && !isLiteral) {
+        rootVarInits.push({ variable: v, valNode, node });
+      }
+    }
+  }
+
+  let readyInjected = false;
+
+  function convertCstStatements(nodesList, targetGraph, startX = 200, startY = 150, initialPrevId = 'start', initialPrevHandle = 'next') {
     const isRoot = targetGraph === doc;
-    let prevId = 'start';
-    let prevHandle = 'next';
+    let prevId = initialPrevId;
+    let prevHandle = initialPrevHandle;
     let curX = startX;
     let curY = startY;
 
@@ -303,7 +446,31 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
       }
 
       if (type === 'variable_statement') {
-        // var name: type = val
+        if (isRoot) {
+          if (!hasRootReady) {
+            const init = rootVarInits.find((item) => item.node === node);
+            if (init) {
+              const setNode = {
+                id: `set_${uuid().slice(0, 8)}`,
+                type: 'setVariable',
+                position: { x: curX, y: curY },
+                data: { variableId: init.variable.id }
+              };
+              targetGraph.nodes.push(setNode);
+              targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: setNode.id, targetHandle: 'in' });
+              const valRes = buildExpression(init.valNode, targetGraph, curX - 180, curY + 40);
+              if (valRes) {
+                targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: valRes.node.id, sourceHandle: valRes.outputHandle, target: setNode.id, targetHandle: 'value' });
+              }
+              prevId = setNode.id;
+              prevHandle = 'next';
+              curX += X_STEP;
+            }
+          }
+          continue;
+        }
+
+        // Inside function bodies (function-body vars unchanged)
         const nameNode = node.childForFieldName('name') || node.namedChild(0);
         const varName = nameNode ? source.slice(nameNode.startIndex, nameNode.endIndex).trim() : 'v';
         const typeNode = node.childForFieldName('type');
@@ -314,25 +481,11 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
         if (!v) {
           const mappedType = ['int', 'float', 'string', 'bool'].includes(varType) ? varType : 'int';
           let initialValue = mappedType === 'string' ? '' : mappedType === 'bool' ? false : 0;
-          if (isRoot && valNode) {
-            const raw = source.slice(valNode.startIndex, valNode.endIndex).trim();
-            if (mappedType === 'int') {
-              const num = parseInt(raw, 10);
-              if (Number.isSafeInteger(num)) initialValue = num;
-            } else if (mappedType === 'float') {
-              const num = parseFloat(raw);
-              if (Number.isFinite(num)) initialValue = num;
-            } else if (mappedType === 'bool') {
-              initialValue = raw === 'true';
-            } else if (mappedType === 'string') {
-              initialValue = raw.replace(/^["']|["']$/g, '');
-            }
-          }
           v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: mappedType, initialValue };
           targetGraph.variables.push(v);
         }
 
-        if (valNode && !isRoot) {
+        if (valNode) {
           const setNode = {
             id: `set_${uuid().slice(0, 8)}`,
             type: 'setVariable',
@@ -379,7 +532,33 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           }
         }
 
-        convertCstStatements(bodyChildren, child, 200, 150);
+        let childPrevId = 'start';
+        let childPrevHandle = 'next';
+        let childCurX = 200;
+        let childCurY = 150;
+
+        if (isRoot && fnName === '_ready' && !readyInjected && rootVarInits.length > 0) {
+          readyInjected = true;
+          for (const init of rootVarInits) {
+            const setNode = {
+              id: `set_${uuid().slice(0, 8)}`,
+              type: 'setVariable',
+              position: { x: childCurX, y: childCurY },
+              data: { variableId: init.variable.id }
+            };
+            child.nodes.push(setNode);
+            child.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: childPrevId, sourceHandle: childPrevHandle, target: setNode.id, targetHandle: 'in' });
+            const valRes = buildExpression(init.valNode, child, childCurX - 180, childCurY + 40);
+            if (valRes) {
+              child.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: valRes.node.id, sourceHandle: valRes.outputHandle, target: setNode.id, targetHandle: 'value' });
+            }
+            childPrevId = setNode.id;
+            childPrevHandle = 'next';
+            childCurX += X_STEP;
+          }
+        }
+
+        convertCstStatements(bodyChildren, child, childCurX, childCurY, childPrevId, childPrevHandle);
         delete child._currentParams;
 
         const fnNode = {
@@ -471,11 +650,6 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
       prevHandle = 'next';
       curX += X_STEP;
     }
-  }
-
-  const topLevelChildren = [];
-  for (let i = 0; i < root.namedChildCount; i++) {
-    topLevelChildren.push(root.namedChild(i));
   }
 
   convertCstStatements(topLevelChildren, doc, 200, 150);

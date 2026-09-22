@@ -29,6 +29,31 @@ if __name__ == "__main__":
 `;
 await fs.writeFile(path.join(projectDir, 'sample.py'), pythonSource, 'utf8');
 
+const secondGcn = JSON.stringify({
+  format: 'nizyla.geometry-code',
+  version: 2,
+  target: 'python',
+  variables: [],
+  nodes: [
+    { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} }
+  ],
+  edges: [],
+  viewport: { x: 0, y: 0, zoom: 1 }
+}, null, 2) + '\n';
+await fs.writeFile(path.join(projectDir, 'second.gcn'), secondGcn, 'utf8');
+
+const fourCasesGd = `extends Node
+
+var a: int = 5 + 3
+var b: String = "hi"
+var c = get_count()
+var d: bool = a > 2
+
+func get_count():
+    return 10
+`;
+await fs.writeFile(path.join(projectDir, 'four_cases.gd'), fourCasesGd, 'utf8');
+
 const port = async () => {
   const server = net.createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -76,6 +101,12 @@ async function connect(portNumber, type) {
   const pending = new Map();
   ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
+    if (msg.method === 'Runtime.consoleAPICalled') {
+      console.log('Renderer console:', ...(msg.params.args?.map((a) => a.value) || []));
+    }
+    if (msg.method === 'Runtime.exceptionThrown') {
+      console.error('Renderer exception:', msg.params.exceptionDetails);
+    }
     const call = pending.get(msg.id);
     if (!call) return;
     clearTimeout(call.timer);
@@ -118,6 +149,7 @@ try {
   `);
 
   const ui = await connect(rendererPort, 'page');
+  await ui.send('Runtime.enable');
   await ui.send('Page.bringToFront');
   await ui.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 860, deviceScaleFactor: 1, mobile: false }).catch(() => {});
 
@@ -471,6 +503,256 @@ try {
   const helpShot = await ui.send('Page.captureScreenshot', { format: 'png' });
   await fs.writeFile(path.join(screenshotDir, 'node-help.png'), Buffer.from(helpShot.data, 'base64'));
   console.log('Saved node-help.png');
+
+  // PART 5: Blender-style Grab-Duplicate (Shift+D) and Copy/Paste (Ctrl+C / Ctrl+V)
+  console.log('Testing Grab-Duplicate (Shift+D) and Copy/Paste...');
+
+  // Switch target back to python
+  await ui.evaluate(`(() => {
+    const select = document.querySelector('.gcn-toolbar select');
+    select.value = 'python';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await delay(300);
+
+  // Exit back to Module root
+  await ui.evaluate(`document.querySelectorAll('.gcn-breadcrumbs .gcn-crumb')[0].click()`);
+  await delay(400);
+
+  // Add a variable to the graph
+  await ui.evaluate(`(() => {
+    const btn = Array.from(document.querySelectorAll('.gcn-section-head button')).find(b => b.textContent.includes('+ Variable'));
+    btn?.click();
+  })()`);
+  await delay(300);
+
+  const initialVarCount = await ui.evaluate(`document.querySelectorAll('.gcn-var').length`);
+  assert.ok(initialVarCount >= 1, 'At least 1 variable should exist in active graph');
+
+  // Add a Get Variable node using + Add Node menu
+  await ui.evaluate(`(() => {
+    const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('+ Add Node'));
+    btn?.click();
+  })()`);
+  await delay(300);
+  await ui.evaluate(`(() => {
+    const btn = Array.from(document.querySelectorAll('.gcn-menu button')).find(b => b.textContent.includes('Get Variable'));
+    btn?.click();
+  })()`);
+  await delay(400);
+
+  // Select the Get Variable node
+  await ui.evaluate(`(() => {
+    const getNode = Array.from(document.querySelectorAll('.gcn-node')).find(n => n.dataset.nodeType === 'getVariable');
+    getNode?.click();
+  })()`);
+  await delay(200);
+
+  // Move mouse over canvas to set pointer
+  const canvasRect = await ui.evaluate(`(() => {
+    const r = document.querySelector('.gcn-canvas').getBoundingClientRect();
+    return { x: r.x, y: r.y, width: r.width, height: r.height };
+  })()`);
+  const pointer1 = { x: Math.round(canvasRect.x + canvasRect.width / 2), y: Math.round(canvasRect.y + canvasRect.height / 2) };
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: ${pointer1.x}, clientY: ${pointer1.y}, bubbles: true }));
+  })()`);
+  await delay(100);
+
+  // Start Grab-duplicate via Shift+D
+  const nodeCountBeforeGrab = await ui.evaluate(`document.querySelectorAll('.gcn-node').length`);
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.focus();
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', code: 'KeyD', shiftKey: true, bubbles: true }));
+  })()`);
+  await delay(300);
+
+  // Verify grabbing state & notice
+  const isGrabbing = await ui.evaluate(`document.querySelector('.gcn-canvas').classList.contains('grabbing')`);
+  assert.equal(isGrabbing, true, 'Canvas should have grabbing class during grab');
+  const noticeText = await ui.evaluate(`document.querySelector('.gcn-notice')?.textContent`);
+  assert.ok(noticeText?.includes('Move to place'), 'Notice should guide user during grab');
+
+  // Move pointer during grab
+  const pointer2 = { x: pointer1.x + 120, y: pointer1.y + 100 };
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: ${pointer2.x}, clientY: ${pointer2.y}, bubbles: true }));
+  })()`);
+  await delay(200);
+
+  // Screenshot grab-in-progress.png
+  const grabShot = await ui.send('Page.captureScreenshot', { format: 'png' });
+  await fs.writeFile(path.join(screenshotDir, 'grab-in-progress.png'), Buffer.from(grabShot.data, 'base64'));
+  console.log('Saved grab-in-progress.png');
+
+  // Left click on canvas to place the copy
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: ${pointer2.x}, clientY: ${pointer2.y}, bubbles: true }));
+  })()`);
+  await delay(400);
+
+  // Verify placement
+  const nodeCountAfterPlace = await ui.evaluate(`document.querySelectorAll('.gcn-node').length`);
+  assert.equal(nodeCountAfterPlace, nodeCountBeforeGrab + 1, 'Placing should add 1 duplicate node');
+  assert.equal(await ui.evaluate(`document.querySelector('.gcn-canvas').classList.contains('grabbing')`), false, 'Grabbing class should be cleared');
+
+  // Screenshot grab-placed.png
+  const placedShot = await ui.send('Page.captureScreenshot', { format: 'png' });
+  await fs.writeFile(path.join(screenshotDir, 'grab-placed.png'), Buffer.from(placedShot.data, 'base64'));
+  console.log('Saved grab-placed.png');
+
+  // Undo removes the placed copy
+  await ui.evaluate(`document.querySelector('button[title*="Undo"]')?.click()`);
+  await delay(400);
+  const nodeCountAfterUndo = await ui.evaluate(`document.querySelectorAll('.gcn-node').length`);
+  assert.equal(nodeCountAfterUndo, nodeCountBeforeGrab, 'Undo should remove the duplicated node');
+
+  // Test Shift+D -> Esc leaves graph unchanged
+  await ui.evaluate(`(() => {
+    const getNode = Array.from(document.querySelectorAll('.gcn-node')).find(n => n.dataset.nodeType === 'getVariable');
+    getNode?.click();
+  })()`);
+  await delay(200);
+
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: ${pointer1.x}, clientY: ${pointer1.y}, bubbles: true }));
+    canvas.focus();
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', code: 'KeyD', shiftKey: true, bubbles: true }));
+  })()`);
+  await delay(300);
+  assert.equal(await ui.evaluate(`document.querySelector('.gcn-canvas').classList.contains('grabbing')`), true);
+
+  // Press Esc to cancel
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+  })()`);
+  await delay(400);
+  assert.equal(await ui.evaluate(`document.querySelector('.gcn-canvas').classList.contains('grabbing')`), false);
+  const nodeCountAfterEsc = await ui.evaluate(`document.querySelectorAll('.gcn-node').length`);
+  assert.equal(nodeCountAfterEsc, nodeCountBeforeGrab, 'Escape should cancel grab without leaving duplicates');
+
+  // Test Ctrl+C / Ctrl+V at pointer
+  await ui.evaluate(`(() => {
+    const getNode = Array.from(document.querySelectorAll('.gcn-node')).find(n => n.dataset.nodeType === 'getVariable');
+    getNode?.click();
+  })()`);
+  await delay(200);
+
+  // Copy via Ctrl+C
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.focus();
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', ctrlKey: true, bubbles: true }));
+  })()`);
+  await delay(300);
+  const copyNotice = await ui.evaluate(`document.querySelector('.gcn-notice')?.textContent`);
+  console.log('Copy notice:', copyNotice);
+  assert.ok(copyNotice?.includes('Copied 1 node'));
+
+  // Move pointer and paste via Ctrl+V
+  const pasteLoc = { x: pointer1.x + 80, y: pointer1.y + 60 };
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: ${pasteLoc.x}, clientY: ${pasteLoc.y}, bubbles: true }));
+  })()`);
+  await delay(100);
+
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.focus();
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true }));
+  })()`);
+  await delay(500);
+
+  const pasteNotice = await ui.evaluate(`document.querySelector('.gcn-notice')?.textContent`);
+  console.log('Paste notice:', pasteNotice);
+  assert.ok(pasteNotice?.includes('Pasted 1 node'));
+
+  // Open second.gcn and test pasting bringing its variable
+  console.log('Opening second.gcn...');
+  await ui.evaluate(`(() => {
+    const row = Array.from(document.querySelectorAll('.tree-row.file')).find(r => r.querySelector('.name')?.textContent === 'second.gcn');
+    row?.click();
+  })()`);
+  await delay(400);
+
+  // If unsaved prompt appears, discard changes to switch to second.gcn
+  await ui.evaluate(`(() => {
+    const discardBtn = Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.includes('ทิ้งกราฟ') || b.classList.contains('danger'));
+    discardBtn?.click();
+  })()`);
+  await delay(800);
+
+  const secondVarCountBefore = await ui.evaluate(`document.querySelectorAll('.gcn-var').length`);
+  console.log('second.gcn variables before paste:', secondVarCountBefore);
+  assert.equal(secondVarCountBefore, 0, 'second.gcn should have 0 variables before paste');
+
+  // Paste into second.gcn
+  await ui.evaluate(`(() => {
+    const canvas = document.querySelector('.gcn-canvas');
+    const r = canvas.getBoundingClientRect();
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: cx, clientY: cy, bubbles: true }));
+    canvas.focus();
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true }));
+  })()`);
+  await delay(600);
+
+  const secondVarCountAfter = await ui.evaluate(`document.querySelectorAll('.gcn-var').length`);
+  console.log('second.gcn variables after paste:', secondVarCountAfter);
+  assert.ok(secondVarCountAfter >= 1, 'Pasting node with referenced variable should bring variable into second.gcn');
+
+  const secondPasteNotice = await ui.evaluate(`document.querySelector('.gcn-notice')?.textContent`);
+  console.log('second.gcn paste notice:', secondPasteNotice);
+  assert.ok(secondPasteNotice?.includes('variable'), 'Notice should report variable added');
+
+  // Screenshot pasted-second-graph.png
+  const secondShot = await ui.send('Page.captureScreenshot', { format: 'png' });
+  await fs.writeFile(path.join(screenshotDir, 'pasted-second-graph.png'), Buffer.from(secondShot.data, 'base64'));
+  console.log('Saved pasted-second-graph.png');
+
+  // PART 6: Convert four_cases.gd in installed app and inspect GDScript preview
+  console.log('Testing Convert of four_cases.gd in installed app...');
+  await ui.evaluate(`(() => {
+    const row = Array.from(document.querySelectorAll('.tree-row.file')).find(r => r.querySelector('.name')?.textContent === 'four_cases.gd');
+    row?.click();
+  })()`);
+  await delay(400);
+
+  // If unsaved prompt appears, discard changes
+  await ui.evaluate(`(() => {
+    const discardBtn = Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.includes('ทิ้งกราฟ') || b.classList.contains('danger'));
+    discardBtn?.click();
+  })()`);
+  await delay(500);
+
+  // Convert to .gcn
+  await wait("document.querySelector('button[title*=\"Convert\"]')");
+  await ui.evaluate(`document.querySelector('button[title*=\"Convert\"]').click()`);
+  await delay(800);
+  await wait("document.querySelector('.gcn-workspace')");
+
+  const fourCasesLines = await ui.evaluate(`(() => {
+    const lines = Array.from(document.querySelectorAll('.gcn-preview .cm-line')).map(l => l.textContent);
+    return lines.join('\\n');
+  })()`);
+  const fourCasesPreview = fourCasesLines || (await ui.evaluate(`document.querySelector('.gcn-preview .cm-content')?.innerText || ''`));
+  console.log('=== FOUR CASES GDSCRIPT PREVIEW TEXT ===\n' + fourCasesPreview + '\n========================================');
+
+  assert.ok(fourCasesPreview.includes('var a: int = 0'));
+  assert.ok(fourCasesPreview.includes('var b: String = "hi"'));
+  assert.ok(fourCasesPreview.includes('var c: int = 0'));
+  assert.ok(fourCasesPreview.includes('var d: bool = false'));
+  assert.ok(fourCasesPreview.includes('a = (5 + 3)'));
+  assert.ok(fourCasesPreview.includes('c = get_count()'));
+  assert.ok(fourCasesPreview.includes('d = (a > 2)'));
 
   console.log('=== ALL ROUND 2 ACCEPTANCE CHECKS PASSED ===');
   console.log('Contrast results:', JSON.stringify(contrastResults, null, 2));

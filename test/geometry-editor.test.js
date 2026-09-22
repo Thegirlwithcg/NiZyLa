@@ -3,9 +3,9 @@ import test from 'node:test';
 import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
-  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable, duplicateNodes,
-  endEdit, moveNodes, positionsFromFlow, redo, removeItems, sameContent, setLiteralType, setNodeData, setTarget,
-  setViewport, undo, updateVariable, variableUsage
+  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
+  createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, pasteFragment, positionsFromFlow, redo,
+  removeItems, sameContent, setLiteralType, setNodeData, setTarget, setViewport, undo, updateVariable, variableUsage
 } from '../src/core/geometry-editor.js';
 
 const freeze = (value) => {
@@ -376,4 +376,228 @@ test('duplicateNodes copies selected non-start nodes and internal edges, deep cl
   assert.ok(newA.data?.graph);
   newA.data.graph.nodes.push({ id: 'child_in_new', type: 'start', position: { x: 0, y: 0 }, data: {} });
   assert.equal(nodeA.data.graph.nodes.some((n) => n.id === 'child_in_new'), false);
+});
+
+test('cancelEdit: returns state unchanged when no pending, reverts to pending while preserving viewport', () => {
+  const doc = createGeometryDocument();
+  const state = createEditorState(doc);
+  assert.equal(cancelEdit(state), state);
+
+  // Start a live edit with a viewport change
+  const a = add(doc, 'int');
+  const modified = { ...a.doc, viewport: { x: 100, y: 200, zoom: 1.5 } };
+  const liveState = applyEdit(state, modified, true);
+  assert.ok(liveState.pending);
+
+  const cancelled = cancelEdit(liveState);
+  assert.equal(cancelled.pending, null);
+  assert.equal(cancelled.past.length, 0);
+  assert.equal(cancelled.future.length, 0);
+  // Reverts present nodes to pending (no 'int' node), but keeps the current viewport
+  assert.equal(cancelled.present.nodes.length, doc.nodes.length);
+  assert.deepEqual(cancelled.present.viewport, { x: 100, y: 200, zoom: 1.5 });
+});
+
+test('state-level grab shape: live dup + live move + endEdit = one past entry; Undo removes copies; Redo restores', () => {
+  let doc = createGeometryDocument();
+  const a = add(doc, 'int', 10, 10); doc = a.doc;
+  let state = createEditorState(doc);
+
+  // 1. Live duplicate (at {0, 0})
+  const dup = duplicateNodes(state.present, [a.nodeId], { x: 0, y: 0 });
+  state = applyEdit(state, dup.doc, true);
+  assert.ok(state.pending);
+  assert.equal(state.past.length, 0);
+
+  // 2. Live move of copies
+  const moved = moveNodes(state.present, { [dup.nodeIds[0]]: { x: 150, y: 200 } });
+  state = applyEdit(state, moved, true);
+  assert.equal(state.past.length, 0);
+
+  // 3. Place (endEdit)
+  state = endEdit(state);
+  assert.equal(state.past.length, 1);
+  assert.equal(state.pending, null);
+  assert.equal(state.present.nodes.length, 3); // start + int + copy
+
+  // Undo removes the copies completely
+  state = undo(state);
+  assert.equal(state.present.nodes.length, 2);
+  assert.ok(!state.present.nodes.some((n) => n.id === dup.nodeIds[0]));
+
+  // Redo restores them at final spot
+  state = redo(state);
+  assert.equal(state.present.nodes.length, 3);
+  const restored = state.present.nodes.find((n) => n.id === dup.nodeIds[0]);
+  assert.deepEqual(restored.position, { x: 150, y: 200 });
+});
+
+test('state-level grab shape: live dup + cancelEdit reverts to original with zero history entries', () => {
+  let doc = createGeometryDocument();
+  const a = add(doc, 'int', 10, 10); doc = a.doc;
+  let state = createEditorState(doc);
+
+  const dup = duplicateNodes(state.present, [a.nodeId], { x: 0, y: 0 });
+  state = applyEdit(state, dup.doc, true);
+  assert.ok(state.pending);
+
+  state = cancelEdit(state);
+  assert.equal(state.pending, null);
+  assert.equal(state.past.length, 0);
+  assert.equal(state.present.nodes.length, 2); // original start + int
+  assert.ok(!state.present.nodes.some((n) => n.id === dup.nodeIds[0]));
+});
+
+test('copyFragment: Start excluded, dangling edges excluded, referenced variables captured', () => {
+  let doc = createGeometryDocument();
+  const v = addVariable(doc); doc = v.doc;
+  const a = add(doc, 'get', 10, 10); doc = a.doc;
+  doc = setNodeData(doc, a.nodeId, { variableId: v.variableId }).doc;
+  const b = add(doc, 'print', 100, 10); doc = b.doc;
+  doc = wire(doc, a.nodeId, 'value', b.nodeId, 'value');
+  doc = wire(doc, 'start', 'next', b.nodeId, 'in');
+
+  // Copy with only Start selected -> returns null
+  assert.equal(copyFragment(doc, ['start']), null);
+  assert.equal(copyFragment(doc, []), null);
+
+  // Copy a and b (including start in selection to verify it gets filtered out)
+  const copied = copyFragment(doc, ['start', a.nodeId, b.nodeId], doc.variables);
+  assert.ok(typeof copied === 'string');
+  const parsed = JSON.parse(copied);
+  assert.equal(parsed.format, 'nizyla.geometry-code');
+  assert.equal(parsed.version, 2);
+  assert.deepEqual(parsed.viewport, { x: 0, y: 0, zoom: 1 });
+  // Start node is excluded
+  assert.equal(parsed.nodes.some((n) => n.type === 'start'), false);
+  assert.equal(parsed.nodes.length, 2);
+  // Only internal wire between a and b is kept; wire from start is excluded
+  assert.equal(parsed.edges.length, 1);
+  assert.equal(parsed.edges[0].source, a.nodeId);
+  assert.equal(parsed.edges[0].target, b.nodeId);
+  // Referenced variable definition is included
+  assert.equal(parsed.variables.length, 1);
+  assert.equal(parsed.variables[0].id, v.variableId);
+});
+
+test('pasteFragment: non-.gcn text returns null, limits enforced', () => {
+  const doc = createGeometryDocument();
+  assert.equal(pasteFragment(doc, 'not json'), null);
+  assert.equal(pasteFragment(doc, JSON.stringify({ hello: 'world' })), null);
+  assert.equal(pasteFragment(doc, null), null);
+
+  // Text > 1,000,000 characters
+  const largeText = ' ' + 'x'.repeat(1000001);
+  assert.deepEqual(pasteFragment(doc, largeText), { error: 'Clipboard content exceeds 1,000,000 characters.' });
+
+  // Document with > 1,000 nodes
+  const manyNodes = Array.from({ length: 1001 }, (_, i) => ({
+    id: `n_${i}`,
+    type: 'literal',
+    position: { x: i, y: 0 },
+    data: { valueType: 'int', value: 0 }
+  }));
+  const bigDoc = {
+    format: 'nizyla.geometry-code',
+    version: 2,
+    target: 'python',
+    variables: [],
+    nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} }, ...manyNodes],
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 1 }
+  };
+  const bigJson = serializeGeometryDocument(bigDoc);
+  assert.deepEqual(pasteFragment(doc, bigJson), { error: 'Clipboard content exceeds 1,000 nodes.' });
+});
+
+test('pasteFragment: anchor placement, fresh IDs, remapped edges, Start excluded', () => {
+  let sourceDoc = createGeometryDocument();
+  const a = add(sourceDoc, 'int', 50, 60); sourceDoc = a.doc;
+  const b = add(sourceDoc, 'print', 200, 150); sourceDoc = b.doc;
+  sourceDoc = wire(sourceDoc, a.nodeId, 'value', b.nodeId, 'value');
+  sourceDoc = wire(sourceDoc, 'start', 'next', b.nodeId, 'in');
+
+  const clipboardText = copyFragment(sourceDoc, [a.nodeId, b.nodeId]);
+
+  let targetDoc = createGeometryDocument();
+  const frozenTarget = freeze(structuredClone(targetDoc));
+
+  const anchor = { x: 300, y: 400 };
+  const res = pasteFragment(frozenTarget, clipboardText, anchor, []);
+  assert.ok(res.doc);
+  assert.equal(res.nodeIds.length, 2);
+  assert.equal(res.addedVariableIds.length, 0);
+
+  // Top-left node was 'a' at (50, 60); with anchor (300, 400), dx = 250, dy = 340
+  const pastedA = res.doc.nodes.find((n) => n.id === res.nodeIds[0]);
+  const pastedB = res.doc.nodes.find((n) => n.id === res.nodeIds[1]);
+  assert.deepEqual(pastedA.position, { x: 300, y: 400 });
+  assert.deepEqual(pastedB.position, { x: 450, y: 490 });
+
+  // Fresh IDs
+  assert.notEqual(pastedA.id, a.nodeId);
+  assert.notEqual(pastedB.id, b.nodeId);
+
+  // Edges: internal edge remapped, start edge dropped
+  assert.equal(res.doc.edges.length, 1);
+  assert.equal(res.doc.edges[0].source, pastedA.id);
+  assert.equal(res.doc.edges[0].target, pastedB.id);
+
+  // Target doc was not mutated
+  assert.equal(frozenTarget.nodes.length, 1);
+});
+
+test('pasteFragment: variable reconciliation (keep, remap, add with deduped name)', () => {
+  // Source doc has 3 variables: v_keep, v_remap, v_new
+  let src = createGeometryDocument();
+  const v1 = addVariable(src); src = updateVariable(v1.doc, v1.variableId, { name: 'keep_me', type: 'int', initialValue: 42 });
+  const v1Id = v1.variableId;
+  const v2 = addVariable(src); src = updateVariable(v2.doc, v2.variableId, { name: 'remap_me', type: 'float', initialValue: 3.14 });
+  const v2Id = v2.variableId;
+  const v3 = addVariable(src);
+  src = updateVariable(v3.doc, v3.variableId, { name: 'score', type: 'string' });
+  src = updateVariable(src, v3.variableId, { initialValue: 'hello' });
+  const v3Id = v3.variableId;
+
+  const n1 = add(src, 'get', 0, 0); src = setNodeData(n1.doc, n1.nodeId, { variableId: v1Id }).doc;
+  const n2 = add(src, 'get', 50, 0); src = setNodeData(n2.doc, n2.nodeId, { variableId: v2Id }).doc;
+  const n3 = add(src, 'get', 100, 0); src = setNodeData(n3.doc, n3.nodeId, { variableId: v3Id }).doc;
+
+  const clip = copyFragment(src, [n1.nodeId, n2.nodeId, n3.nodeId], src.variables);
+
+  // Target doc:
+  // - Has v_keep with same ID and same type -> should KEEP
+  // - Has a variable named 'remap_me' with DIFFERENT ID but same type -> should REMAP
+  // - Already has a variable named 'score' -> should ADD with deduped name 'score_2'
+  let target = createGeometryDocument();
+  target = {
+    ...target,
+    variables: [
+      { id: v1Id, name: 'keep_me', type: 'int', initialValue: 42 },
+      { id: 'diff_id_for_remap', name: 'remap_me', type: 'float', initialValue: 0.0 },
+      { id: 'some_score_id', name: 'score', type: 'int', initialValue: 100 }
+    ]
+  };
+
+  const res = pasteFragment(target, clip, { x: 0, y: 0 }, target.variables);
+  assert.equal(res.nodeIds.length, 3);
+  assert.equal(res.addedVariableIds.length, 1);
+
+  const pastedN1 = res.doc.nodes.find((n) => n.id === res.nodeIds[0]);
+  const pastedN2 = res.doc.nodes.find((n) => n.id === res.nodeIds[1]);
+  const pastedN3 = res.doc.nodes.find((n) => n.id === res.nodeIds[2]);
+
+  // N1 kept same variable ID
+  assert.equal(pastedN1.data.variableId, v1Id);
+
+  // N2 remapped to target's existing variable with same name & type
+  assert.equal(pastedN2.data.variableId, 'diff_id_for_remap');
+
+  // N3 got a new variable added with deduped name 'score_2'
+  const addedVar = res.doc.variables.find((v) => v.id === res.addedVariableIds[0]);
+  assert.ok(addedVar);
+  assert.equal(addedVar.name, 'score_2');
+  assert.equal(addedVar.type, 'string');
+  assert.equal(addedVar.initialValue, 'hello');
+  assert.equal(pastedN3.data.variableId, addedVar.id);
 });

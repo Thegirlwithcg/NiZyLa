@@ -1,4 +1,4 @@
-import { createChildGraph, getNodePorts, nodeDefinitions, validateGeometryDocument } from './geometry.js';
+import { createChildGraph, getNodePorts, nodeDefinitions, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from './geometry.js';
 
 // Pure document editing + history for the Geometry Code UI. No DOM, no Svelte Flow objects:
 // every function takes a plain .gcn document and returns a new one (inputs are never mutated).
@@ -74,6 +74,12 @@ export function endEdit(state) {
   if (!state.pending) return state;
   const changed = !sameContent(state.pending, state.present);
   return { ...state, pending: null, past: changed ? [...state.past, state.pending].slice(-HISTORY_LIMIT) : state.past, future: changed ? [] : state.future };
+}
+
+/** Cancels a live edit: restores state before live edits began, keeping current viewport. */
+export function cancelEdit(state) {
+  if (!state.pending) return state;
+  return { ...state, present: { ...state.pending, viewport: state.present.viewport }, pending: null };
 }
 
 /** live=true groups repeated edits into a single transaction until endEdit(). */
@@ -549,4 +555,223 @@ export function computePorts(graph) {
     }
   }
   return new Map((graph.nodes || []).map((n) => [n.id, getNodePorts(n, graph.variables, n.type === 'binary' ? inputTypes(n.id) : {})]));
+}
+
+// ---- clipboard fragment operations ------------------------------------------------------------
+
+function dedupeVariableName(name, existingNames) {
+  if (!existingNames.has(name)) return name;
+  const match = name.match(/^(.*)_(\d+)$/);
+  const base = match ? match[1] : name;
+  let n = match ? parseInt(match[2], 10) + 1 : 2;
+  while (existingNames.has(`${base}_${n}`)) {
+    n++;
+  }
+  return `${base}_${n}`;
+}
+
+export function copyFragment(graph, nodeIds, accessibleVariables = []) {
+  if (!graph || !Array.isArray(nodeIds) || nodeIds.length === 0) return null;
+  const targetIds = new Set(nodeIds);
+  const selectedNodes = (graph.nodes || []).filter((n) => targetIds.has(n.id) && n.type !== 'start');
+  if (selectedNodes.length === 0) return null;
+
+  const selectedNodeIds = new Set(selectedNodes.map((n) => n.id));
+  const selectedEdges = (graph.edges || []).filter((e) => selectedNodeIds.has(e.source) && selectedNodeIds.has(e.target));
+
+  const referencedVarIds = new Set();
+  function collectVarIds(nodes) {
+    for (const n of nodes || []) {
+      if (referencing.includes(n.type) && n.data?.variableId) {
+        referencedVarIds.add(n.data.variableId);
+      }
+      if (n.data?.graph?.nodes) {
+        collectVarIds(n.data.graph.nodes);
+      }
+    }
+  }
+  collectVarIds(selectedNodes);
+
+  const allVars = [...(accessibleVariables.length ? accessibleVariables : (graph.variables || [])), ...(graph.variables || [])];
+  const fragmentVars = [];
+  const seenVarIds = new Set();
+  for (const varId of referencedVarIds) {
+    if (seenVarIds.has(varId)) continue;
+    const v = allVars.find((item) => item.id === varId);
+    if (v) {
+      seenVarIds.add(varId);
+      fragmentVars.push(structuredClone(v));
+    }
+  }
+
+  const fragmentDoc = {
+    format: 'nizyla.geometry-code',
+    version: 2,
+    target: graph.target || 'python',
+    variables: fragmentVars,
+    nodes: structuredClone(selectedNodes),
+    edges: structuredClone(selectedEdges),
+    viewport: { x: 0, y: 0, zoom: 1 }
+  };
+
+  return serializeGeometryDocument(fragmentDoc);
+}
+
+export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVariables = []) {
+  if (!graph || typeof text !== 'string') return null;
+  if (text.length > 1000000) {
+    return { error: 'Clipboard content exceeds 1,000,000 characters.' };
+  }
+  const parsed = parseGeometryDocument(text);
+  if (!parsed.document) return null;
+  const doc = parsed.document;
+  if ((doc.nodes || []).length > 1000) {
+    return { error: 'Clipboard content exceeds 1,000 nodes.' };
+  }
+
+  const fragmentNodes = (doc.nodes || []).filter((n) => n.type !== 'start');
+  if (fragmentNodes.length === 0) {
+    return { doc: { ...graph }, nodeIds: [], addedVariableIds: [] };
+  }
+
+  // Top-left node lands on anchor (flow coords), layout kept
+  const minX = Math.min(...fragmentNodes.map((n) => n.position?.x ?? 0));
+  const minY = Math.min(...fragmentNodes.map((n) => n.position?.y ?? 0));
+  let topLeft = fragmentNodes[0];
+  let minD = Infinity;
+  for (const n of fragmentNodes) {
+    const nx = n.position?.x ?? 0;
+    const ny = n.position?.y ?? 0;
+    const d = (nx - minX) + (ny - minY);
+    if (d < minD) {
+      minD = d;
+      topLeft = n;
+    } else if (d === minD) {
+      if (ny < (topLeft.position?.y ?? 0)) {
+        topLeft = n;
+      } else if (ny === (topLeft.position?.y ?? 0) && nx < (topLeft.position?.x ?? 0)) {
+        topLeft = n;
+      }
+    }
+  }
+
+  const ax = Number.isFinite(anchor?.x) ? Math.round(anchor.x) : 0;
+  const ay = Number.isFinite(anchor?.y) ? Math.round(anchor.y) : 0;
+  const dx = ax - (topLeft.position?.x ?? 0);
+  const dy = ay - (topLeft.position?.y ?? 0);
+
+  // Fresh node IDs
+  const nodeIdMap = new Map();
+  for (const n of fragmentNodes) {
+    nodeIdMap.set(n.id, uuid());
+  }
+
+  // Edges: drop dangling, assign fresh IDs
+  const newEdges = [];
+  for (const e of doc.edges || []) {
+    if (nodeIdMap.has(e.source) && nodeIdMap.has(e.target)) {
+      newEdges.push({
+        id: uuid(),
+        source: nodeIdMap.get(e.source),
+        sourceHandle: e.sourceHandle,
+        target: nodeIdMap.get(e.target),
+        targetHandle: e.targetHandle
+      });
+    }
+  }
+
+  // Variable handling
+  const accList = accessibleVariables && accessibleVariables.length > 0 ? accessibleVariables : (graph.variables || []);
+  const accVars = [...accList];
+  const fragmentDocVars = doc.variables || [];
+  const currentGraphVars = [...(graph.variables || [])];
+  const addedVariableIds = [];
+  const varIdMap = new Map();
+  const existingNames = new Set([
+    ...currentGraphVars.map((v) => v.name),
+    ...accVars.map((v) => v.name)
+  ]);
+
+  const refVarIds = new Set();
+  function collectVarIds(nodes) {
+    for (const n of nodes || []) {
+      if (referencing.includes(n.type) && n.data?.variableId) {
+        refVarIds.add(n.data.variableId);
+      }
+      if (n.data?.graph?.nodes) {
+        collectVarIds(n.data.graph.nodes);
+      }
+    }
+  }
+  collectVarIds(fragmentNodes);
+
+  for (const origVarId of refVarIds) {
+    const origVar = fragmentDocVars.find((v) => v.id === origVarId) || accVars.find((v) => v.id === origVarId);
+    if (!origVar) {
+      varIdMap.set(origVarId, origVarId);
+      continue;
+    }
+
+    // 1. Same id+type accessible -> keep
+    const keepMatch = accVars.find((v) => v.id === origVar.id && v.type === origVar.type);
+    if (keepMatch) {
+      varIdMap.set(origVarId, origVar.id);
+      continue;
+    }
+
+    // 2. Same name+type accessible -> remap
+    const remapMatch = accVars.find((v) => v.name === origVar.name && v.type === origVar.type);
+    if (remapMatch) {
+      varIdMap.set(origVarId, remapMatch.id);
+      continue;
+    }
+
+    // 3. Add to current graph with fresh id and deduped name (score, score_2, ...)
+    const freshId = uuid();
+    const freshName = dedupeVariableName(origVar.name, existingNames);
+    existingNames.add(freshName);
+    const newVar = {
+      id: freshId,
+      name: freshName,
+      type: origVar.type,
+      initialValue: origVar.initialValue !== undefined ? structuredClone(origVar.initialValue) : (defaultValues[origVar.type] ?? 0)
+    };
+    currentGraphVars.push(newVar);
+    accVars.push(newVar);
+    addedVariableIds.push(freshId);
+    varIdMap.set(origVarId, freshId);
+  }
+
+  // Construct pasted nodes
+  const newNodes = [];
+  for (const n of fragmentNodes) {
+    const newId = nodeIdMap.get(n.id);
+    const newPos = {
+      x: Math.round((n.position?.x ?? 0) + dx),
+      y: Math.round((n.position?.y ?? 0) + dy)
+    };
+    const newData = n.data ? structuredClone(n.data) : {};
+    if (referencing.includes(n.type) && newData.variableId && varIdMap.has(newData.variableId)) {
+      newData.variableId = varIdMap.get(newData.variableId);
+    }
+    newNodes.push({
+      ...n,
+      id: newId,
+      position: newPos,
+      data: newData
+    });
+  }
+
+  const nextDoc = {
+    ...graph,
+    variables: currentGraphVars,
+    nodes: [...(graph.nodes || []), ...newNodes],
+    edges: [...(graph.edges || []), ...newEdges]
+  };
+
+  return {
+    doc: nextDoc,
+    nodeIds: newNodes.map((n) => n.id),
+    addedVariableIds
+  };
 }

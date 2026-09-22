@@ -231,12 +231,21 @@ keeps the document (key `"scratch"`) and computes "changed" with `sameContent`.
 
 Shortcuts (only when focus is not in an input/textarea/select/CodeMirror):
 Shift+A add-node menu (canvas focus; at the pointer, else canvas center; Add Node
-button uses the center), Shift+D duplicate selection (canvas focus), Delete/Backspace delete selection (canvas focus),
-Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo. Menu: search, Up/Down, Enter, Esc.
+button uses the center). Shift+D duplicate selection (canvas focus; Blender-style
+grab-duplicate when pointer is over canvas where copies follow the mouse until placed
+via Left click / Enter, or canceled via Esc / Right-click / Ctrl+Z/Y / blur; fallback to
+immediate +40,+40 offset when pointer is not over canvas). Ctrl/Cmd+C copy selection
+(canvas focus, non-Start nodes, internal wires, and referenced variable definitions
+copied to clipboard as .gcn v2 fragment). Ctrl/Cmd+V paste fragment from clipboard
+at pointer (or canvas center if outside) with variable reconciliation (keep matching id+type,
+remap matching name+type, or add fresh deduped variable). Delete/Backspace delete selection
+(canvas focus), Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo. Menu: search, Up/Down, Enter, Esc.
 
 Undo/Redo: snapshots of plain .gcn content, 100 transactions. One transaction =
-add/delete, wire add/delete, one drag (group), one field focus-to-blur edit,
-one variable edit, target change, an operator change with its removed wires.
+add/delete, wire add/delete, one drag (group), one placed grab-duplicate (one entry
+for live duplicate + move + place; Undo removes copies and Redo restores at final spot),
+one paste, one field focus-to-blur edit, one variable edit, target change, an operator
+change with its removed wires. Canceled grab-duplicate leaves zero history entries.
 No-ops, selection, menus, pan/zoom/Fit View make no entry; Undo/Redo keep the
 current viewport. Wires are added only after `checkConnection` (same-kind
 output->input, cardinality, no exec/value cycle, no known type mismatch); missing

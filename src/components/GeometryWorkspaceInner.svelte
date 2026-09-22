@@ -6,10 +6,10 @@
   import { generateGeometryCode } from '../core/geometry-codegen.js';
   import { nodeHelp } from '../core/node-help.js';
   import {
-    addEdge, addNode, addVariable, applyEdit, checkConnection, computePorts, createEditorState, deleteVariable, duplicateNodes, endEdit,
-    getGraphAtScope, moveNodes, positionsFromFlow, redo, removeItems, setLiteralType, setNodeData, setTarget,
-    setViewport, setViewportAtScope, undo, updateGraphAtScope, updateVariable, variableUsage,
-    addFunctionParameter, updateFunctionParameter, removeFunctionParameter
+    addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, createEditorState,
+    deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, positionsFromFlow, redo,
+    removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
+    updateVariable, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter
   } from '../core/geometry-editor.js';
   import CodeEditor from './CodeEditor.svelte';
   import GeometryAddMenu from './GeometryAddMenu.svelte';
@@ -50,6 +50,8 @@
   let menu = $state.raw(null);
   let deleting = $state.raw(null);
   let copyResult = $state.raw('');
+  let grab = $state.raw(null);
+  let suppressNextContextMenu = false;
   let canvasEl;
   let addButton;
   let pointer = null;
@@ -117,10 +119,31 @@
     notice = { text, error };
     noticeTimer = setTimeout(() => (notice = { text: '', error: false }), 6000);
   }
+
+  function onwindowblur() {
+    if (grab) cancelGrab();
+  }
+
+  function onwindowcontextmenu(e) {
+    if (suppressNextContextMenu) {
+      e.preventDefault();
+      suppressNextContextMenu = false;
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('blur', onwindowblur);
+    window.addEventListener('contextmenu', onwindowcontextmenu, { capture: true });
+  }
+
   onDestroy(() => {
     clearTimeout(noticeTimer);
     window.removeEventListener('pointermove', resizePanels);
     window.removeEventListener('pointerup', stopResizePanels);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('blur', onwindowblur);
+      window.removeEventListener('contextmenu', onwindowcontextmenu, { capture: true });
+    }
   });
 
   function saveGcnLayout() {
@@ -231,6 +254,7 @@
     const key = documentKey;
     if (key === loadedKey) return;
     untrack(() => {
+      if (grab) cancelGrab();
       loadedKey = key;
       editor = createEditorState(initialDocument);
       scopeStack = [];
@@ -246,7 +270,11 @@
   });
 
   $effect(() => {
-    if (!active) { menu = null; return; }
+    if (!active) {
+      if (grab) cancelGrab();
+      menu = null;
+      return;
+    }
     tick().then(() => requestAnimationFrame(() => untrack(() => updateNodeInternals([...view.nodes.keys()]))));
   });
 
@@ -279,6 +307,7 @@
   }
 
   function enterScope(nodeId) {
+    if (grab) cancelGrab();
     const targetNode = activeGraph.nodes.find((n) => n.id === nodeId);
     if (!targetNode || !['functionDef', 'classDef'].includes(targetNode.type)) return;
     if (!targetNode.data?.graph) return;
@@ -301,6 +330,7 @@
   }
 
   function exitTo(scopeIndex) {
+    if (grab) cancelGrab();
     if (scopeIndex === scopeStack.length) return;
     const currentVp = flow.getViewport();
     const withVp = setViewportAtScope(editor.present, scopePathIds, currentVp);
@@ -359,21 +389,130 @@
     canvasEl?.focus();
   }
 
+  function placeGrab() {
+    if (!grab) return;
+    const ids = grab.ids;
+    const positions = {};
+    for (const id of ids) {
+      const n = nodes.find((node) => node.id === id);
+      if (n) {
+        positions[id] = { x: Math.round(n.position.x), y: Math.round(n.position.y) };
+      }
+    }
+    grab = null;
+    if (notice.text === 'Move to place · Click / Enter = place · Esc / Right-click = cancel') {
+      notice = { text: '', error: false };
+    }
+    const nextGraph = moveNodes(activeGraph, positions);
+    if (nextGraph) {
+      applyScoped(() => nextGraph, true);
+    }
+    finishEdit();
+    canvasEl?.focus();
+  }
+
+  function cancelGrab() {
+    if (!grab) return;
+    const originalIds = grab.originalIds;
+    grab = null;
+    if (notice.text === 'Move to place · Click / Enter = place · Esc / Right-click = cancel') {
+      notice = { text: '', error: false };
+    }
+    setEditor(cancelEdit(editor));
+    selectOnly(originalIds);
+    canvasEl?.focus();
+  }
+
   async function duplicateSelection() {
     const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
     if (!selectedIds.length) return;
-    const result = duplicateNodes(activeGraph, selectedIds);
-    if (!result) {
-      const selectedStart = selectedIds.some((id) => activeGraph.nodes.find((n) => n.id === id)?.type === 'start');
-      if (selectedStart) {
-        say('The Start node cannot be duplicated.');
-      }
+    const nonStartIds = selectedIds.filter((id) => activeGraph.nodes.find((n) => n.id === id)?.type !== 'start');
+    if (!nonStartIds.length) {
+      say('The Start node cannot be duplicated.');
       return;
     }
-    applyScoped(() => result.doc);
+
+    if (!pointer) {
+      const result = duplicateNodes(activeGraph, nonStartIds, { x: 40, y: 40 });
+      if (!result) return;
+      applyScoped(() => result.doc);
+      await tick();
+      selectOnly(result.nodeIds);
+      canvasEl?.focus();
+      return;
+    }
+
+    finishEdit();
+    const result = duplicateNodes(activeGraph, nonStartIds, { x: 0, y: 0 });
+    if (!result) return;
+    applyScoped(() => result.doc, true);
     await tick();
     selectOnly(result.nodeIds);
+    const copyNodes = result.doc.nodes.filter((n) => result.nodeIds.includes(n.id));
+    const origins = Object.fromEntries(copyNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }]));
+    grab = {
+      ids: result.nodeIds,
+      originalIds: nonStartIds,
+      origins,
+      startFlow: flow.screenToFlowPosition(pointer)
+    };
+    say('Move to place · Click / Enter = place · Esc / Right-click = cancel');
     canvasEl?.focus();
+  }
+
+  function getAccessibleVariables() {
+    const vars = [...(activeGraph.variables || [])];
+    for (let i = scopePathIds.length - 1; i >= 0; i--) {
+      const enclosing = getGraphAtScope(doc, scopePathIds.slice(0, i));
+      if (enclosing?.variables) {
+        vars.push(...enclosing.variables);
+      }
+    }
+    return vars;
+  }
+
+  async function copySelection() {
+    const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+    const nonStartIds = selectedIds.filter((id) => activeGraph.nodes.find((n) => n.id === id)?.type !== 'start');
+    if (!nonStartIds.length) return false;
+    const text = copyFragment(activeGraph, nonStartIds, getAccessibleVariables());
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      say(`Copied ${nonStartIds.length} node${nonStartIds.length === 1 ? '' : 's'}`);
+      return true;
+    } catch (err) {
+      say(`Copy failed: ${err?.message ?? 'clipboard unavailable'}`, true);
+      return true;
+    }
+  }
+
+  async function pasteSelection() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+      const box = canvasEl.getBoundingClientRect();
+      const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      const anchorScreen = pointer ?? center;
+      const anchorFlow = flow.screenToFlowPosition(anchorScreen);
+      const result = pasteFragment(activeGraph, text, anchorFlow, getAccessibleVariables());
+      if (!result) return;
+      if (result.error) {
+        say(result.error, true);
+        return;
+      }
+      if (!result.nodeIds.length) return;
+      applyScoped(() => result.doc);
+      await tick();
+      selectOnly(result.nodeIds);
+      const varCount = result.addedVariableIds?.length ?? 0;
+      const nodeCount = result.nodeIds.length;
+      const varMsg = varCount > 0 ? ` (+${varCount} variable${varCount === 1 ? '' : 's'})` : '';
+      say(`Pasted ${nodeCount} node${nodeCount === 1 ? '' : 's'}${varMsg}`);
+      canvasEl?.focus();
+    } catch (err) {
+      // Clipboard read error
+    }
   }
 
   function connect(connection) {
@@ -432,12 +571,37 @@
     const key = event.key.toLowerCase();
     const inCanvas = canvasEl.contains(event.target);
 
+    if (grab) {
+      if (event.key === 'Escape' || (mod && (key === 'z' || key === 'y'))) {
+        event.preventDefault();
+        cancelGrab();
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        placeGrab();
+        return;
+      }
+      event.preventDefault();
+      return;
+    }
+
     if (mod && !event.altKey && key === 'z') {
       event.preventDefault();
       setEditor(event.shiftKey ? redo(editor) : undo(editor));
     } else if (mod && !event.altKey && !event.shiftKey && key === 'y') {
       event.preventDefault();
       setEditor(redo(editor));
+    } else if (inCanvas && mod && !event.altKey && !event.shiftKey && key === 'c') {
+      const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+      const nonStartIds = selectedIds.filter((id) => activeGraph.nodes.find((n) => n.id === id)?.type !== 'start');
+      if (nonStartIds.length > 0) {
+        event.preventDefault();
+        copySelection();
+      }
+    } else if (inCanvas && mod && !event.altKey && !event.shiftKey && key === 'v') {
+      event.preventDefault();
+      pasteSelection();
     } else if (inCanvas && !mod && !event.altKey && event.shiftKey && key === 'a') {
       event.preventDefault();
       openMenu(false);
@@ -528,13 +692,49 @@
       copyResult = `Copy failed: ${error?.message ?? 'clipboard unavailable'}`;
     }
   }
+
+  function oncanvaspointerdowncapture(e) {
+    if (grab) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.button === 0) {
+        placeGrab();
+      } else if (e.button === 2) {
+        suppressNextContextMenu = true;
+        cancelGrab();
+      }
+      return;
+    }
+    if (!typing(e.target)) canvasEl.focus({ preventScroll: true });
+  }
+
+  function oncanvaspointermove(e) {
+    pointer = { x: e.clientX, y: e.clientY };
+    if (!grab) return;
+    const nowFlow = flow.screenToFlowPosition(pointer);
+    const dx = nowFlow.x - grab.startFlow.x;
+    const dy = nowFlow.y - grab.startFlow.y;
+    nodes = nodes.map((n) => {
+      if (!grab.ids.includes(n.id)) return n;
+      const orig = grab.origins[n.id];
+      if (!orig) return n;
+      return { ...n, position: { x: Math.round(orig.x + dx), y: Math.round(orig.y + dy) } };
+    });
+  }
+
+  function oncanvascontextmenu(e) {
+    if (grab || suppressNextContextMenu) {
+      e.preventDefault();
+      suppressNextContextMenu = false;
+    }
+  }
 </script>
 
 <div class="gcn-workspace" hidden={!active} inert={!active} {onkeydown} role="presentation">
   <div class="gcn-toolbar" role="toolbar" aria-label="Geometry Code tools">
-    <button bind:this={addButton} onclick={() => openMenu(true)} aria-haspopup="dialog">+ Add Node</button>
-    <button onclick={() => setEditor(undo(editor))} disabled={!canUndo} title="Undo (Ctrl+Z)">Undo</button>
-    <button onclick={() => setEditor(redo(editor))} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">Redo</button>
+    <button bind:this={addButton} onclick={() => { if (grab) cancelGrab(); openMenu(true); }} aria-haspopup="dialog">+ Add Node</button>
+    <button onclick={() => { if (grab) cancelGrab(); setEditor(undo(editor)); }} disabled={!canUndo} title="Undo (Ctrl+Z)">Undo</button>
+    <button onclick={() => { if (grab) cancelGrab(); setEditor(redo(editor)); }} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">Redo</button>
     <button onclick={() => flow.fitView({ padding: 0.2, maxZoom: 1.25, duration: 200 })}>Fit View</button>
 
     {#if canEnterSelected}
@@ -578,9 +778,11 @@
 
   <div class="gcn-body" style={`--gcn-side-width: ${gcnLayout.side}px; --gcn-details-height: ${gcnLayout.details}px;`}>
     <div class="gcn-canvas" bind:this={canvasEl} tabindex="-1" aria-label="Geometry Code graph canvas" role="application"
-      onpointerdowncapture={(e) => { if (!typing(e.target)) canvasEl.focus({ preventScroll: true }); }}
-      onpointermove={(e) => (pointer = { x: e.clientX, y: e.clientY })}
-      onpointerleave={() => (pointer = null)}>
+      class:grabbing={!!grab}
+      onpointerdowncapture={oncanvaspointerdowncapture}
+      onpointermove={oncanvaspointermove}
+      onpointerleave={() => { if (!grab) pointer = null; }}
+      oncontextmenu={oncanvascontextmenu}>
       <SvelteFlow bind:nodes bind:edges {nodeTypes} colorMode={theme === 'cream' ? 'light' : 'dark'}
         deleteKey={[]} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}
         isValidConnection={(c) => checkConnection(activeGraph, c).ok} onbeforeconnect={connect} onconnectend={connectEnd}

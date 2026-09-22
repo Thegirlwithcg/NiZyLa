@@ -603,12 +603,13 @@ function generate(doc, target) {
   };
   collectDefinitions(workingDoc);
 
+  const rootVariables = new Map((workingDoc.variables || []).map((v) => [v.id, v]));
   const context = {
     target,
     sourceMap,
     emitLine,
     emptyLine,
-    variables: new Map(),
+    variables: rootVariables,
     definitions
   };
 
@@ -701,7 +702,7 @@ function generate(doc, target) {
   if (!python) {
     for (const variable of workingDoc.variables) {
       if (NODE_MEMBERS.has(variable.name)) {
-        throw new GenerationError('gdscript-member-conflict', `Variable "${variable.name}" clashes with Node.name in GDScript; rename it.`);
+        throw new GenerationError('gdscript-member-conflict', `Variable "${variable.name}" clashes with Node.${variable.name} in GDScript; rename it.`);
       }
     }
   }
@@ -712,6 +713,10 @@ function generate(doc, target) {
       ? `${variable.name} = ${value}`
       : `var ${variable.name}: ${typeName(variable.type, 'gdscript') || 'Variant'} = ${value}`;
     emitLine(0, line);
+  }
+
+  if (!python && workingDoc.variables.length > 0) {
+    emptyLine();
   }
 
   // 3. Classes
@@ -756,7 +761,9 @@ function generate(doc, target) {
     }
 
     if (!userReadyFunc) {
-      if (workingDoc.variables.length > 0) emptyLine();
+      if (lines.length > 0 && lines[lines.length - 1] !== '') {
+        emptyLine();
+      }
       emitLine(0, 'func _ready():', startNode?.id);
       const count = startNode ? generateGraphStatements(workingDoc, 1, context, []) : 0;
       if (count === 0) {

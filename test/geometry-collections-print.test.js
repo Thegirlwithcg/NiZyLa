@@ -690,6 +690,26 @@ test('GDScript v2 exact output: empty doc, Start->print, functions+Start, gd_ext
   assert.ifError(pyNameRes.diagnostics.find((d) => d.severity === 'error'));
   assert.ok(pyNameRes.code.includes('name = "Erin"'));
 
+  // owner conflict on root variable gives specific message with Node.owner
+  const ownerClashDoc = makeDoc('gdscript');
+  addVar(ownerClashDoc, 'v_owner', 'owner', 'string', 'Boss');
+  const ownerClashRes = generateGeometryCode(ownerClashDoc, 'gdscript');
+  assert.equal(ownerClashRes.code, null);
+  const ownerErr = ownerClashRes.diagnostics.find((d) => d.code === 'gdscript-member-conflict');
+  assert.ok(ownerErr);
+  assert.equal(ownerErr.message, 'Variable "owner" clashes with Node.owner in GDScript; rename it.');
+
+  // 7. GDScript blank lines: vars + function + Start
+  const blankDoc = makeDoc('gdscript');
+  addVar(blankDoc, 'v_hp', 'health', 'int', 100);
+  addNode(blankDoc, 'fn_take', 'functionDef', { name: 'take_damage', parameters: [], returnType: 'void' });
+  addNode(blankDoc, 'lit', 'literal', { valueType: 'int', value: 1 });
+  addNode(blankDoc, 'pr', 'print', { argCount: 1 });
+  addEdge(blankDoc, 'e0', 'start', 'next', 'pr', 'in');
+  addEdge(blankDoc, 'e1', 'lit', 'value', 'pr', 'value');
+  const blankRes = generateGeometryCode(blankDoc, 'gdscript');
+  assert.equal(blankRes.code, 'extends Node\n\nvar health: int = 100\n\nfunc take_damage():\n    pass\n\nfunc _ready():\n    print(1)\n');
+
   // player_name generates cleanly
   const playerNameDoc = makeDoc('gdscript');
   addVar(playerNameDoc, 'v_pname', 'player_name', 'string', 'Erin');
