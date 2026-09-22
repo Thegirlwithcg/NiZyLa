@@ -474,8 +474,32 @@ function generateFunction(node, baseDepth, context, scopePath = [], isClassMetho
 
   const childScope = [...scopePath, node.id];
   let count = 0;
+
+  if (python && node.data?.graph) {
+    const rootVars = context.rootVariablesList || [];
+    const assignedIds = new Set();
+    for (const n of node.data.graph.nodes || []) {
+      if ((n.type === 'setVariable' || n.type === 'forRange') && n.data?.variableId) {
+        assignedIds.add(n.data.variableId);
+      }
+    }
+    const paramNames = new Set((paramsList || []).map((p) => p.name));
+    const localVarNames = new Set((node.data.graph.variables || []).map((v) => v.name));
+
+    const globalNames = [];
+    for (const v of rootVars) {
+      if (assignedIds.has(v.id) && !paramNames.has(v.name) && !localVarNames.has(v.name)) {
+        globalNames.push(v.name);
+      }
+    }
+    if (globalNames.length > 0) {
+      emitLine(baseDepth + 1, `global ${globalNames.join(', ')}`, node.id, childScope);
+      count++;
+    }
+  }
+
   if (node.data?.graph) {
-    count = generateGraphStatements(node.data.graph, baseDepth + 1, context, childScope, false);
+    count += generateGraphStatements(node.data.graph, baseDepth + 1, context, childScope, false);
   }
   if (count === 0 && (!node.data?.graph || node.data.graph.variables.length === 0)) {
     emitLine(baseDepth + 1, 'pass', node.id, childScope);
@@ -610,6 +634,7 @@ function generate(doc, target) {
     emitLine,
     emptyLine,
     variables: rootVariables,
+    rootVariablesList: workingDoc.variables || [],
     definitions
   };
 

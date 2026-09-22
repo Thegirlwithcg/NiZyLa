@@ -601,3 +601,78 @@ test('pasteFragment: variable reconciliation (keep, remap, add with deduped name
   assert.equal(addedVar.initialValue, 'hello');
   assert.equal(pastedN3.data.variableId, addedVar.id);
 });
+
+test('pasteFragment: function body reading module variable remapped properly (same doc, doc without it, doc with same name+type, local variable not remapped)', () => {
+  // Source doc with module variable 'score'
+  let srcDoc = createGeometryDocument();
+  const vScore = addVariable(srcDoc);
+  srcDoc = updateVariable(vScore.doc, vScore.variableId, { name: 'score', type: 'int', initialValue: 0 });
+  const scoreId = vScore.variableId;
+
+  // Add a functionDef node whose body reads 'score'
+  const fnRes = addNode(srcDoc, 'function', { x: 100, y: 100 });
+  srcDoc = fnRes.doc;
+  const fnId = fnRes.nodeId;
+
+  // Inside function body, add a Get Variable node reading 'score'
+  const fnNode = srcDoc.nodes.find((n) => n.id === fnId);
+  const childGet = addNode(fnNode.data.graph, 'get', { x: 100, y: 100 });
+  childGet.doc.nodes.find((n) => n.id === childGet.nodeId).data.variableId = scoreId;
+  fnNode.data.graph = childGet.doc;
+
+  const clip = copyFragment(srcDoc, [fnId], srcDoc.variables);
+  assert.ok(clip);
+
+  // (a) Paste into same doc -> same id
+  const pasteSame = pasteFragment(srcDoc, clip, { x: 300, y: 300 }, srcDoc.variables);
+  assert.equal(pasteSame.addedVariableIds.length, 0);
+  const fnSame = pasteSame.doc.nodes.find((n) => n.id === pasteSame.nodeIds[0]);
+  const getSame = fnSame.data.graph.nodes.find((n) => n.type === 'getVariable');
+  assert.equal(getSame.data.variableId, scoreId);
+  const errsSame = validateGeometryDocument(pasteSame.doc).filter((d) => d.severity === 'error');
+  assert.equal(errsSame.length, 0);
+
+  // (b) Paste into doc without it -> added variable and body points to it
+  let freshDoc = createGeometryDocument();
+  const pasteFresh = pasteFragment(freshDoc, clip, { x: 300, y: 300 }, freshDoc.variables);
+  assert.equal(pasteFresh.addedVariableIds.length, 1);
+  const addedVar = pasteFresh.doc.variables.find((v) => v.name === 'score');
+  assert.ok(addedVar);
+  const fnFresh = pasteFresh.doc.nodes.find((n) => n.id === pasteFresh.nodeIds[0]);
+  const getFresh = fnFresh.data.graph.nodes.find((n) => n.type === 'getVariable');
+  assert.equal(getFresh.data.variableId, addedVar.id);
+  const errsFresh = validateGeometryDocument(pasteFresh.doc).filter((d) => d.severity === 'error');
+  assert.equal(errsFresh.length, 0);
+
+  // (c) Paste into doc with same name+type (different ID) -> body remapped to that id
+  let otherDoc = createGeometryDocument();
+  const otherVar = addVariable(otherDoc);
+  otherDoc = updateVariable(otherVar.doc, otherVar.variableId, { name: 'score', type: 'int', initialValue: 99 });
+  const otherScoreId = otherVar.variableId;
+  assert.notEqual(otherScoreId, scoreId);
+
+  const pasteOther = pasteFragment(otherDoc, clip, { x: 300, y: 300 }, otherDoc.variables);
+  assert.equal(pasteOther.addedVariableIds.length, 0);
+  const fnOther = pasteOther.doc.nodes.find((n) => n.id === pasteOther.nodeIds[0]);
+  const getOther = fnOther.data.graph.nodes.find((n) => n.type === 'getVariable');
+  assert.equal(getOther.data.variableId, otherScoreId);
+  const errsOther = validateGeometryDocument(pasteOther.doc).filter((d) => d.severity === 'error');
+  assert.equal(errsOther.length, 0);
+
+  // Local variable of the same ID inside body is not remapped
+  let localDoc = createGeometryDocument();
+  const fnLocalRes = addNode(localDoc, 'function', { x: 100, y: 100 });
+  localDoc = fnLocalRes.doc;
+  const fnLocal = localDoc.nodes.find((n) => n.id === fnLocalRes.nodeId);
+  // Add a local variable with ID scoreId inside the child graph
+  fnLocal.data.graph.variables = [{ id: scoreId, name: 'local_score', type: 'int', initialValue: 5 }];
+  const localGet = addNode(fnLocal.data.graph, 'get', { x: 100, y: 100 });
+  localGet.doc.nodes.find((n) => n.id === localGet.nodeId).data.variableId = scoreId;
+  fnLocal.data.graph = localGet.doc;
+
+  const clipLocal = copyFragment(localDoc, [fnLocalRes.nodeId], localDoc.variables);
+  const pasteLocal = pasteFragment(otherDoc, clipLocal, { x: 300, y: 300 }, otherDoc.variables);
+  const fnPastedLocal = pasteLocal.doc.nodes.find((n) => n.id === pasteLocal.nodeIds[0]);
+  const getPastedLocal = fnPastedLocal.data.graph.nodes.find((n) => n.type === 'getVariable');
+  assert.equal(getPastedLocal.data.variableId, scoreId);
+});

@@ -131,9 +131,16 @@
     }
   }
 
+  function onwindowpointerdowncapture(e) {
+    if (grab && canvasEl && !canvasEl.contains(e.target)) {
+      placeGrab();
+    }
+  }
+
   if (typeof window !== 'undefined') {
     window.addEventListener('blur', onwindowblur);
     window.addEventListener('contextmenu', onwindowcontextmenu, { capture: true });
+    window.addEventListener('pointerdown', onwindowpointerdowncapture, { capture: true });
   }
 
   onDestroy(() => {
@@ -143,6 +150,7 @@
     if (typeof window !== 'undefined') {
       window.removeEventListener('blur', onwindowblur);
       window.removeEventListener('contextmenu', onwindowcontextmenu, { capture: true });
+      window.removeEventListener('pointerdown', onwindowpointerdowncapture, { capture: true });
     }
   });
 
@@ -488,31 +496,44 @@
   }
 
   async function pasteSelection() {
+    let text;
     try {
-      const text = await navigator.clipboard.readText();
-      if (!text) return;
-      const box = canvasEl.getBoundingClientRect();
-      const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-      const anchorScreen = pointer ?? center;
-      const anchorFlow = flow.screenToFlowPosition(anchorScreen);
-      const result = pasteFragment(activeGraph, text, anchorFlow, getAccessibleVariables());
-      if (!result) return;
-      if (result.error) {
-        say(result.error, true);
-        return;
-      }
-      if (!result.nodeIds.length) return;
-      applyScoped(() => result.doc);
-      await tick();
-      selectOnly(result.nodeIds);
-      const varCount = result.addedVariableIds?.length ?? 0;
-      const nodeCount = result.nodeIds.length;
-      const varMsg = varCount > 0 ? ` (+${varCount} variable${varCount === 1 ? '' : 's'})` : '';
-      say(`Pasted ${nodeCount} node${nodeCount === 1 ? '' : 's'}${varMsg}`);
-      canvasEl?.focus();
+      text = await navigator.clipboard.readText();
     } catch (err) {
-      // Clipboard read error
+      say(`Paste failed: ${err?.message ?? 'clipboard unavailable'}`, true);
+      return;
     }
+    if (!text) return;
+
+    const box = canvasEl.getBoundingClientRect();
+    const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    const anchorScreen = pointer ?? center;
+    const anchorFlow = flow.screenToFlowPosition(anchorScreen);
+
+    let result;
+    try {
+      result = pasteFragment(activeGraph, text, anchorFlow, getAccessibleVariables());
+    } catch (err) {
+      console.error(err);
+      say(`Paste failed: ${err?.message ?? 'unexpected error'}`, true);
+      return;
+    }
+
+    if (!result) return; // Non-.gcn text stays a silent no-op
+    if (result.error) {
+      say(result.error, true);
+      return;
+    }
+    if (!result.nodeIds.length) return;
+
+    applyScoped(() => result.doc);
+    await tick();
+    selectOnly(result.nodeIds);
+    const varCount = result.addedVariableIds?.length ?? 0;
+    const nodeCount = result.nodeIds.length;
+    const varMsg = varCount > 0 ? ` (+${varCount} variable${varCount === 1 ? '' : 's'})` : '';
+    say(`Pasted ${nodeCount} node${nodeCount === 1 ? '' : 's'}${varMsg}`);
+    canvasEl?.focus();
   }
 
   function connect(connection) {
@@ -732,9 +753,9 @@
 
 <div class="gcn-workspace" hidden={!active} inert={!active} {onkeydown} role="presentation">
   <div class="gcn-toolbar" role="toolbar" aria-label="Geometry Code tools">
-    <button bind:this={addButton} onclick={() => { if (grab) cancelGrab(); openMenu(true); }} aria-haspopup="dialog">+ Add Node</button>
-    <button onclick={() => { if (grab) cancelGrab(); setEditor(undo(editor)); }} disabled={!canUndo} title="Undo (Ctrl+Z)">Undo</button>
-    <button onclick={() => { if (grab) cancelGrab(); setEditor(redo(editor)); }} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">Redo</button>
+    <button bind:this={addButton} onclick={() => openMenu(true)} aria-haspopup="dialog">+ Add Node</button>
+    <button onclick={() => setEditor(undo(editor))} disabled={!canUndo} title="Undo (Ctrl+Z)">Undo</button>
+    <button onclick={() => setEditor(redo(editor))} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">Redo</button>
     <button onclick={() => flow.fitView({ padding: 0.2, maxZoom: 1.25, duration: 200 })}>Fit View</button>
 
     {#if canEnterSelected}

@@ -637,6 +637,46 @@ try {
   const nodeCountAfterEsc = await ui.evaluate(`document.querySelectorAll('.gcn-node').length`);
   assert.equal(nodeCountAfterEsc, nodeCountBeforeGrab, 'Escape should cancel grab without leaving duplicates');
 
+  // Test click outside canvas during grab (Variables '+ Variable' button)
+  const baseNodeCount = await ui.evaluate(`document.querySelectorAll('.gcn-node').length`);
+  const baseVarCount = await ui.evaluate(`document.querySelectorAll('.gcn-var').length`);
+
+  // Start grab
+  await ui.evaluate(`(() => {
+    const getNode = Array.from(document.querySelectorAll('.gcn-node')).find(n => n.dataset.nodeType === 'getVariable');
+    getNode?.click();
+    const canvas = document.querySelector('.gcn-canvas');
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: ${pointer1.x}, clientY: ${pointer1.y}, bubbles: true }));
+    canvas.focus();
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', code: 'KeyD', shiftKey: true, bubbles: true }));
+  })()`);
+  await delay(300);
+  assert.equal(await ui.evaluate(`document.querySelector('.gcn-canvas').classList.contains('grabbing')`), true);
+
+  // Click "+ Variable" outside canvas
+  await ui.evaluate(`(() => {
+    const btn = Array.from(document.querySelectorAll('.gcn-section-head button')).find(b => b.textContent.includes('+ Variable'));
+    btn?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    btn?.click();
+  })()`);
+  await delay(400);
+
+  // Grabbing should be cleared (placed)
+  assert.equal(await ui.evaluate(`document.querySelector('.gcn-canvas').classList.contains('grabbing')`), false, 'Grab placed by click outside');
+  assert.equal(await ui.evaluate(`document.querySelectorAll('.gcn-node').length`), baseNodeCount + 1, 'Duplicate placed');
+  assert.equal(await ui.evaluate(`document.querySelectorAll('.gcn-var').length`), baseVarCount + 1, 'Variable added as separate entry');
+
+  // Undo once removes the variable (separate entry)
+  await ui.evaluate(`document.querySelector('button[title*="Undo"]')?.click()`);
+  await delay(400);
+  assert.equal(await ui.evaluate(`document.querySelectorAll('.gcn-var').length`), baseVarCount, 'Undo removes the variable');
+  assert.equal(await ui.evaluate(`document.querySelectorAll('.gcn-node').length`), baseNodeCount + 1, 'Duplicate is still present');
+
+  // Undo again removes the duplicate (exactly one history entry for the duplicate)
+  await ui.evaluate(`document.querySelector('button[title*="Undo"]')?.click()`);
+  await delay(400);
+  assert.equal(await ui.evaluate(`document.querySelectorAll('.gcn-node').length`), baseNodeCount, 'Undo removes the duplicate in one step');
+
   // Test Ctrl+C / Ctrl+V at pointer
   await ui.evaluate(`(() => {
     const getNode = Array.from(document.querySelectorAll('.gcn-node')).find(n => n.dataset.nodeType === 'getVariable');

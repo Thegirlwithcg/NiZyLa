@@ -168,6 +168,10 @@ pure (no filesystem, process or Electron use) and never evaluates graph data.
   typed locals (`int`, `float`, `String`, `bool`); float values are always
   emitted as float literals (`1.0`), and an int assigned to a float variable is
   wrapped in `float(...)`.
+- Python functions (module functions and class methods): at the top of each function body, emits
+  `global a, b` (in root-variable order) for every root variable assigned by Set Variable or For Range
+  anywhere in that function's graph (nested blocks included; nested Function/Class graphs excluded),
+  unless shadowed by a parameter or local variable with the same name. Nothing is emitted when there are none.
 - Execution is walked from Start through ports only (never by node position or a
   global sort), with an explicit work stack rather than recursion. If runs then/else
   and then `next` once; loops run body and then `next`. Unused nodes are omitted.
@@ -243,9 +247,10 @@ remap matching name+type, or add fresh deduped variable). Delete/Backspace delet
 
 Undo/Redo: snapshots of plain .gcn content, 100 transactions. One transaction =
 add/delete, wire add/delete, one drag (group), one placed grab-duplicate (one entry
-for live duplicate + move + place; Undo removes copies and Redo restores at final spot),
-one paste, one field focus-to-blur edit, one variable edit, target change, an operator
-change with its removed wires. Canceled grab-duplicate leaves zero history entries.
+for live duplicate + move + place; clicking outside the canvas confirms/places the grab;
+Undo removes copies and Redo restores at final spot), one paste, one field focus-to-blur edit,
+one variable edit, target change, an operator change with its removed wires.
+Canceled grab-duplicate leaves zero history entries.
 No-ops, selection, menus, pan/zoom/Fit View make no entry; Undo/Redo keep the
 current viewport. Wires are added only after `checkConnection` (same-kind
 output->input, cardinality, no exec/value cycle, no known type mismatch); missing

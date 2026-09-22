@@ -580,13 +580,19 @@ export function copyFragment(graph, nodeIds, accessibleVariables = []) {
   const selectedEdges = (graph.edges || []).filter((e) => selectedNodeIds.has(e.source) && selectedNodeIds.has(e.target));
 
   const referencedVarIds = new Set();
-  function collectVarIds(nodes) {
+  function collectVarIds(nodes, localScopeVars = new Set()) {
     for (const n of nodes || []) {
       if (referencing.includes(n.type) && n.data?.variableId) {
-        referencedVarIds.add(n.data.variableId);
+        if (!localScopeVars.has(n.data.variableId)) {
+          referencedVarIds.add(n.data.variableId);
+        }
       }
-      if (n.data?.graph?.nodes) {
-        collectVarIds(n.data.graph.nodes);
+      if (n.data?.graph) {
+        const nextLocalVars = new Set([
+          ...localScopeVars,
+          ...(n.data.graph.variables || []).map((v) => v.id)
+        ]);
+        collectVarIds(n.data.graph.nodes, nextLocalVars);
       }
     }
   }
@@ -693,13 +699,19 @@ export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVa
   ]);
 
   const refVarIds = new Set();
-  function collectVarIds(nodes) {
+  function collectVarIds(nodes, localScopeVars = new Set()) {
     for (const n of nodes || []) {
       if (referencing.includes(n.type) && n.data?.variableId) {
-        refVarIds.add(n.data.variableId);
+        if (!localScopeVars.has(n.data.variableId)) {
+          refVarIds.add(n.data.variableId);
+        }
       }
-      if (n.data?.graph?.nodes) {
-        collectVarIds(n.data.graph.nodes);
+      if (n.data?.graph) {
+        const nextLocalVars = new Set([
+          ...localScopeVars,
+          ...(n.data.graph.variables || []).map((v) => v.id)
+        ]);
+        collectVarIds(n.data.graph.nodes, nextLocalVars);
       }
     }
   }
@@ -742,6 +754,21 @@ export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVa
     varIdMap.set(origVarId, freshId);
   }
 
+  function remapGraphVariables(childGraph, map) {
+    if (!childGraph || !Array.isArray(childGraph.nodes)) return;
+    const localIds = new Set((childGraph.variables || []).map((v) => v.id));
+    for (const node of childGraph.nodes) {
+      if (referencing.includes(node.type) && node.data?.variableId) {
+        if (!localIds.has(node.data.variableId) && map.has(node.data.variableId)) {
+          node.data.variableId = map.get(node.data.variableId);
+        }
+      }
+      if (node.data?.graph) {
+        remapGraphVariables(node.data.graph, map);
+      }
+    }
+  }
+
   // Construct pasted nodes
   const newNodes = [];
   for (const n of fragmentNodes) {
@@ -753,6 +780,9 @@ export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVa
     const newData = n.data ? structuredClone(n.data) : {};
     if (referencing.includes(n.type) && newData.variableId && varIdMap.has(newData.variableId)) {
       newData.variableId = varIdMap.get(newData.variableId);
+    }
+    if (newData.graph) {
+      remapGraphVariables(newData.graph, varIdMap);
     }
     newNodes.push({
       ...n,

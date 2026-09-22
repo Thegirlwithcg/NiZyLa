@@ -475,3 +475,97 @@ test('python accepts maximum-depth output', { skip: python ? false : 'Python 3 n
   print(doc, 'p', 'n63'); wire(doc, previous, 'then', 'p', 'in');
   compilePython(codeFor(doc, 'python'));
 });
+
+test('Python codegen: emits global for root variables assigned inside functions', () => {
+  // 1. Root variable assigned inside function -> emits global score, runs in real Python printing 1
+  const doc = createGeometryDocument('python', 2);
+  const scoreId = 'v_score';
+  doc.variables.push({ id: scoreId, name: 'score', type: 'int', initialValue: 0 });
+
+  // Add add_point function
+  const childGraph = createGeometryDocument('python', 2);
+  childGraph.variables = [];
+  childGraph.nodes = [
+    { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+    { id: 'lit1', type: 'literal', position: { x: 0, y: 100 }, data: { valueType: 'int', value: 1 } },
+    { id: 'get1', type: 'getVariable', position: { x: 0, y: 0 }, data: { variableId: scoreId } },
+    { id: 'add1', type: 'binary', position: { x: 150, y: 50 }, data: { operator: '+' } },
+    { id: 'set1', type: 'setVariable', position: { x: 300, y: 50 }, data: { variableId: scoreId } }
+  ];
+  childGraph.edges = [
+    { id: 'e1', source: 'start', sourceHandle: 'next', target: 'set1', targetHandle: 'in' },
+    { id: 'e2', source: 'get1', sourceHandle: 'value', target: 'add1', targetHandle: 'a' },
+    { id: 'e3', source: 'lit1', sourceHandle: 'value', target: 'add1', targetHandle: 'b' },
+    { id: 'e4', source: 'add1', sourceHandle: 'value', target: 'set1', targetHandle: 'value' }
+  ];
+
+  const fnNode = {
+    id: 'fn1',
+    type: 'functionDef',
+    position: { x: 200, y: 0 },
+    data: { name: 'add_point', parameters: [], returnType: 'void', graph: childGraph }
+  };
+  doc.nodes.push(fnNode);
+
+  // At root Start chain: call add_point(), then print(score)
+  doc.nodes.push({ id: 'call1', type: 'functionCall', position: { x: 400, y: 0 }, data: { name: 'add_point', argumentNames: [] } });
+  doc.nodes.push({ id: 'get2', type: 'getVariable', position: { x: 400, y: 100 }, data: { variableId: scoreId } });
+  doc.nodes.push({ id: 'pr1', type: 'print', position: { x: 600, y: 0 }, data: { argCount: 1 } });
+
+  doc.edges.push({ id: 're1', source: 'start', sourceHandle: 'next', target: 'call1', targetHandle: 'in' });
+  doc.edges.push({ id: 're2', source: 'call1', sourceHandle: 'next', target: 'pr1', targetHandle: 'in' });
+  doc.edges.push({ id: 're3', source: 'get2', sourceHandle: 'value', target: 'pr1', targetHandle: 'value' });
+
+  const pyRes = generateGeometryCode(doc, 'python');
+  assert.ok(pyRes.code);
+  assert.ok(pyRes.code.includes('global score'));
+
+  if (python) {
+    const out = runPython(pyRes.code);
+    assert.deepEqual(out, ['1']);
+  }
+
+  // GDScript output for the same doc is unchanged and does not contain global
+  const gdRes = generateGeometryCode(doc, 'gdscript');
+  assert.ok(gdRes.code);
+  assert.equal(gdRes.code.includes('global'), false);
+
+  // 2. A function that only reads score gets no global
+  const readFnDoc = structuredClone(doc);
+  const readFn = readFnDoc.nodes.find((n) => n.id === 'fn1');
+  readFn.data.graph.nodes = readFn.data.graph.nodes.filter((n) => n.type !== 'setVariable');
+  readFn.data.graph.edges = [];
+  const readPy = generateGeometryCode(readFnDoc, 'python');
+  assert.equal(readPy.code.includes('global score'), false);
+
+  // 3. A parameter named score suppresses global
+  const paramFnDoc = structuredClone(doc);
+  const paramFn = paramFnDoc.nodes.find((n) => n.id === 'fn1');
+  paramFn.data.parameters = [{ id: 'p_score', name: 'score', type: 'int', defaultValue: null }];
+  const paramPy = generateGeometryCode(paramFnDoc, 'python');
+  assert.equal(paramPy.code.includes('global score'), false);
+
+  // 4. A method in a class gets global
+  const classDoc = createGeometryDocument('python', 2);
+  classDoc.variables.push({ id: scoreId, name: 'score', type: 'int', initialValue: 0 });
+  const classFnNode = structuredClone(fnNode);
+  const classNode = {
+    id: 'cls1',
+    type: 'classDef',
+    position: { x: 200, y: 0 },
+    data: {
+      name: 'ScoreKeeper',
+      baseClass: '',
+      graph: {
+        nodes: [{ id: 'cls_start', type: 'start', position: { x: 0, y: 0 }, data: {} }, classFnNode],
+        edges: [],
+        variables: [],
+        viewport: { x: 0, y: 0, zoom: 1 }
+      }
+    }
+  };
+  classDoc.nodes.push(classNode);
+  const classPy = generateGeometryCode(classDoc, 'python');
+  assert.ok(classPy.code);
+  assert.ok(classPy.code.includes('global score'));
+});
