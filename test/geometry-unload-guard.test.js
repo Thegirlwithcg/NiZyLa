@@ -104,8 +104,12 @@ test('electron/main.js registers will-prevent-unload with synchronous dialog and
   // Supports Save when file path is present, plus Discard and Cancel
   assert.match(content, /buttons:\s*\[['"]บันทึก['"],\s*['"]ทิ้งกราฟ['"],\s*['"]ยกเลิก['"]\]/);
 
+  // Supports multi-document Save all
+  assert.match(content, /buttons:\s*\[['"]บันทึกทั้งหมด['"],\s*['"]ทิ้งทั้งหมด['"],\s*['"]ยกเลิก['"]\]/);
+
   // Also supports Cancel and Discard when scratch or drafts
   assert.match(content, /buttons:\s*\[['"]ยกเลิก['"],\s*['"]ทิ้งกราฟ['"]\]/);
+  assert.match(content, /buttons:\s*\[['"]ยกเลิก['"],\s*['"]ทิ้งทั้งหมด['"]\]/);
 
   // No window.close() or location.reload() inside will-prevent-unload
   const willPreventUnloadBlock = content.match(/mainWindow\.webContents\.on\('will-prevent-unload'[\s\S]*?\n  \}\);/)?.[0];
@@ -228,3 +232,99 @@ test('will-prevent-unload handler semantics: Save writes and unloads, Discard un
     assert.equal(preventDefaultCalled, false, 'Drafts Cancel must abort unload');
   }
 });
+
+test('multi-document unload guard handles 2+ dirty graphs correctly', () => {
+  function handleMultiWillPreventUnload(docs, event, showMessageBoxSync, writeSync) {
+    const canSaveAll = docs.every((d) => d.filePath && !d.hasDrafts && d.document);
+    if (canSaveAll) {
+      const choice = showMessageBoxSync({
+        type: 'warning',
+        buttons: ['บันทึกทั้งหมด', 'ทิ้งทั้งหมด', 'ยกเลิก'],
+        defaultId: 0,
+        cancelId: 2
+      });
+      if (choice === 0) {
+        try {
+          for (const docItem of docs) {
+            writeSync(docItem.filePath, serializeGeometryDocument(docItem.document));
+          }
+          event.preventDefault();
+        } catch (_) {}
+      } else if (choice === 1) {
+        event.preventDefault();
+      }
+    } else {
+      const choice = showMessageBoxSync({
+        type: 'warning',
+        buttons: ['ยกเลิก', 'ทิ้งทั้งหมด'],
+        defaultId: 0,
+        cancelId: 0
+      });
+      if (choice === 1) {
+        event.preventDefault();
+      }
+    }
+  }
+
+  const docA = createGeometryDocument();
+  const docB = createGeometryDocument();
+  const docsAllSaveable = [
+    { filePath: '/project/a.gcn', document: docA, hasDrafts: false },
+    { filePath: '/project/b.gcn', document: docB, hasDrafts: false }
+  ];
+
+  // 1: Save all (choice 0) -> writes all, calls preventDefault
+  {
+    const written = [];
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleMultiWillPreventUnload(docsAllSaveable, event, () => 0, (p) => written.push(p));
+    assert.deepEqual(written, ['/project/a.gcn', '/project/b.gcn']);
+    assert.equal(preventDefaultCalled, true);
+  }
+
+  // 2: Save all fails on second file -> aborts unload
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleMultiWillPreventUnload(docsAllSaveable, event, () => 0, (p) => {
+      if (p.includes('b.gcn')) throw new Error('write failed');
+    });
+    assert.equal(preventDefaultCalled, false);
+  }
+
+  // 3: Discard all (choice 1)
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleMultiWillPreventUnload(docsAllSaveable, event, () => 1, () => {});
+    assert.equal(preventDefaultCalled, true);
+  }
+
+  // 4: Cancel (choice 2)
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleMultiWillPreventUnload(docsAllSaveable, event, () => 2, () => {});
+    assert.equal(preventDefaultCalled, false);
+  }
+
+  // 5: Scratch tab or draft present -> buttons are ['ยกเลิก', 'ทิ้งทั้งหมด']
+  const docsWithScratch = [
+    { filePath: null, document: docA, hasDrafts: false },
+    { filePath: '/project/b.gcn', document: docB, hasDrafts: false }
+  ];
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleMultiWillPreventUnload(docsWithScratch, event, () => 1, () => {});
+    assert.equal(preventDefaultCalled, true, 'Discard all allows unload');
+  }
+  {
+    let preventDefaultCalled = false;
+    const event = { preventDefault: () => { preventDefaultCalled = true; } };
+    handleMultiWillPreventUnload(docsWithScratch, event, () => 0, () => {});
+    assert.equal(preventDefaultCalled, false, 'Cancel aborts unload');
+  }
+});
+

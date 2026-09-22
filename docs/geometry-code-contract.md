@@ -208,79 +208,20 @@ Build the installer with `npm run dist:win` as required by AGENTS.md.
 Keyword references: [Python lexical analysis](https://docs.python.org/3/reference/lexical_analysis.html#keywords)
 and [GDScript reference](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_basics.html#keywords).
 
-## Stage 3: node editor UI (experimental, in memory only)
+## Stage 3: node editor UI as editor tabs
 
-Open it with the **Geometry Code** switch in the top bar (next to **Code**). The
-graph starts as one Start node, needs no open project, and is **not saved**
-(banner: "กราฟทดลอง — ยังบันทึกไม่ได้ในรุ่นนี้"). No Save/Export/Run/.gcn open yet.
-Closing or reloading after an edit asks to discard the graph (Cancel stays);
-undoing back to the initial content is not "changed". Picking a file in the
-Explorer returns to Code mode and keeps the graph. While in Geometry, Code-pane
-buttons/shortcuts (Save, Split, Graph, Terminal, +Editor) are disabled and
-floating windows are hidden; Ctrl+S only reports "cannot save yet".
+Geometry Code graphs are integrated into the tab and pane system rather than a separate modal workspace. Multiple graphs can be open at once in split or floating panes, side by side with code files. The previous modal "Code / Geometry Code" switch is removed in favor of a topbar `+ Geometry Code` button (opening a new scratch graph tab), `+ Graph` in project, opening `.gcn` files from the Explorer, or converting Python/GDScript source to `.gcn`.
 
-Files: `src/core/geometry-editor.js` (pure document ops + history, tested in
-`test/geometry-editor.test.js`), `src/components/GeometryWorkspace.svelte`
-(public, wraps `SvelteFlowProvider`) -> `GeometryWorkspaceInner.svelte`,
-`GeometryNode.svelte` (one component for all node types), `GeometryAddMenu.svelte`,
-`GeometryField.svelte` (numeric draft input). Dependency: `@xyflow/svelte` 1.6.6.
+### Pane & Tab Invariants
+- **1 document = 1 tab**: A document is uniquely identified by its file path, or by `documentKey` for scratch graphs. Opening an already-open graph switches focus to its existing tab in its current pane.
+- **Tab shape**: `{ id, kind: 'geometry', documentKey, file, doc, baseline, hasDrafts, dirty }`.
+- **Dirty status**: A geometry tab is dirty if `hasDrafts === true`, `baseline === null` (scratch tab), or `!sameDocument(doc, baseline)`.
+- **Split & Pane additions**: `addPane` never duplicates a geometry tab into the new pane. `closePane` moves tabs to an adjacent pane without duplicating documents.
+- **Detached windows**: Detach to multi-monitor windows is disabled for panes holding any geometry tabs; edge-drag popout cue and action are skipped for them.
+- **Remount history cache**: Geometry workspace instances save their editor state and undo/redo stacks into a module-scoped LRU cache (`historyStore`, max 20 entries) on destroy and restore on mount when `sameContent(saved.editor.present, incomingDoc)` holds. Moving tabs between docked and floating panes or switching tabs retains full undo/redo history.
+- **Side Panel toggle**: Toolbar "Panel" toggle button hides the inspector (`.gcn-side`) and splitter, persisted in `nizyla.gcnLayout.panelVisible`. Canvas has a min-width of 240px.
+- **Unload Guard**: `will-prevent-unload` in `electron/main.js` receives dirty documents from the renderer:
+  - 1 dirty graph: Thai dialog ("บันทึก", "ทิ้งกราฟ", "ยกเลิก").
+  - 2+ dirty graphs: Multi-document Thai dialog indicating count and file names ("บันทึกทั้งหมด", "ทิ้งทั้งหมด", "ยกเลิก") with atomic batch saves via `writeGcnAtomicSync`. If save fails, unload is aborted.
+- **Execution concurrency**: Python execution remains singular across the app (`isPythonRunning`), routing output to the integrated terminal panel.
 
-Component API: `<GeometryWorkspace document documentKey active theme preferences
-showLineNumbers onchange />`. `document` is a plain .gcn object, never mutated and
-read only when `documentKey` changes (new key = load, reset history/selection;
-same key = the echo of our own `onchange` is ignored). `onchange(next)` receives a
-fresh plain .gcn document (no selection/measured/DOM fields) after every edit and
-after pan/zoom (viewport). `active=false` hides it and disables shortcuts. App
-keeps the document (key `"scratch"`) and computes "changed" with `sameContent`.
-
-Shortcuts (only when focus is not in an input/textarea/select/CodeMirror):
-Shift+A add-node menu (canvas focus; at the pointer, else canvas center; Add Node
-button uses the center). Shift+D duplicate selection (canvas focus; Blender-style
-grab-duplicate when pointer is over canvas where copies follow the mouse until placed
-via Left click / Enter, or canceled via Esc / Right-click / Ctrl+Z/Y / blur; fallback to
-immediate +40,+40 offset when pointer is not over canvas). Ctrl/Cmd+C copy selection
-(canvas focus, non-Start nodes, internal wires, and referenced variable definitions
-copied to clipboard as .gcn v2 fragment). Ctrl/Cmd+V paste fragment from clipboard
-at pointer (or canvas center if outside) with variable reconciliation (keep matching id+type,
-remap matching name+type, or add fresh deduped variable). Delete/Backspace delete selection
-(canvas focus), Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo. Menu: search, Up/Down, Enter, Esc.
-
-Undo/Redo: snapshots of plain .gcn content, 100 transactions. One transaction =
-add/delete, wire add/delete, one drag (group), one placed grab-duplicate (one entry
-for live duplicate + move + place; clicking outside the canvas confirms/places the grab;
-Undo removes copies and Redo restores at final spot), one paste, one field focus-to-blur edit,
-one variable edit, target change, an operator change with its removed wires.
-Canceled grab-duplicate leaves zero history entries.
-No-ops, selection, menus, pan/zoom/Fit View make no entry; Undo/Redo keep the
-current viewport. Wires are added only after `checkConnection` (same-kind
-output->input, cardinality, no exec/value cycle, no known type mismatch); missing
-inputs never block a wire. Wires to ports that disappear (And -> Not) are removed
-in the same transaction; type mismatches from retyping are kept and reported.
-
-Code preview uses `generateGeometryCode`; with errors or an invalid input draft
-the preview is cleared and Copy Code is disabled. `CodeEditor` got `readOnly`.
-
-Close/reload guard: a prevented `beforeunload` is followed by a confirm (browsers
-suppress `confirm()` inside `beforeunload`). Cancel keeps the page and data. There is
-no IPC to tell reload from close, so a reload key (F5/Ctrl+R) pressed just before means
-reload; anything else (Alt+F4, taskbar, the X button) means close. The app has no
-reload command or menu, so a reload started outside the page (DevTools/CDP) is treated
-as a close; a reliable fix needs a `will-prevent-unload` handler in `electron/main.js`.
-
-Stage 4 (next): Open/Save `.gcn` and Export `.py`/`.gd`. Run is not part of stage 4.
-It needs: `document`/`documentKey` from a real file, `onchange` marking that file
-dirty, `parse/serializeGeometryDocument`, a save prompt replacing the discard prompt,
-a Code-tab route for `.gcn`, and Export via `generateGeometryCode`.
-
-### Test status
-Automated: `npm test` (see the last run in the delivery report). New editor tests cover
-iterative Math-chain inference (6,000 nodes in reverse order, cycles, codegen refusal),
-and Undo/live-edit/revert history for drags and typing.
-Checked by hand in real Electron (dev build and installed exe) through the debug
-port, screenshots in `docs/geometry-stage3-shots/`: Shift+A/menu/placement after
-pan+zoom, typing guards, drafts, 5/2 -> Print and For 0..4 in both languages,
-wire/node delete + Undo/Redo, drag and multi-node drag undo, rejected wires, variables,
-And -> Not + Undo, mode switching, Ctrl+S, read-only preview, Copy Code (clipboard read
-back; Windows stores CRLF), library deletion disabled (`deleteKey={[]}`), Fit View moves
-only the viewport, close/reload Cancel/Accept, four themes at a real 1000x680 window.
-Not verified: real GDScript run (no Godot).

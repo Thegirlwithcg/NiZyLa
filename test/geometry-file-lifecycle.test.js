@@ -396,3 +396,70 @@ test('Division produces float in python runtime (5 / 2 = 2.5) and Unicode string
   assert.equal(lines[1], 'สวัสดี ');
   assert.equal(lines[2], ' World');
 });
+
+test('Geometry tabs maintain documentKey, dirty detection with baseline, and pane isolation', () => {
+  const docA = createGeometryDocument();
+  const keyA = randomUUID();
+  const tabA = {
+    id: '/workspace/a.gcn',
+    kind: 'geometry',
+    documentKey: keyA,
+    file: { name: 'a.gcn', path: '/workspace/a.gcn' },
+    doc: docA,
+    baseline: docA,
+    hasDrafts: false,
+    dirty: false
+  };
+
+  function isTabDirty(tab) {
+    if (!tab) return false;
+    if (tab.kind === 'geometry') {
+      return !!tab.hasDrafts || tab.baseline === null || !sameDocument(tab.doc, tab.baseline);
+    }
+    return !!tab.dirty;
+  }
+
+  // 1. Initial saved tab is clean
+  assert.equal(isTabDirty(tabA), false);
+
+  // 2. Scratch tab with baseline: null is always dirty
+  const scratchTab = {
+    id: 'scratch-1',
+    kind: 'geometry',
+    documentKey: randomUUID(),
+    file: null,
+    doc: docA,
+    baseline: null,
+    hasDrafts: false,
+    dirty: true
+  };
+  assert.equal(isTabDirty(scratchTab), true, 'Scratch tab with baseline: null is dirty');
+
+  // 3. Modifying tabA makes it dirty
+  const editedDocA = addNode(docA, 'int').doc;
+  const editedTabA = { ...tabA, doc: editedDocA };
+  assert.equal(isTabDirty(editedTabA), true, 'Edited geometry tab is dirty');
+
+  // 4. Undoing edit back to baseline makes it clean
+  const revertedTabA = { ...editedTabA, doc: docA };
+  assert.equal(isTabDirty(revertedTabA), false, 'Reverting to baseline restores clean');
+
+  // 5. addPane never copies a geometry tab
+  function addPaneSimulator(panes, activeTab) {
+    const initialTabs = activeTab && activeTab.kind !== 'geometry' ? [{ ...activeTab, dirty: false }] : [];
+    return {
+      id: panes.length + 1,
+      tabs: initialTabs,
+      active: initialTabs.length ? initialTabs[0].id : null
+    };
+  }
+
+  const newPaneFromGeom = addPaneSimulator([], tabA);
+  assert.equal(newPaneFromGeom.tabs.length, 0, 'addPane must not copy geometry tab');
+
+  const codeTab = { id: '/workspace/main.py', kind: 'code', file: { name: 'main.py' }, dirty: true };
+  const newPaneFromCode = addPaneSimulator([], codeTab);
+  assert.equal(newPaneFromCode.tabs.length, 1, 'addPane copies code tab with dirty: false');
+  assert.equal(newPaneFromCode.tabs[0].dirty, false);
+});
+

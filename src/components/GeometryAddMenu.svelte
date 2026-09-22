@@ -3,6 +3,7 @@
   import { nodePresets } from '../core/geometry-editor.js';
 
   let { x, y, onpick, onclose } = $props();
+  const uid = $props.id();
   let query = $state('');
   let index = $state(0);
   let input;
@@ -38,8 +39,8 @@
 
 <div class="gcn-menu" role="dialog" aria-label="Add node" tabindex="-1" bind:this={menu} style="left:{left}px;top:{top}px" {onkeydown}>
   <input bind:this={input} bind:value={query} type="search" placeholder="Search nodes…" aria-label="Search nodes"
-    role="combobox" aria-expanded="true" aria-controls="gcn-menu-list" spellcheck="false" autocomplete="off" />
-  <ul id="gcn-menu-list" role="listbox">
+    role="combobox" aria-expanded="true" aria-controls={`gcn-menu-list-${uid}`} spellcheck="false" autocomplete="off" />
+  <ul id={`gcn-menu-list-${uid}`} role="listbox">
     {#each matches as item, i (item.id)}
       <li role="option" aria-selected={i === index} class:active={i === index}>
         <button type="button" tabindex="-1" onpointerenter={() => (index = i)} onclick={() => onpick(item.id)}>

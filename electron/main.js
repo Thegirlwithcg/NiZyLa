@@ -212,64 +212,138 @@ function createWindow() {
     const snapshot = pendingGeometryUnloadState;
     pendingGeometryUnloadState = null;
 
-    const canSave = snapshot && snapshot.filePath && !snapshot.hasDrafts && snapshot.document;
-    const hasDrafts = snapshot && snapshot.hasDrafts;
+    const docs = Array.isArray(snapshot?.documents)
+      ? snapshot.documents
+      : (snapshot?.document ? [snapshot] : []);
 
-    if (canSave) {
-      const fileName = path.basename(snapshot.filePath);
-      const choice = dialog.showMessageBoxSync(mainWindow, {
-        type: 'warning',
-        title: 'NiZyLa',
-        message: `มีงานที่ยังไม่ได้บันทึกใน ${fileName}`,
-        detail: 'หากปิดหรือรีโหลดโดยไม่บันทึก การเปลี่ยนแปลงทั้งหมดจะหายไป',
-        buttons: ['บันทึก', 'ทิ้งกราฟ', 'ยกเลิก'],
-        defaultId: 0,
-        cancelId: 2
-      });
+    if (docs.length === 0) return;
 
-      if (choice === 0) {
-        // บันทึก
-        try {
-          const diagnostics = validateGeometryDocument(snapshot.document);
-          const hasShapeErrors = diagnostics.some((d) =>
-            ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-schema'].includes(d.code)
-          );
-          if (hasShapeErrors) throw new Error('Cannot save document with schema/shape errors');
-          const content = serializeGeometryDocument(snapshot.document);
-          writeGcnAtomicSync(snapshot.filePath, content);
-          event.preventDefault(); // Unload allowed after successful save
-        } catch (saveErr) {
-          dialog.showMessageBoxSync(mainWindow, {
-            type: 'error',
-            title: 'NiZyLa',
-            message: 'บันทึกไฟล์ไม่สำเร็จ',
-            detail: saveErr.message,
-            buttons: ['ตกลง']
-          });
-          // Abort unload
+    if (docs.length === 1) {
+      const docItem = docs[0];
+      const canSave = docItem && docItem.filePath && !docItem.hasDrafts && docItem.document;
+      const hasDrafts = docItem && docItem.hasDrafts;
+
+      if (canSave) {
+        const fileName = path.basename(docItem.filePath);
+        const choice = dialog.showMessageBoxSync(mainWindow, {
+          type: 'warning',
+          title: 'NiZyLa',
+          message: `มีงานที่ยังไม่ได้บันทึกใน ${fileName}`,
+          detail: 'หากปิดหรือรีโหลดโดยไม่บันทึก การเปลี่ยนแปลงทั้งหมดจะหายไป',
+          buttons: ['บันทึก', 'ทิ้งกราฟ', 'ยกเลิก'],
+          defaultId: 0,
+          cancelId: 2
+        });
+
+        if (choice === 0) {
+          // บันทึก
+          try {
+            const diagnostics = validateGeometryDocument(docItem.document);
+            const hasShapeErrors = diagnostics.some((d) =>
+              ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-schema'].includes(d.code)
+            );
+            if (hasShapeErrors) throw new Error('Cannot save document with schema/shape errors');
+            const content = serializeGeometryDocument(docItem.document);
+            writeGcnAtomicSync(docItem.filePath, content);
+            event.preventDefault(); // Unload allowed after successful save
+          } catch (saveErr) {
+            dialog.showMessageBoxSync(mainWindow, {
+              type: 'error',
+              title: 'NiZyLa',
+              message: 'บันทึกไฟล์ไม่สำเร็จ',
+              detail: saveErr.message,
+              buttons: ['ตกลง']
+            });
+            // Abort unload
+          }
+        } else if (choice === 1) {
+          // ทิ้งกราฟ
+          event.preventDefault();
         }
-      } else if (choice === 1) {
-        // ทิ้งกราฟ
-        event.preventDefault();
+        // choice === 2 is Cancel -> do not call event.preventDefault() -> abort unload
+      } else {
+        const detailMsg = hasDrafts
+          ? 'มีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) ไม่สามารถบันทึกได้ หากปิดหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
+          : 'หากปิดหรือรีโหลดหน้าต่าง การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?';
+
+        const choice = dialog.showMessageBoxSync(mainWindow, {
+          type: 'warning',
+          title: 'NiZyLa',
+          message: 'มีกราฟที่ยังไม่ได้บันทึก',
+          detail: detailMsg,
+          buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
+          defaultId: 0,
+          cancelId: 0
+        });
+
+        if (choice === 1) {
+          event.preventDefault();
+        }
       }
-      // choice === 2 is Cancel -> do not call event.preventDefault() -> abort unload
     } else {
-      const detailMsg = hasDrafts
-        ? 'มีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) ไม่สามารถบันทึกได้ หากปิดหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
-        : 'หากปิดหรือรีโหลดหน้าต่าง การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?';
+      // 2+ documents
+      const canSaveAll = docs.every((d) => d.filePath && !d.hasDrafts && d.document);
+      const fileNames = docs.map((d) => d.filePath ? path.basename(d.filePath) : 'Scratch Graph').join(', ');
+      const hasAnyDrafts = docs.some((d) => d.hasDrafts);
 
-      const choice = dialog.showMessageBoxSync(mainWindow, {
-        type: 'warning',
-        title: 'NiZyLa',
-        message: 'มีกราฟที่ยังไม่ได้บันทึก',
-        detail: detailMsg,
-        buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
-        defaultId: 0,
-        cancelId: 0
-      });
+      if (canSaveAll) {
+        const choice = dialog.showMessageBoxSync(mainWindow, {
+          type: 'warning',
+          title: 'NiZyLa',
+          message: `มีงานที่ยังไม่ได้บันทึก ${docs.length} กราฟ (${fileNames})`,
+          detail: 'หากปิดหรือรีโหลดโดยไม่บันทึก การเปลี่ยนแปลงทั้งหมดจะหายไป',
+          buttons: ['บันทึกทั้งหมด', 'ทิ้งทั้งหมด', 'ยกเลิก'],
+          defaultId: 0,
+          cancelId: 2
+        });
 
-      if (choice === 1) {
-        event.preventDefault();
+        if (choice === 0) {
+          // บันทึกทั้งหมด
+          try {
+            for (const docItem of docs) {
+              const diagnostics = validateGeometryDocument(docItem.document);
+              const hasShapeErrors = diagnostics.some((d) =>
+                ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-schema'].includes(d.code)
+              );
+              if (hasShapeErrors) throw new Error(`Cannot save document with schema/shape errors: ${path.basename(docItem.filePath)}`);
+              const content = serializeGeometryDocument(docItem.document);
+              writeGcnAtomicSync(docItem.filePath, content);
+            }
+            event.preventDefault(); // Unload allowed after successful save
+          } catch (saveErr) {
+            dialog.showMessageBoxSync(mainWindow, {
+              type: 'error',
+              title: 'NiZyLa',
+              message: 'บันทึกไฟล์ไม่สำเร็จ',
+              detail: saveErr.message,
+              buttons: ['ตกลง']
+            });
+            // Abort unload
+          }
+        } else if (choice === 1) {
+          // ทิ้งทั้งหมด
+          event.preventDefault();
+        }
+        // choice === 2 is Cancel -> abort unload
+      } else {
+        const detailMsg = hasAnyDrafts
+          ? `ไฟล์: ${fileNames}\nมีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) หรือเป็นกราฟใหม่ที่ยังไม่มีไฟล์ ไม่สามารถบันทึกได้ หากปิดหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งทั้งหมดหรือไม่?`
+          : `ไฟล์: ${fileNames}\nหากปิดหรือรีโหลดหน้าต่าง การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งทั้งหมดหรือไม่?`;
+
+        const choice = dialog.showMessageBoxSync(mainWindow, {
+          type: 'warning',
+          title: 'NiZyLa',
+          message: `มีงานที่ยังไม่ได้บันทึก ${docs.length} กราฟ`,
+          detail: detailMsg,
+          buttons: ['ยกเลิก', 'ทิ้งทั้งหมด'],
+          defaultId: 0,
+          cancelId: 0
+        });
+
+        if (choice === 1) {
+          // ทิ้งทั้งหมด
+          event.preventDefault();
+        }
       }
     }
   });

@@ -95,42 +95,41 @@
   let searchRegexError = '';
   let allCollapsed = false;
 
-  const geometryInitial = createGeometryDocument();
-  let appMode = 'code';
-  let geometryOpened = false;
-  let geometryFilePath = null;
-  let geometryDocumentKey = 'scratch';
-  let geometryDoc = geometryInitial;
-  let geometryBaseline = geometryInitial;
-  let geometryHasDrafts = false;
-  let isSavingGeometry = false;
+  let isSavingTabs = new Set();
+  let savingGeometryTab = null;
   let geometryConfirmDialog = null;
   let isPythonRunning = false;
   let activeRunId = null;
   let terminalPanelRef = null;
 
-  $: geometryMode = appMode === 'geometry';
-  $: geometryDirty = geometryHasDrafts || !sameDocument(geometryDoc, geometryBaseline);
-  $: geometryFileName = geometryFilePath ? geometryFilePath.split(/[/\\]/).pop() : 'Scratch Graph';
-  $: canExportGeometry = !geometryHasDrafts && validateGeometryDocument(geometryDoc).every((d) => d.severity !== 'error');
-  $: canSave = appMode === 'geometry' ? ((geometryDirty || !geometryFilePath) && !geometryHasDrafts && !isSavingGeometry && !createDialog) : (!!activeTab?.dirty);
-
-  function setMode(mode) {
-    appMode = mode;
-    if (mode === 'geometry') geometryOpened = true;
+  function isTabDirty(tab) {
+    if (!tab) return false;
+    if (tab.kind === 'geometry') {
+      return !!tab.hasDrafts || tab.baseline === null || !sameDocument(tab.doc, tab.baseline);
+    }
+    return !!tab.dirty;
   }
+
+  const isGeometryTab = (t) => t?.kind === 'geometry';
+  const canExportTab = (t) => isGeometryTab(t) && !t.hasDrafts && validateGeometryDocument(t.doc).every((d) => d.severity !== 'error');
+  const paneHasGeometry = (pane) => pane?.tabs?.some((t) => t.kind === 'geometry');
+
+  $: canSave = isGeometryTab(activeTab)
+    ? ((isTabDirty(activeTab) || !activeTab.file?.path) && !activeTab.hasDrafts && !isSavingTabs.has(activeTab.id) && !createDialog)
+    : (!!activeTab?.dirty);
 
   function requestClose() {
     windowControl('close');
   }
 
-  function promptUnsavedGeometry(actionLabel = 'ดำเนินการต่อ') {
-    if (!geometryDirty) return Promise.resolve('discard');
+  function promptUnsavedGeometry(tab, actionLabel = 'ดำเนินการต่อ') {
+    if (!isTabDirty(tab)) return Promise.resolve('discard');
+    const name = tab?.file?.name || 'Scratch Graph';
     return new Promise((resolve) => {
       geometryConfirmDialog = {
         title: 'งานที่ยังไม่ได้บันทึก',
-        message: `มีงานที่ยังไม่ได้บันทึกใน ${geometryFileName} ก่อน${actionLabel} ต้องการบันทึกก่อนหรือไม่?`,
-        hasDrafts: geometryHasDrafts,
+        message: `มีงานที่ยังไม่ได้บันทึกใน ${name} ก่อน${actionLabel} ต้องการบันทึกก่อนหรือไม่?`,
+        hasDrafts: !!tab?.hasDrafts,
         resolve
       };
     });
@@ -142,21 +141,45 @@
     dialog?.resolve(choice);
   }
 
-  async function openGeometryFile(filePath) {
-    if (isSavingGeometry || createBusy) return;
-    const normalized = filePath.replace(/\\/g, '/');
-    if (geometryFilePath && geometryFilePath.replace(/\\/g, '/') === normalized) {
-      setMode('geometry');
-      status = `${geometryFileName} is already open`;
-      return;
-    }
+  function handleNewScratchGeometry() {
+    const targetPane = panes.find((p) => p.id === activePaneId && !p.detached) ?? panes.find((p) => !p.detached) ?? panes[0];
+    if (!targetPane) return;
+    const scratchId = `scratch:${crypto.randomUUID()}`;
+    const doc = createGeometryDocument();
+    const newTab = {
+      id: scratchId,
+      kind: 'geometry',
+      file: { name: 'Scratch Graph', path: null, relativePath: 'Scratch Graph', type: 'file' },
+      doc,
+      baseline: doc,
+      documentKey: crypto.randomUUID(),
+      hasDrafts: false,
+      dirty: false
+    };
+    panes = panes.map((p) => p.id === targetPane.id ? {
+      ...p,
+      active: scratchId,
+      tabs: [...p.tabs, newTab]
+    } : p);
+    activePaneId = targetPane.id;
+    status = 'Opened new Geometry Code scratch tab';
+  }
 
-    if (geometryDirty) {
-      const decision = await promptUnsavedGeometry('สลับเอกสารกราฟ');
-      if (decision === 'cancel') return;
-      if (decision === 'save') {
-        const ok = await saveGeometry();
-        if (!ok) return;
+  async function openGeometryFile(filePath, targetPaneId = activePaneId) {
+    if (createBusy) return;
+    const normalized = filePath.replace(/\\/g, '/');
+    for (const p of panes) {
+      const found = p.tabs.find((t) => t.file?.path && t.file.path.replace(/\\/g, '/') === normalized);
+      if (found) {
+        activateTab(p.id, found.id);
+        activePaneId = p.id;
+        if (p.floating) {
+          topZIndex += 1;
+          panes = panes.map((pane) => pane.id === p.id ? { ...pane, zIndex: topZIndex } : pane);
+          activeFloatingWindow = `editor-${p.id}`;
+        }
+        status = `${found.file.name} is already open`;
+        return;
       }
     }
 
@@ -175,93 +198,98 @@
       return;
     }
 
-    geometryFilePath = filePath;
-    geometryDoc = parsedDoc;
-    geometryBaseline = parsedDoc;
-    geometryDocumentKey = crypto.randomUUID();
-    geometryHasDrafts = false;
-    setMode('geometry');
+    const fileName = filePath.split(/[/\\]/).pop();
+    const relativePath = project?.rootPath && filePath.startsWith(project.rootPath)
+      ? filePath.slice(project.rootPath.length).replace(/^[/\\]/, '')
+      : fileName;
+    const newTab = {
+      id: filePath,
+      kind: 'geometry',
+      file: { name: fileName, path: filePath, relativePath, type: 'file' },
+      doc: parsedDoc,
+      baseline: parsedDoc,
+      documentKey: crypto.randomUUID(),
+      hasDrafts: false,
+      dirty: false
+    };
+
+    const targetPane = panes.find((p) => p.id === targetPaneId && !p.detached) ?? panes.find((p) => !p.detached) ?? panes[0];
+    if (!targetPane) return;
+    panes = panes.map((p) => p.id === targetPane.id ? {
+      ...p,
+      active: filePath,
+      tabs: [...p.tabs, newTab]
+    } : p);
+    activePaneId = targetPane.id;
 
     const errCount = diagnostics.filter((d) => d.severity === 'error').length;
     const warnCount = diagnostics.filter((d) => d.severity === 'warning').length;
     if (errCount > 0) {
-      status = `Opened ${geometryFileName} with ${errCount} graph error(s) (Export disabled)`;
+      status = `Opened ${fileName} with ${errCount} graph error(s) (Export disabled)`;
     } else if (warnCount > 0) {
-      status = `Opened ${geometryFileName} with ${warnCount} warning(s)`;
+      status = `Opened ${fileName} with ${warnCount} warning(s)`;
     } else {
-      status = `Opened ${geometryFileName}`;
+      status = `Opened ${fileName}`;
     }
   }
 
-  async function saveGeometry(saveAs = false) {
-    if (isSavingGeometry) return false;
-    if (geometryHasDrafts) {
+  async function saveGeometry(tab = activeTab, saveAs = false) {
+    if (!tab || tab.kind !== 'geometry') return false;
+    if (isSavingTabs.has(tab.id)) return false;
+    if (tab.hasDrafts) {
       status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนบันทึก';
       return false;
     }
-    if (!geometryFilePath || saveAs) {
+    if (!tab.file?.path || saveAs) {
       if (!project) {
         status = 'กรุณาเปิดโฟลเดอร์โปรเจกต์ก่อนบันทึกกราฟ';
         return false;
       }
       if (createDialog) return false;
+      savingGeometryTab = tab;
       return new Promise((resolve) => {
         resolveGeometrySave = resolve;
         openCreateDialog('geometry-save');
       });
     }
 
-    isSavingGeometry = true;
-    const snapshot = geometryDoc;
-    const key = geometryDocumentKey;
-    const filePath = geometryFilePath;
+    isSavingTabs = new Set([...isSavingTabs, tab.id]);
+    const snapshot = tab.doc;
+    const filePath = tab.file.path;
     try {
       await api.saveGeometryFile(filePath, snapshot);
-      if (key !== geometryDocumentKey) return false;
-      geometryBaseline = snapshot;
+      panes = panes.map((p) => ({
+        ...p,
+        tabs: p.tabs.map((t) => t.id === tab.id ? {
+          ...t,
+          baseline: snapshot,
+          dirty: t.hasDrafts || !sameDocument(t.doc, snapshot)
+        } : t)
+      }));
       const refreshError = await refreshFileProject(filePath);
-      status = refreshError || `บันทึก ${geometryFileName} สำเร็จ`;
-      return !geometryHasDrafts && sameDocument(geometryDoc, snapshot);
+      status = refreshError || `บันทึก ${tab.file.name} สำเร็จ`;
+      return !tab.hasDrafts && sameDocument(tab.doc, snapshot);
     } catch (err) {
       status = `บันทึกล้มเหลว: ${err.message}`;
       return false;
     } finally {
-      isSavingGeometry = false;
+      const next = new Set(isSavingTabs);
+      next.delete(tab.id);
+      isSavingTabs = next;
     }
   }
 
   async function closeGeometryGraph() {
-    if (isSavingGeometry || createBusy) return;
-    if (geometryDirty) {
-      const decision = await promptUnsavedGeometry('ปิดกราฟ');
-      if (decision === 'cancel') return;
-      if (decision === 'save') {
-        const ok = await saveGeometry();
-        if (!ok) return;
-      }
+    if (activeTab?.kind === 'geometry') {
+      await closeTab(activePaneId, activeTab.id);
     }
-    geometryFilePath = null;
-    geometryDoc = createGeometryDocument();
-    geometryBaseline = geometryDoc;
-    geometryDocumentKey = 'scratch';
-    geometryHasDrafts = false;
-    appMode = 'code';
-    status = 'ปิดกราฟเรียบร้อย';
   }
 
   async function handleNewGeometryCode() {
-    if (isSavingGeometry || createBusy || createDialog) return;
+    if (createBusy || createDialog) return;
     if (!project) {
       status = 'กรุณาเปิดโฟลเดอร์โปรเจกต์ก่อนสร้างกราฟ';
       return;
-    }
-    if (geometryDirty) {
-      const decision = await promptUnsavedGeometry('สร้างกราฟใหม่');
-      if (decision === 'cancel') return;
-      if (decision === 'save') {
-        const ok = await saveGeometry();
-        if (!ok) return;
-      }
     }
     openCreateDialog('geometry');
   }
@@ -302,31 +330,45 @@
         return;
       }
 
-      geometryDoc = res.document;
-      geometryBaseline = null;
-      geometryFilePath = file.path.replace(/\.(py|gd)$/i, '.gcn');
-      geometryDocumentKey = crypto.randomUUID();
-      geometryHasDrafts = false;
-      setMode('geometry');
+      const targetPath = file.path.replace(/\.(py|gd)$/i, '.gcn');
+      const fileName = targetPath.split(/[/\\]/).pop();
+      const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
+      const newTab = {
+        id: targetPath,
+        kind: 'geometry',
+        file: { name: fileName, path: targetPath, relativePath, type: 'file' },
+        doc: res.document,
+        baseline: null,
+        documentKey: crypto.randomUUID(),
+        hasDrafts: false,
+        dirty: true
+      };
+      const targetPane = panes.find((p) => p.id === activePaneId && !p.detached) ?? panes[0];
+      panes = panes.map((p) => p.id === targetPane.id ? {
+        ...p,
+        active: targetPath,
+        tabs: [...p.tabs.filter((t) => t.id !== targetPath), newTab]
+      } : p);
+      activePaneId = targetPane.id;
       status = `แปลง ${file.name} สำเร็จ! เปิดเป็น .gcn ที่ยังไม่บันทึก`;
     } catch (err) {
       status = `ข้อผิดพลาดในการแปลง: ${err.message}`;
     }
   }
 
-  async function handleRunPython() {
-    if (isPythonRunning) return;
-    if (geometryDoc.target !== 'python') {
+  async function handleRunPython(tab = activeTab) {
+    if (isPythonRunning || !tab || tab.kind !== 'geometry') return;
+    if (tab.doc.target !== 'python') {
       status = 'NiZyLa รองรับการรันเฉพาะภาษา Python ในรุ่นนี้';
       return;
     }
 
-    if (geometryHasDrafts) {
+    if (tab.hasDrafts) {
       status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนรัน';
       return;
     }
 
-    const diags = validateGeometryDocument(geometryDoc);
+    const diags = validateGeometryDocument(tab.doc);
     const errors = diags.filter((d) => d.severity === 'error');
     if (errors.length > 0) {
       status = `กราฟมีข้อผิดพลาด (${errors.length} ข้อ) ไม่สามารถรันได้`;
@@ -340,10 +382,10 @@
     status = 'กำลังเริ่มต้นการรัน Python...';
     try {
       const res = await api.runPython({
-        document: geometryDoc,
-        filePath: geometryFilePath,
+        document: tab.doc,
+        filePath: tab.file?.path ?? null,
         projectRoot: project?.rootPath,
-        sourceFile: geometryDoc.sourceFile,
+        sourceFile: tab.doc.sourceFile,
         preferredInterpreter: preferences?.pythonInterpreter
       });
 
@@ -376,24 +418,25 @@
     }
   }
 
-  async function handleExportGeometry() {
-    if (geometryHasDrafts) {
+  async function handleExportGeometry(tab = activeTab) {
+    if (!tab || tab.kind !== 'geometry') return;
+    if (tab.hasDrafts) {
       status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อน Export';
       return;
     }
-    const diagnostics = validateGeometryDocument(geometryDoc);
+    const diagnostics = validateGeometryDocument(tab.doc);
     const errors = diagnostics.filter((d) => d.severity === 'error');
     if (errors.length > 0) {
       status = `กราฟมีข้อผิดพลาด (${errors.length} ข้อ) ไม่สามารถ Export ได้`;
       return;
     }
     try {
-      const defaultName = geometryFilePath ? geometryFilePath.split(/[/\\]/).pop().replace(/\.gcn$/i, '') : 'main';
+      const defaultName = tab.file?.path ? tab.file.path.split(/[/\\]/).pop().replace(/\.gcn$/i, '') : 'main';
       const res = await api.exportGeometryFile({
         defaultFileName: defaultName,
         defaultDirectory: activeExplorerFolder?.path,
-        target: geometryDoc.target,
-        document: geometryDoc
+        target: tab.doc.target,
+        document: tab.doc
       });
       if (res.canceled) {
         status = 'ยกเลิกการ Export';
@@ -406,9 +449,31 @@
     }
   }
 
+  function handleGeometryChange(paneId, tabId, nextDoc) {
+    panes = panes.map((p) => p.id === paneId ? {
+      ...p,
+      tabs: p.tabs.map((t) => t.id === tabId ? {
+        ...t,
+        doc: nextDoc,
+        dirty: t.hasDrafts || t.baseline === null || !sameDocument(nextDoc, t.baseline)
+      } : t)
+    } : p);
+  }
+
+  function handleGeometryDraftChange(paneId, tabId, hasDrafts) {
+    panes = panes.map((p) => p.id === paneId ? {
+      ...p,
+      tabs: p.tabs.map((t) => t.id === tabId ? {
+        ...t,
+        hasDrafts,
+        dirty: hasDrafts || t.baseline === null || !sameDocument(t.doc, t.baseline)
+      } : t)
+    } : p);
+  }
+
   async function handleSave() {
-    if (appMode === 'geometry') {
-      await saveGeometry();
+    if (activeTab?.kind === 'geometry') {
+      await saveGeometry(activeTab);
     } else {
       await saveFile();
     }
@@ -498,21 +563,29 @@
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'p') { event.preventDefault(); openPalette(); query = ''; }
       if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); await handleSave(); }
-      if (appMode === 'code') {
-        if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
-        if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
-        if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
-      }
+      if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
+      if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
+      if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
       if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
       if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; }
     };
     const beforeUnload = (event) => {
-      if (!geometryDirty) return;
-      api?.syncGeometryUnloadState?.({
-        filePath: geometryFilePath,
-        document: geometryDoc,
-        hasDrafts: geometryHasDrafts
-      });
+      const dirtyTabs = [];
+      const seenKeys = new Set();
+      for (const pane of panes) {
+        for (const tab of pane.tabs) {
+          if (tab.kind === 'geometry' && isTabDirty(tab) && !seenKeys.has(tab.documentKey)) {
+            seenKeys.add(tab.documentKey);
+            dirtyTabs.push({
+              filePath: tab.file?.path ?? null,
+              document: tab.doc,
+              hasDrafts: !!tab.hasDrafts
+            });
+          }
+        }
+      }
+      if (dirtyTabs.length === 0) return;
+      api?.syncGeometryUnloadState?.({ documents: dirtyTabs });
       event.preventDefault();
       event.returnValue = '';
     };
@@ -897,28 +970,24 @@
   }
 
   async function closeWorkspace(index) {
-    if (isSavingGeometry || createBusy) return;
+    if (createBusy) return;
     const closing = projects[index];
     if (!closing) return;
-    if (geometryFilePath && isSameOrDescendant(geometryFilePath, closing.rootPath) && geometryDirty) {
-      const decision = await promptUnsavedGeometry('ปิดโปรเจกต์');
-      if (decision === 'cancel') return;
-      if (decision === 'save') {
-        const ok = await saveGeometry();
-        if (!ok) return;
+    for (const pane of panes) {
+      for (const tab of pane.tabs) {
+        if (tab.kind === 'geometry' && tab.file?.path && isSameOrDescendant(tab.file.path, closing.rootPath) && isTabDirty(tab)) {
+          const decision = await promptUnsavedGeometry(tab, 'ปิดโปรเจกต์');
+          if (decision === 'cancel') return;
+          if (decision === 'save') {
+            const ok = await saveGeometry(tab);
+            if (!ok) return;
+          }
+        }
       }
-    }
-    if (geometryFilePath && isSameOrDescendant(geometryFilePath, closing.rootPath)) {
-      geometryFilePath = null;
-      geometryDoc = createGeometryDocument();
-      geometryBaseline = geometryDoc;
-      geometryDocumentKey = 'scratch';
-      geometryHasDrafts = false;
-      if (appMode === 'geometry') appMode = 'code';
     }
     projects = projects.filter((_, itemIndex) => itemIndex !== index);
     panes = panes.map((pane) => {
-      const tabs = pane.tabs.filter((tab) => !tab.file.path.startsWith(closing.rootPath));
+      const tabs = pane.tabs.filter((tab) => !tab.file?.path || !isSameOrDescendant(tab.file.path, closing.rootPath));
       return { ...pane, tabs, active: tabs.some((tab) => tab.id === pane.active) ? pane.active : tabs.at(-1)?.id ?? null };
     });
     const remainingCount = projects.length;
@@ -934,7 +1003,6 @@
       await openGeometryFile(entry.path);
       return;
     }
-    appMode = 'code';
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
     if (owningProject >= 0) activeProjectIndex = owningProject;
 
@@ -987,21 +1055,22 @@
       if (graphFolderId && isSameOrDescendant(graphFolderId, source.path)) {
         graphFolderId = `${result.path}${graphFolderId.slice(source.path.length)}`;
       }
-      if (geometryFilePath && isSameOrDescendant(geometryFilePath, source.path)) {
-        const suffix = geometryFilePath.slice(source.path.length);
-        geometryFilePath = `${result.path}${suffix}`;
-      }
       const targetRelativePath = target.path === project?.rootPath ? '' : target.relativePath;
       panes = panes.map((pane) => ({
         ...pane,
         tabs: pane.tabs.map((tab) => {
-          if (!isSameOrDescendant(tab.file.path, source.path)) return tab;
+          if (!tab.file?.path || !isSameOrDescendant(tab.file.path, source.path)) return tab;
           const suffix = tab.file.path.slice(source.path.length);
-          const relativeSuffix = tab.file.relativePath.slice(source.relativePath.length).replace(/^[/\\]/, '');
+          const relativeSuffix = (tab.file.relativePath || tab.file.name).slice(source.relativePath.length).replace(/^[/\\]/, '');
           const relativePath = [targetRelativePath, source.name, relativeSuffix].filter(Boolean).join('/');
-          return { ...tab, id: `${result.path}${suffix}`, file: { ...tab.file, path: `${result.path}${suffix}`, relativePath } };
+          const nextPath = `${result.path}${suffix}`;
+          return {
+            ...tab,
+            id: nextPath,
+            file: { ...tab.file, path: nextPath, relativePath }
+          };
         }),
-        active: isSameOrDescendant(pane.active ?? '', source.path) ? `${result.path}${pane.active.slice(source.path.length)}` : pane.active
+        active: (pane.active && isSameOrDescendant(pane.active, source.path)) ? `${result.path}${pane.active.slice(source.path.length)}` : pane.active
       }));
       status = `Moved ${source.name} to ${target.relativePath}`;
       await refreshProject();
@@ -1036,10 +1105,20 @@
     panes = panes.map((pane) => pane.id === paneId ? { ...pane, active: tabId } : pane);
   }
 
-  function closeTab(paneId, tabId) {
+  async function closeTab(paneId, tabId) {
+    const pane = panes.find((p) => p.id === paneId);
+    const tab = pane?.tabs.find((t) => t.id === tabId);
+    if (tab && tab.kind === 'geometry' && isTabDirty(tab)) {
+      const decision = await promptUnsavedGeometry(tab, 'ปิดแท็บ');
+      if (decision === 'cancel') return;
+      if (decision === 'save') {
+        const ok = await saveGeometry(tab);
+        if (!ok) return;
+      }
+    }
     panes = panes.map((p) => {
       if (p.id !== paneId) return p;
-      const nextTabs = p.tabs.filter((tab) => tab.id !== tabId);
+      const nextTabs = p.tabs.filter((t) => t.id !== tabId);
       const nextActive = p.active === tabId ? nextTabs.at(-1)?.id ?? null : p.active;
       return { ...p, tabs: nextTabs, active: nextActive };
     });
@@ -1048,12 +1127,12 @@
   function addPane(floating = false) {
     const newId = nextPaneId++;
     const currentActiveTab = activeTab;
-    const initialTabs = currentActiveTab ? [{ ...currentActiveTab, dirty: false }] : [];
+    const initialTabs = currentActiveTab && currentActiveTab.kind !== 'geometry' ? [{ ...currentActiveTab, dirty: false }] : [];
     const offset = (panes.length % 6) * 32;
     const newPane = {
       id: newId,
       tabs: initialTabs,
-      active: currentActiveTab?.id ?? null,
+      active: initialTabs.length ? initialTabs[0].id : null,
       floating,
       detached: false,
       floatRect: {
@@ -1081,7 +1160,7 @@
     const targetPane = remaining.find((p) => p.id === activePaneId && !p.detached) || remaining[0];
     if (paneToClose && targetPane) {
       for (const tab of paneToClose.tabs) {
-        if (!targetPane.tabs.some((t) => t.id === tab.id)) {
+        if (!targetPane.tabs.some((t) => t.id === tab.id || (tab.documentKey && t.documentKey === tab.documentKey))) {
           targetPane.tabs.push(tab);
         }
       }
@@ -1134,7 +1213,7 @@
       return;
     }
     const pane = panes.find((p) => p.id === paneId);
-    if (!pane) return;
+    if (!pane || paneHasGeometry(pane)) return;
 
     const windowId = `editor-${paneId}`;
     const screenX = typeof window !== 'undefined' ? (window.screenX || 0) : 0;
@@ -1386,7 +1465,7 @@
     if (!project) return;
     createDialog = type;
     createParent = parent;
-    createPath = type === 'geometry-save' && geometryFilePath ? geometryFileName : '';
+    createPath = type === 'geometry-save' && savingGeometryTab?.file?.name ? savingGeometryTab.file.name : '';
     await tick();
     createInput?.focus();
   }
@@ -1442,17 +1521,9 @@
         }
       } : workspace);
       panes = panes.map((pane) => {
-        const tabs = pane.tabs.filter((tab) => tab.file.path !== target.path && !tab.file.path.startsWith(`${target.path}/`));
+        const tabs = pane.tabs.filter((tab) => !tab.file?.path || (tab.file.path !== target.path && !tab.file.path.startsWith(`${target.path}/`)));
         return { ...pane, tabs, active: tabs.some((tab) => tab.id === pane.active) ? pane.active : tabs.at(-1)?.id ?? null };
       });
-      if (geometryFilePath && isSameOrDescendant(geometryFilePath, target.path)) {
-        geometryFilePath = null;
-        geometryDoc = createGeometryDocument();
-        geometryBaseline = geometryDoc;
-        geometryDocumentKey = 'scratch';
-        geometryHasDrafts = false;
-        if (appMode === 'geometry') appMode = 'code';
-      }
       status = `Deleted ${target.relativePath}`;
       deleteTarget = null;
       api.scanProject(project.rootPath).then((rescanned) => {
@@ -1484,7 +1555,7 @@
     const parent = createParent ?? project.tree;
     const relativePath = parent.path === project.rootPath ? name : `${parent.relativePath}/${name}`;
     const savingGraph = createDialog === 'geometry-save';
-    if (savingGraph && geometryHasDrafts) {
+    if (savingGraph && savingGeometryTab?.hasDrafts) {
       status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนบันทึก';
       return;
     }
@@ -1493,21 +1564,63 @@
       if (createDialog === 'geometry' || savingGraph) {
         const gcnName = name.toLowerCase().endsWith('.gcn') ? name : `${name}.gcn`;
         const filePath = `${parent.path}/${gcnName}`;
-        const initialDoc = savingGraph ? geometryDoc : createGeometryDocument();
+        const targetTab = savingGraph ? savingGeometryTab : null;
+        const initialDoc = targetTab ? targetTab.doc : createGeometryDocument();
         const initialContent = serializeGeometryDocument(initialDoc);
         await api.createGeometryFile(filePath, initialContent);
-        geometryFilePath = filePath;
-        geometryBaseline = initialDoc;
-        if (!savingGraph) {
-          geometryDoc = initialDoc;
-          geometryDocumentKey = crypto.randomUUID();
-          geometryHasDrafts = false;
+
+        const file = {
+          name: gcnName.split('/').pop(),
+          path: filePath,
+          relativePath: parent.path === project.rootPath ? gcnName : `${parent.relativePath}/${gcnName}`,
+          type: 'file',
+          previewType: 'geometry'
+        };
+
+        if (savingGraph && targetTab) {
+          const oldId = targetTab.id;
+          panes = panes.map((p) => {
+            const hasTab = p.tabs.some((t) => t.id === oldId);
+            if (!hasTab) return p;
+            return {
+              ...p,
+              active: p.active === oldId ? filePath : p.active,
+              tabs: p.tabs.map((t) => t.id === oldId ? {
+                ...t,
+                id: filePath,
+                file,
+                baseline: initialDoc,
+                hasDrafts: false,
+                dirty: false
+              } : t)
+            };
+          });
+        } else {
+          const newTab = {
+            id: filePath,
+            kind: 'geometry',
+            documentKey: crypto.randomUUID(),
+            file,
+            doc: initialDoc,
+            baseline: initialDoc,
+            hasDrafts: false,
+            dirty: false
+          };
+          const targetPane = panes.find((p) => p.id === activePaneId && !p.detached) ?? panes.find((p) => !p.detached) ?? panes[0];
+          if (targetPane) {
+            panes = panes.map((p) => p.id === targetPane.id ? {
+              ...p,
+              active: newTab.id,
+              tabs: [...p.tabs, newTab]
+            } : p);
+            activePaneId = targetPane.id;
+          }
         }
-        setMode('geometry');
+
         const refreshError = await refreshFileProject(filePath);
         status = refreshError || `บันทึกกราฟ ${gcnName.split('/').pop()} สำเร็จ`;
         createBusy = false;
-        closeCreateDialog(!geometryHasDrafts && sameDocument(geometryDoc, initialDoc));
+        closeCreateDialog(true);
         return;
       }
       if (createDialog === 'file' || createDialog === 'note') {
@@ -1642,7 +1755,13 @@
       const nearRight = event.clientX >= window.innerWidth - 20 || rawX + floatingDrag.width >= window.innerWidth - 15;
       const nearTop = event.clientY <= 55 || rawY <= 55;
       const nearBottom = event.clientY >= window.innerHeight - 25 || rawY + floatingDrag.height >= window.innerHeight - 20;
-      dragNearEdge = (nearLeft || nearRight || nearTop || nearBottom);
+      const isNearEdge = (nearLeft || nearRight || nearTop || nearBottom);
+      if (floatingDrag.windowType === 'editor') {
+        const pane = panes.find((p) => p.id === floatingDrag.paneId);
+        dragNearEdge = isNearEdge && !paneHasGeometry(pane);
+      } else {
+        dragNearEdge = isNearEdge;
+      }
 
       const nextX = Math.max(-100, Math.min(window.innerWidth - 80, rawX));
       const nextY = Math.max(50, Math.min(window.innerHeight - 40, rawY));
@@ -1676,7 +1795,10 @@
       window.removeEventListener('pointermove', onFloatingPointerMove);
 
       if (currentDrag.windowType === 'editor') {
-        detachPane(currentDrag.paneId);
+        const pane = panes.find((p) => p.id === currentDrag.paneId);
+        if (pane && !paneHasGeometry(pane)) {
+          detachPane(currentDrag.paneId);
+        }
       } else if (currentDrag.windowType === 'graph') {
         detachGraph();
       } else if (currentDrag.windowType === 'terminal') {
@@ -1892,7 +2014,7 @@
     <footer class="statusbar">Integrated Terminal · Detached Multi-Monitor Window</footer>
   </div>
 {:else}
-  <div class="app-shell theme-{theme}" class:geometry-mode={geometryMode} class:graph-hidden={!graphVisible || graphDetached} class:terminal-open={terminalVisible && !terminalFloating && !terminalDetached} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
+  <div class="app-shell theme-{theme}" class:graph-hidden={!graphVisible || graphDetached} class:terminal-open={terminalVisible && !terminalFloating && !terminalDetached} class:graph-fullscreen={graphFullscreen} class:graph-floating={graphFloating} style="--sidebar-width: {layoutSize.sidebar}px; --graph-width: {layoutSize.graph}px; --terminal-height: {layoutSize.terminal}px">
     <header class="topbar app-titlebar">
       <div class="brand">
         <img class="logo" src={logoUrl} alt="NiZyLa logo" />
@@ -1901,10 +2023,7 @@
           <span>{projects.length} workspace{projects.length === 1 ? '' : 's'} · {plugins.length} plugin{plugins.length === 1 ? '' : 's'} · local code completion</span>
         </div>
       </div>
-      <div class="mode-switch" role="group" aria-label="Editor mode">
-        <button class:active={appMode === 'code'} aria-pressed={appMode === 'code'} on:click={() => setMode('code')}>Code</button>
-        <button class:active={appMode === 'geometry'} aria-pressed={appMode === 'geometry'} on:click={() => setMode('geometry')}>Geometry Code</button>
-      </div>
+      <button class="new-geometry-btn" on:click={handleNewScratchGeometry} title="New Geometry Code scratch graph">+ Geometry Code</button>
       <div
         class="actions"
         class:middle-dragging={isMiddleDragging}
@@ -1926,19 +2045,19 @@
           <option value="custom">Custom Theme</option>
         </select>
         <button on:click={() => (showPreferences = true)} title="Preferences: Theme, Fonts, Syntax (Ctrl+,)">⚙ Preferences</button>
-        <button on:click={() => addPane(false)} disabled={geometryMode} title="Add a new editor window">+ Editor</button>
-        <button on:click={() => addPane(true)} disabled={geometryMode} title="Add a floating editor window">+ Float Editor</button>
-        <button on:click={toggleSplit} disabled={geometryMode} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
+        <button on:click={() => addPane(false)} title="Add a new editor window">+ Editor</button>
+        <button on:click={() => addPane(true)} title="Add a floating editor window">+ Float Editor</button>
+        <button on:click={toggleSplit} class:active={dockedPanes.length > 1}>Split {dockedPanes.length > 1 ? `(${dockedPanes.length})` : ''}</button>
         <button on:click={toggleTerminal} class:active={terminalVisible || terminalDetached}>Terminal{terminalDetached ? ' (Detached)' : (terminalVisible && terminalFloating ? ' (Float)' : '')}</button>
         <button on:click={toggleLineNumbers} class:active={!showLineNumbers}>Lines {showLineNumbers ? 'On' : 'Off'}</button>
         {#if activeFile?.name?.toLowerCase().endsWith('.md')}
           <button on:click={() => (markdownPreview = !markdownPreview)} class:active={markdownPreview}>Markdown {markdownPreview ? 'Preview' : 'Edit'}</button>
         {/if}
-        <button on:click={toggleGraph} disabled={geometryMode}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
-        {#if geometryMode}
+        <button on:click={toggleGraph}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
+        {#if isGeometryTab(activeTab)}
           <button on:click={handleNewGeometryCode} title="Create a new Geometry Code graph in project">+ Graph</button>
-          <button on:click={() => saveGeometry(true)} disabled={geometryHasDrafts || isSavingGeometry || !!createDialog} title="Save a copy in the selected Explorer folder">Save As</button>
-          <button on:click={handleExportGeometry} disabled={!canExportGeometry} title="Export Python / GDScript">Export</button>
+          <button on:click={() => saveGeometry(activeTab, true)} disabled={activeTab?.hasDrafts || isSavingTabs.has(activeTab?.id) || !!createDialog} title="Save a copy in the selected Explorer folder">Save As</button>
+          <button on:click={() => handleExportGeometry(activeTab)} disabled={!canExportTab(activeTab)} title="Export Python / GDScript">Export</button>
           <button on:click={closeGeometryGraph} title="Close current geometry graph">Close Graph</button>
         {:else if activeFile && /\.(py|gd)$/i.test(activeFile.name)}
           <button class="primary" on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code (.gcn)">⇄ Convert to .gcn</button>
@@ -1957,8 +2076,8 @@
         <button class:active={sidebarView === 'files'} title="Files" on:click={() => (sidebarView = 'files')}>▣</button>
         <button class:active={sidebarView === 'search'} title="Search documents" on:click={() => (sidebarView = 'search')}>⌕</button>
         <button title="Open folder" on:click={openProject}><span class="nav-folder-icon" aria-hidden="true"></span></button>
-        <button title="Graph" on:click={toggleGraph} disabled={geometryMode}>◎</button>
-        <button title="Terminal" on:click={toggleTerminal} disabled={geometryMode}>›_</button>
+        <button title="Graph" on:click={toggleGraph}>◎</button>
+        <button title="Terminal" on:click={toggleTerminal}>›_</button>
         <button title="Preferences" on:click={() => (showPreferences = true)}>⚙</button>
       </nav>
       <aside class="sidebar panel" bind:this={sidebarEl}>
@@ -2093,7 +2212,7 @@
             <div
               class="editor-area panel"
               class:focused={activePaneId === pane.id}
-              on:click={() => (activePaneId = pane.id)}
+              on:pointerdown|capture={() => (activePaneId = pane.id)}
               role="presentation"
             >
               <div class="tabbar">
@@ -2112,13 +2231,31 @@
                 <div class="editor-pane-controls">
                   <button class="pane-btn" title="Add editor window" on:click|stopPropagation={() => addPane(false)}>+</button>
                   <button class="pane-btn" title="Float this editor window" on:click|stopPropagation={() => togglePaneFloat(pane.id)}>Float</button>
-                  <button class="pane-btn" title="Detach to separate monitor window" on:click|stopPropagation={() => detachPane(pane.id)}>Detach ⧉</button>
+                  <button class="pane-btn" title={paneHasGeometry(pane) ? "Cannot detach pane containing Geometry Code" : "Detach to separate monitor window"} disabled={paneHasGeometry(pane)} on:click|stopPropagation={() => detachPane(pane.id)}>Detach ⧉</button>
                   {#if panes.length > 1}
                     <button class="pane-btn pane-close" title="Close editor window" on:click|stopPropagation={() => closePane(pane.id)}>×</button>
                   {/if}
                 </div>
               </div>
-              {#if getActiveTab(pane)?.file?.previewType === 'image'}
+              {#if getActiveTab(pane)?.kind === 'geometry'}
+                {@const tab = getActiveTab(pane)}
+                <GeometryWorkspace
+                  document={tab.doc}
+                  documentKey={tab.documentKey}
+                  active={activePaneId === pane.id}
+                  filePath={tab.file?.path ?? null}
+                  dirty={isTabDirty(tab)}
+                  {theme}
+                  {preferences}
+                  {showLineNumbers}
+                  onchange={(next) => handleGeometryChange(pane.id, tab.id, next)}
+                  ondraftchange={(hasDrafts) => handleGeometryDraftChange(pane.id, tab.id, hasDrafts)}
+                  onexport={() => handleExportGeometry(tab)}
+                  onrun={() => handleRunPython(tab)}
+                  onstop={handleStopPython}
+                  isRunning={isPythonRunning}
+                />
+              {:else if getActiveTab(pane)?.file?.previewType === 'image'}
                 <div class="image-preview">
                   <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
                   <div>{getActiveTab(pane).file.relativePath}</div>
@@ -2188,24 +2325,6 @@
           {/if}
         </aside>
       {/if}
-      {#if geometryOpened}
-        <GeometryWorkspace
-          document={geometryDoc}
-          documentKey={geometryDocumentKey}
-          active={geometryMode}
-          filePath={geometryFilePath}
-          dirty={geometryDirty}
-          {theme}
-          {preferences}
-          {showLineNumbers}
-          onchange={(next) => (geometryDoc = next)}
-          ondraftchange={(hasDrafts) => (geometryHasDrafts = hasDrafts)}
-          onexport={handleExportGeometry}
-          onrun={handleRunPython}
-          onstop={handleStopPython}
-          isRunning={isPythonRunning}
-        />
-      {/if}
     </main>
 
     {#each floatingPanes as pane (pane.id)}
@@ -2225,7 +2344,7 @@
           {/if}
           <div class="window-actions">
             <button on:click={() => togglePaneFloat(pane.id)}>Dock</button>
-            <button on:click={() => detachPane(pane.id)} title="Detach to separate monitor window">Detach ⧉</button>
+            <button on:click={() => detachPane(pane.id)} disabled={paneHasGeometry(pane)} title={paneHasGeometry(pane) ? "Cannot detach pane containing Geometry Code" : "Detach to separate monitor window"}>Detach ⧉</button>
             <button on:click={() => toggleMaximizeFloatingWindow('editor', pane.id)}>
               {pane.floatRect?.maximized ? 'Restore' : 'Full'}
             </button>
@@ -2252,7 +2371,25 @@
         </div>
 
         <div class="editor-body">
-          {#if getActiveTab(pane)?.file?.previewType === 'image'}
+          {#if getActiveTab(pane)?.kind === 'geometry'}
+            {@const tab = getActiveTab(pane)}
+            <GeometryWorkspace
+              document={tab.doc}
+              documentKey={tab.documentKey}
+              active={activePaneId === pane.id}
+              filePath={tab.file?.path ?? null}
+              dirty={isTabDirty(tab)}
+              {theme}
+              {preferences}
+              {showLineNumbers}
+              onchange={(next) => handleGeometryChange(pane.id, tab.id, next)}
+              ondraftchange={(hasDrafts) => handleGeometryDraftChange(pane.id, tab.id, hasDrafts)}
+              onexport={() => handleExportGeometry(tab)}
+              onrun={() => handleRunPython(tab)}
+              onstop={handleStopPython}
+              isRunning={isPythonRunning}
+            />
+          {:else if getActiveTab(pane)?.file?.previewType === 'image'}
             <div class="image-preview">
               <img src={getActiveTab(pane).content} alt={getActiveTab(pane).file.relativePath} />
               <div>{getActiveTab(pane).file.relativePath}</div>
@@ -2319,7 +2456,7 @@
       </section>
     {/if}
 
-    <footer class="statusbar">{geometryMode ? `${geometryFileName}${geometryDirty ? ' •' : ''} · ` : ''}{status} · Ctrl/⌘P search · Ctrl/⌘\\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
+    <footer class="statusbar">{isGeometryTab(activeTab) ? `${activeTab.file?.name ?? 'scratch.gcn'}${isTabDirty(activeTab) ? ' •' : ''} · ` : ''}{status} · Ctrl/⌘P search · Ctrl/⌘\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
 
     {#if contextMenu}
       <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
@@ -2343,7 +2480,7 @@
         <div class="modal" role="dialog" aria-label="Confirm delete">
           <h2>Delete {deleteTarget.type}?</h2>
           <p>This permanently removes <strong>{deleteTarget.relativePath}</strong>{deleteTarget.type === 'folder' ? ' and everything inside it' : ''}.</p>
-          {#if geometryFilePath && isSameOrDescendant(geometryFilePath, deleteTarget.path) && geometryDirty}
+          {#if panes.some(p => p.tabs.some(tab => tab.kind === 'geometry' && tab.file?.path && isSameOrDescendant(tab.file.path, deleteTarget.path) && isTabDirty(tab)))}
             <p class="gcn-var-error">กราฟนี้มีงานที่ยังไม่ได้บันทึก การลบจะทำให้ข้อมูลที่ยังไม่ได้บันทึกหายไปอย่างถาวร</p>
           {/if}
           <div class="modal-actions">
@@ -2400,7 +2537,7 @@
           <button on:click={detachGraph}>Detach graph to separate window</button>
           <button on:click={() => addPane(false)}>Add editor window</button>
           <button on:click={() => addPane(true)}>Add floating editor window</button>
-          <button on:click={() => detachPane(activePaneId)}>Detach active editor to separate window</button>
+          <button on:click={() => detachPane(activePaneId)} disabled={paneHasGeometry(panes.find(p => p.id === activePaneId))}>Detach active editor to separate window</button>
           <button on:click={toggleSplit}>Toggle split editor</button>
           <button on:click={() => togglePaneFloat(activePaneId)}>Float / Dock current editor</button>
           <button on:click={toggleTerminal}>Toggle terminal</button>
