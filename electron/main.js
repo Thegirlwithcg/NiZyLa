@@ -845,7 +845,13 @@ ipcMain.handle('convert:python', async (event, { source, sourceFile, preferredIn
     input: source,
     encoding: 'utf8',
     shell: false,
-    timeout: 15000
+    timeout: 15000,
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1'
+    }
   });
 
   let parsedJson;

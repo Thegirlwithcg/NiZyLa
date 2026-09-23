@@ -240,6 +240,17 @@ test('electron/python-parser.py and resource/python-parser.py are byte-identical
   assert.equal(electronBytes.equals(resourceBytes), true, 'Both python-parser.py files must be byte-identical');
 });
 
+test('Python convert handles Thai and international Unicode characters without surrogate errors', () => {
+  const source = 'print("\\n--- \u0e41\u0e21\u0e48\u0e2a\u0e39\u0e15\u0e23\u0e04\u0e39\u0e13\u0e41\u0e21\u0e48 {number} ---")\n';
+  const parsed = parsePythonSource(source);
+  assert.equal(parsed.error, false);
+  const { document, error } = convertPythonAstToGcn(parsed, source);
+  assert.equal(error, null);
+  assert.ok(document);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+});
+
 test('Example 1 (fstring): source -> convert -> generateGeometryCode -> exact text, 0 errors, runs with Python 3', () => {
   const source = 'print(f"Player: {name}, Level: {level}")\n';
   const parsed = parsePythonSource(source);

@@ -3,6 +3,22 @@ import ast
 import json
 import sys
 
+if hasattr(sys.stdin, 'reconfigure'):
+    try:
+        sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 def serialize_expr(node, source):
     if node is None:
         return None
@@ -363,10 +379,17 @@ def serialize_stmt(node, source):
 
 def main():
     try:
-        source = sys.stdin.read()
+        if hasattr(sys.stdin, 'buffer'):
+            raw = sys.stdin.buffer.read()
+            source = raw.decode('utf-8', errors='replace')
+        else:
+            source = sys.stdin.read()
     except Exception as e:
         print(json.dumps({"error": True, "message": f"Failed to read input: {e}"}))
         sys.exit(1)
+
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in source):
+        source = source.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
 
     try:
         tree = ast.parse(source)
