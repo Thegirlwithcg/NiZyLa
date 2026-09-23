@@ -27,6 +27,27 @@
     updateNodeInternals(id);
   });
 
+  $effect(() => {
+    if (node?.type === 'functionCall' && !node.data?.isCustom) {
+      const funcs = ctx.availableFunctions || [];
+      const match = funcs.find((f) => f.id === node.data?.targetId || (!node.data?.targetId && f.data?.name && f.data.name === node.data?.name));
+      if (match) {
+        const expectedArgs = (match.data?.parameters || []).map((p) => p.name || 'arg');
+        const currentArgs = node.data?.argumentNames || [];
+        const needsSync = node.data?.targetId !== match.id ||
+          expectedArgs.length !== currentArgs.length ||
+          expectedArgs.some((arg, i) => arg !== currentArgs[i]);
+        if (needsSync) {
+          ctx.setData(id, {
+            targetId: match.id,
+            name: match.data?.name || node.data?.name || 'call',
+            argumentNames: expectedArgs
+          });
+        }
+      }
+    }
+  });
+
   const typeLabel = (port) => port.kind === 'exec' ? 'exec' : port.valueType;
   const onValueType = (event) => ctx.setLiteralType(id, event.currentTarget.value);
   const onSelectData = (key) => (event) => ctx.setData(id, { [key]: event.currentTarget.value });
@@ -119,15 +140,68 @@
         </div>
 
       {:else if node.type === 'functionCall'}
-        <input aria-label="Function or method name" value={node.data?.name || ''} placeholder="func_name"
-          oninput={onInputData('name')} onblur={ctx.endEdit} spellcheck="false" />
+        {@const funcs = ctx.availableFunctions || []}
+        {@const matchedFn = funcs.find((f) => f.id === node.data?.targetId || (!node.data?.targetId && f.data?.name && f.data.name === node.data?.name))}
+        {#if funcs.length > 0 && !node.data?.isCustom}
+          <select aria-label="Function name" value={matchedFn?.id || ''} onchange={(e) => {
+            const val = e.currentTarget.value;
+            if (val === '__custom__') {
+              ctx.setData(id, { isCustom: true });
+            } else {
+              const target = funcs.find((f) => f.id === val);
+              if (target) {
+                ctx.setData(id, {
+                  targetId: target.id,
+                  name: target.data?.name || 'call',
+                  argumentNames: (target.data?.parameters || []).map((p) => p.name || 'arg'),
+                  isCustom: false
+                });
+              }
+            }
+          }}>
+            {#if !matchedFn}
+              <option value="">{node.data?.name ? `Custom: ${node.data.name}` : 'Select function…'}</option>
+            {/if}
+            {#each funcs as fn (fn.id)}
+              {@const pNames = (fn.data?.parameters || []).map((p) => p.name || 'arg').join(', ')}
+              <option value={fn.id}>{fn.data?.name || 'func'}({pNames})</option>
+            {/each}
+            <option value="__custom__">Custom / built-in name…</option>
+          </select>
+        {:else}
+          <div style="display: flex; gap: 4px; align-items: center;">
+            <input aria-label="Function or method name" value={node.data?.name || ''} placeholder="func_name"
+              oninput={onInputData('name')} onblur={ctx.endEdit} spellcheck="false" />
+            {#if funcs.length > 0}
+              <button type="button" class="gcn-counter-btn" title="Pick from defined functions" onclick={() => ctx.setData(id, { isCustom: false })}>▾</button>
+            {/if}
+          </div>
+        {/if}
 
       {:else if node.type === 'instantiate'}
         <input aria-label="Class name" value={node.data?.className || ''} placeholder="ClassName"
           oninput={onInputData('className')} onblur={ctx.endEdit} spellcheck="false" />
 
       {:else if node.type === 'parameter'}
-        <span class="gcn-param-badge">{node.data?.name || 'param'} : {node.data?.paramType || 'any'}</span>
+        {@const paramChoices = ctx.parameters || []}
+        {@const paramKnown = paramChoices.some((p) => p.id === node.data?.parameterId)}
+        {#if paramChoices.length > 0}
+          <select aria-label="Parameter" value={node.data?.parameterId} onchange={(e) => {
+            const selected = paramChoices.find((p) => p.id === e.currentTarget.value);
+            if (selected) {
+              ctx.setData(id, { parameterId: selected.id, name: selected.name, paramType: selected.type || 'any' });
+            }
+          }}>
+            {#if !paramKnown}
+              <option value={node.data?.parameterId || ''}>{node.data?.name ? (node.data.parameterId ? 'Missing parameter' : `Select (${node.data.name})…`) : 'Select parameter…'}</option>
+            {/if}
+            {#each paramChoices as p (p.id)}
+              <option value={p.id}>{p.name || '(unnamed)'} : {p.type || 'any'}</option>
+            {/each}
+          </select>
+        {:else}
+          <span class="gcn-param-badge">{node.data?.name || 'param'} : {node.data?.paramType || 'any'}</span>
+        {/if}
 
       {:else if node.type === 'import'}
         <select aria-label="Import type" value={node.data?.importType || 'module'} onchange={onSelectData('importType')}>

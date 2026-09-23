@@ -4,6 +4,7 @@ export const THEME_PRESETS = {
   structs: {
     id: 'structs',
     name: 'Structs Teal (Indie Sci-Fi)',
+    scheme: 'dark',
     bg: '#0f1d24',
     bgSoft: '#13252e',
     panel: '#162832',
@@ -26,7 +27,7 @@ export const THEME_PRESETS = {
     graphImports: '#c084fc',
     graphLinks: '#67e8f9',
     graphDefines: '#f472b6',
-    font: "'Pixelify Sans', 'Silkscreen', 'JetBrains Mono', monospace",
+    font: "'Pixelify Sans', monospace",
     syntax: {
       keyword: '#e879f9',
       function: '#38bdf8',
@@ -40,6 +41,7 @@ export const THEME_PRESETS = {
   obsidian: {
     id: 'obsidian',
     name: 'Obsidian Dark',
+    scheme: 'dark',
     bg: '#1e1e1e',
     bgSoft: '#202020',
     panel: '#202020',
@@ -76,6 +78,7 @@ export const THEME_PRESETS = {
   cream: {
     id: 'cream',
     name: 'Cream Light',
+    scheme: 'light',
     bg: '#fcf8ee',
     bgSoft: '#f5edd9',
     panel: '#f8f1de',
@@ -112,6 +115,7 @@ export const THEME_PRESETS = {
   cyberpunk: {
     id: 'cyberpunk',
     name: 'Cyberpunk Neon',
+    scheme: 'dark',
     bg: '#0b0c15',
     bgSoft: '#111220',
     panel: '#141628',
@@ -134,7 +138,7 @@ export const THEME_PRESETS = {
     graphImports: '#ffe600',
     graphLinks: '#38bdf8',
     graphDefines: '#ff7700',
-    font: "'Space Mono', 'Pixelify Sans', monospace",
+    font: "'Space Mono', monospace",
     syntax: {
       keyword: '#ff0055',
       function: '#00f0ff',
@@ -143,6 +147,120 @@ export const THEME_PRESETS = {
       string: '#00ff88',
       number: '#ff9900',
       comment: '#5f658b'
+    }
+  },
+  sage: {
+    id: 'sage',
+    name: 'Signal Sage',
+    scheme: 'light',
+    bg: '#C8D4A3',
+    bgSoft: '#D0DBAE',
+    panel: '#D5DFB4',
+    editorBg: '#DCE5BE',
+    text: '#1B2620',
+    muted: '#56664A',
+    border: '#A3B27F',
+    borderStrong: '#1B2620',
+    button: '#D0DBAE',
+    buttonHover: '#BCCA92',
+    accent: '#5F7A32',
+    accent2: '#1F2D26',
+    activeLine: '#D2DCB2',
+    selection: '#5F7A3240',
+    folderIcon: '#5F7A32',
+    fileIcon: '#56664A',
+    graphClass: '#2F5D7C',
+    graphFunction: '#3F6B2A',
+    graphVariable: '#A8261E',
+    graphImports: '#5B4A8A',
+    graphLinks: '#1B2620',
+    graphDefines: '#8A5A1B',
+    font: "'Share Tech Mono', monospace",
+    uiFont: "'Saira', 'Segoe UI', system-ui, sans-serif",
+    syntax: {
+      keyword: '#1F4D3A',
+      function: '#2F5D7C',
+      class: '#7A5A12',
+      variable: '#1B2620',
+      string: '#4F6A14',
+      number: '#9A4A16',
+      comment: '#667556'
+    }
+  },
+  acid: {
+    id: 'acid',
+    name: 'Hazard Acid',
+    scheme: 'light',
+    bg: '#E4E41A',
+    bgSoft: '#EAEA3C',
+    panel: '#EFEF6A',
+    editorBg: '#F7F7C4',
+    text: '#0A0A0A',
+    muted: '#55550F',
+    border: '#B5B512',
+    borderStrong: '#0A0A0A',
+    button: '#E4E41A',
+    buttonHover: '#D6D614',
+    accent: '#0A0A0A',
+    accent2: '#0D1B22',
+    activeLine: '#F0F09A',
+    selection: '#0A0A0A2E',
+    folderIcon: '#0A0A0A',
+    fileIcon: '#55550F',
+    graphClass: '#0D3B66',
+    graphFunction: '#1B5E20',
+    graphVariable: '#B00020',
+    graphImports: '#4A148C',
+    graphLinks: '#0A0A0A',
+    graphDefines: '#7A4F01',
+    font: "'Kode Mono', monospace",
+    uiFont: "'Chakra Petch', 'Segoe UI', system-ui, sans-serif",
+    syntax: {
+      keyword: '#7A0A5A',
+      function: '#0D3B66',
+      class: '#6B4E00',
+      variable: '#0A0A0A',
+      string: '#1B5E20',
+      number: '#9A3412',
+      comment: '#62622A'
+    }
+  },
+  swiss: {
+    id: 'swiss',
+    name: 'Swiss Mono',
+    scheme: 'light',
+    bg: '#CFCFCF',
+    bgSoft: '#D9D9D9',
+    panel: '#E6E6E6',
+    editorBg: '#F2F2F2',
+    text: '#111111',
+    muted: '#5E5E5E',
+    border: '#A6A6A6',
+    borderStrong: '#111111',
+    button: '#E6E6E6',
+    buttonHover: '#D4D4D4',
+    accent: '#111111',
+    accent2: '#7A7A7A',
+    activeLine: '#E8E8E8',
+    selection: '#11111124',
+    folderIcon: '#111111',
+    fileIcon: '#5E5E5E',
+    graphClass: '#111111',
+    graphFunction: '#3A3A3A',
+    graphVariable: '#6A6A6A',
+    graphImports: '#555555',
+    graphLinks: '#111111',
+    graphDefines: '#2A2A2A',
+    font: "'IBM Plex Mono', monospace",
+    uiFont: "'Archivo Narrow', 'Arial Narrow', system-ui, sans-serif",
+    syntax: {
+      keyword: '#000000',
+      function: '#2B2B2B',
+      class: '#000000',
+      variable: '#3A3A3A',
+      string: '#555555',
+      number: '#444444',
+      comment: '#7A7A7A'
     }
   }
 };
@@ -155,6 +273,9 @@ export const FONT_OPTIONS = [
   { id: 'fira', name: 'Fira Code', value: "'Fira Code', monospace" },
   { id: 'spacemono', name: 'Space Mono', value: "'Space Mono', monospace" },
   { id: 'consolas', name: 'Consolas / Courier', value: "Consolas, 'Courier New', monospace" },
+  { id: 'sharetech', name: 'Share Tech Mono (Signal)', value: "'Share Tech Mono', monospace" },
+  { id: 'kodemono', name: 'Kode Mono (Hazard)', value: "'Kode Mono', monospace" },
+  { id: 'plexmono', name: 'IBM Plex Mono (Swiss)', value: "'IBM Plex Mono', monospace" },
   { id: 'system', name: 'System Monospace', value: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
 ];
 
@@ -273,11 +394,14 @@ export function loadPreferences() {
   }
 
   const theme = localStorage.getItem('nizyla.theme') || 'structs';
-  const fontFamily = localStorage.getItem('nizyla.fontFamily') || (theme === 'structs' ? FONT_OPTIONS[0].value : FONT_OPTIONS[3].value);
+  const defaultPreset = THEME_PRESETS[theme] || THEME_PRESETS.structs;
+  const fontFamily = localStorage.getItem('nizyla.fontFamily') || defaultPreset.font;
   const fontSize = Number(localStorage.getItem('nizyla.fontSize')) || 14;
-  const fontUi = localStorage.getItem('nizyla.fontUi') !== 'false';
+  const fontUi = localStorage.getItem('nizyla.fontUi') !== null
+    ? localStorage.getItem('nizyla.fontUi') !== 'false'
+    : !defaultPreset.uiFont;
 
-  let customColors = { ...THEME_PRESETS.structs };
+  let customColors = { ...defaultPreset };
   try {
     const saved = localStorage.getItem('nizyla.customThemeColors');
     if (saved) customColors = { ...customColors, ...JSON.parse(saved) };
@@ -340,6 +464,22 @@ export function getSyntaxStyleString(lang, theme, prefs) {
   `.trim().replace(/\s+/g, ' ');
 }
 
+export function applyThemePreset(prefs, id) {
+  if (!prefs) prefs = {};
+  if (id === 'custom') {
+    prefs.theme = 'custom';
+    return prefs;
+  }
+  const preset = THEME_PRESETS[id];
+  if (preset) {
+    prefs.theme = id;
+    prefs.customColors = { ...preset };
+    prefs.fontFamily = preset.font;
+    prefs.fontUi = !preset.uiFont;
+  }
+  return prefs;
+}
+
 export function applyPreferences(prefs) {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
@@ -351,7 +491,12 @@ export function applyPreferences(prefs) {
   if (prefs.fontUi) {
     root.style.setProperty('--ui-font', prefs.fontFamily);
   } else {
-    root.style.removeProperty('--ui-font');
+    const uiFont = THEME_PRESETS[prefs.theme]?.uiFont || prefs.customColors?.uiFont;
+    if (uiFont) {
+      root.style.setProperty('--ui-font', uiFont);
+    } else {
+      root.style.removeProperty('--ui-font');
+    }
   }
 
   // Apply custom theme colors if active

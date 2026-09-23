@@ -10,7 +10,7 @@
   import GeometryWorkspace from './components/GeometryWorkspace.svelte';
   import { createGeometryDocument, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from './core/geometry.js';
   import { sameDocument } from './core/geometry-editor.js';
-  import { loadPreferences, applyPreferences, savePreferences } from './core/preferences.js';
+  import { loadPreferences, applyPreferences, savePreferences, THEME_PRESETS, applyThemePreset } from './core/preferences.js';
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -1558,8 +1558,8 @@
   function closePalette() { paletteOpen = false; }
 
   function setTheme(nextTheme) {
-    theme = nextTheme;
-    preferences.theme = nextTheme;
+    preferences = applyThemePreset(preferences, nextTheme);
+    theme = preferences.theme;
     savePreferences(preferences);
   }
 
@@ -2016,10 +2016,9 @@
       >
         <button class="primary" on:click={dockDetachedSelf}>Dock to Main Window</button>
         <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
-          <option value="structs">Structs Teal (Indie)</option>
-          <option value="obsidian">Obsidian Dark</option>
-          <option value="cream">Cream Light</option>
-          <option value="cyberpunk">Cyberpunk Neon</option>
+          {#each Object.values(THEME_PRESETS) as preset}
+            <option value={preset.id}>{preset.name}</option>
+          {/each}
           <option value="custom">Custom Theme</option>
         </select>
         <button on:click={() => (showPreferences = true)} title="Preferences: Theme, Fonts, Syntax">⚙ Preferences</button>
@@ -2154,10 +2153,9 @@
         <button on:click={openProject}>Open Folder</button>
         <button on:click={() => refreshProject()} disabled={!project}>Refresh</button>
         <select value={theme} on:change={(event) => setTheme(event.currentTarget.value)} aria-label="Theme">
-          <option value="structs">Structs Teal (Indie)</option>
-          <option value="obsidian">Obsidian Dark</option>
-          <option value="cream">Cream Light</option>
-          <option value="cyberpunk">Cyberpunk Neon</option>
+          {#each Object.values(THEME_PRESETS) as preset}
+            <option value={preset.id}>{preset.name}</option>
+          {/each}
           <option value="custom">Custom Theme</option>
         </select>
         <button on:click={() => (showPreferences = true)} title="Preferences: Theme, Fonts, Syntax (Ctrl+,)">⚙ Preferences</button>
@@ -2660,10 +2658,9 @@
           <input bind:this={paletteInput} bind:value={query} placeholder="Search files or type a command..." />
           <button on:click={() => { paletteOpen = false; handleNewGeometryCode(); }}>+ New Geometry Code (.gcn)</button>
           <button on:click={() => { paletteOpen = false; showPreferences = true; }}>⚙ Preferences: Color Theme, Fonts & Syntax</button>
-          <button on:click={() => { paletteOpen = false; setTheme('structs'); }}>Theme: Structs Teal (Indie Sci-Fi)</button>
-          <button on:click={() => { paletteOpen = false; setTheme('obsidian'); }}>Theme: Obsidian Dark</button>
-          <button on:click={() => { paletteOpen = false; setTheme('cream'); }}>Theme: Cream Light</button>
-          <button on:click={() => { paletteOpen = false; setTheme('cyberpunk'); }}>Theme: Cyberpunk Neon</button>
+          {#each Object.values(THEME_PRESETS) as preset}
+            <button on:click={() => { paletteOpen = false; setTheme(preset.id); }}>Theme: {preset.name}</button>
+          {/each}
           <button on:click={toggleGraph}>Toggle graph</button>
           <button on:click={() => (graphFloating = !graphFloating)}>{graphFloating ? 'Dock graph' : 'Float graph'}</button>
           <button on:click={detachGraph}>Detach graph to separate window</button>

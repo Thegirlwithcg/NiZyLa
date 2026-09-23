@@ -21,6 +21,7 @@
   import { nodeDefinitions } from '../core/geometry.js';
   import { generateGeometryCode } from '../core/geometry-codegen.js';
   import { nodeHelp } from '../core/node-help.js';
+  import { THEME_PRESETS } from '../core/preferences.js';
   import {
     addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, createEditorState,
     deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, positionsFromFlow, redo,
@@ -138,6 +139,36 @@
   const singleSelectedPorts = $derived(singleSelectedNode ? (view.ports.get(singleSelectedNode.id) || []) : []);
   const selectedFunctionNode = $derived(selectedNode && activeGraph.nodes.find((n) => n.id === selectedNode.id && n.type === 'functionDef'));
   const canEnterSelected = $derived(selectedNode && ['functionDef', 'classDef'].includes(activeGraph.nodes.find((n) => n.id === selectedNode.id)?.type));
+
+  function getEnclosingFunction(d, pathIds) {
+    for (let i = pathIds.length - 1; i >= 0; i--) {
+      const parentGraph = getGraphAtScope(d, pathIds.slice(0, i)) || d;
+      const n = parentGraph.nodes?.find((node) => node.id === pathIds[i]);
+      if (n && n.type === 'functionDef') {
+        return { node: n, scope: pathIds.slice(0, i) };
+      }
+    }
+    return null;
+  }
+
+  const currentFunction = $derived(
+    (selectedFunctionNode ? { node: selectedFunctionNode, scope: scopePathIds } : null) ||
+    getEnclosingFunction(doc, scopePathIds)
+  );
+  const currentFunctionNode = $derived(currentFunction?.node ?? null);
+  const functionParameters = $derived(currentFunctionNode?.data?.parameters || []);
+
+  function getAllFunctions(graph) {
+    if (!graph || !Array.isArray(graph.nodes)) return [];
+    const funcs = [];
+    for (const n of graph.nodes) {
+      if (n.type === 'functionDef') funcs.push(n);
+      if (n.type === 'classDef' && n.data?.graph) funcs.push(...getAllFunctions(n.data.graph));
+    }
+    return funcs;
+  }
+
+  const availableFunctions = $derived(getAllFunctions(doc));
 
   function say(text, error = false) {
     clearTimeout(noticeTimer);
@@ -402,6 +433,8 @@
 
   setContext('gcn', {
     get view() { return view; },
+    get parameters() { return functionParameters; },
+    get availableFunctions() { return availableFunctions; },
     get isRoot() { return scopePathIds.length === 0; },
     get target() { return doc.target; },
     get theme() { return theme; },
@@ -706,21 +739,33 @@
   // ---- parameters manager ----------------------------------------------------------------------
 
   function addParam() {
-    if (!selectedFunctionNode) return;
-    const r = addFunctionParameter(activeGraph, selectedFunctionNode.id);
-    if (r) applyScoped(() => r.doc);
+    if (!currentFunction) return;
+    const { node: fNode, scope } = currentFunction;
+    const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
+      const r = addFunctionParameter(g, fNode.id);
+      return r ? r.doc : g;
+    });
+    apply(nextDoc);
   }
 
   function updateParam(pId, patch) {
-    if (!selectedFunctionNode) return;
-    const r = updateFunctionParameter(activeGraph, selectedFunctionNode.id, pId, patch);
-    if (r) applyScoped(() => r.doc);
+    if (!currentFunction) return;
+    const { node: fNode, scope } = currentFunction;
+    const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
+      const r = updateFunctionParameter(g, fNode.id, pId, patch);
+      return r ? r.doc : g;
+    });
+    apply(nextDoc);
   }
 
   function removeParam(pId) {
-    if (!selectedFunctionNode) return;
-    const r = removeFunctionParameter(activeGraph, selectedFunctionNode.id, pId);
-    if (r) applyScoped(() => r.doc);
+    if (!currentFunction) return;
+    const { node: fNode, scope } = currentFunction;
+    const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
+      const r = removeFunctionParameter(g, fNode.id, pId);
+      return r ? r.doc : g;
+    });
+    apply(nextDoc);
   }
 
   // ---- diagnostics + preview -------------------------------------------------------------------
@@ -850,7 +895,7 @@
       onpointermove={oncanvaspointermove}
       onpointerleave={() => { if (!grab) pointer = null; }}
       oncontextmenu={oncanvascontextmenu}>
-      <SvelteFlow bind:nodes bind:edges {nodeTypes} colorMode={theme === 'cream' ? 'light' : 'dark'}
+      <SvelteFlow bind:nodes bind:edges {nodeTypes} colorMode={THEME_PRESETS[theme]?.scheme === 'light' ? 'light' : 'dark'}
         deleteKey={[]} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}
         isValidConnection={(c) => checkConnection(activeGraph, c).ok} onbeforeconnect={connect} onconnectend={connectEnd}
         onnodedragstop={({ nodes: dragged }) => commitPositions(dragged)}
@@ -866,15 +911,15 @@
 
       <aside class="gcn-side" aria-label="Geometry Code panels">
         <div class="gcn-side-details">
-        {#if selectedFunctionNode}
+        {#if currentFunctionNode}
           <section aria-labelledby={`gcn-params-${uid}`} class:collapsed={collapsed.parameters}>
             <div class="gcn-section-head">
               <button type="button" class="gcn-collapse" aria-expanded={!collapsed.parameters} onclick={() => togglePanel('parameters')}>{collapsed.parameters ? '▸' : '▾'}</button>
-              <h3 id={`gcn-params-${uid}`}>Parameters ({selectedFunctionNode.data?.name || 'func'})</h3>
+              <h3 id={`gcn-params-${uid}`}>Parameters ({currentFunctionNode.data?.name || 'func'})</h3>
               <button onclick={addParam}>+ Parameter</button>
             </div>
             {#if !collapsed.parameters}
-            {#each (selectedFunctionNode.data?.parameters || []) as p (p.id)}
+            {#each (currentFunctionNode.data?.parameters || []) as p (p.id)}
               <div class="gcn-param-row">
                 <input value={p.name} placeholder="param_name" spellcheck="false"
                   oninput={(e) => updateParam(p.id, { name: e.currentTarget.value })} />

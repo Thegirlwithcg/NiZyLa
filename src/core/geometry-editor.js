@@ -252,6 +252,50 @@ export function addNodeAtScope(doc, scopePath, presetId, position) {
     const res = addNode(graph, presetId, position);
     if (!res) return graph;
     createdNodeId = res.nodeId;
+    if (presetId === 'parameter' && scopePath && scopePath.length > 0) {
+      let enclosing = null;
+      for (let i = scopePath.length - 1; i >= 0; i--) {
+        const parentG = getGraphAtScope(doc, scopePath.slice(0, i)) || doc;
+        const fnNode = parentG.nodes?.find((n) => n.id === scopePath[i]);
+        if (fnNode && fnNode.type === 'functionDef') {
+          enclosing = fnNode;
+          break;
+        }
+      }
+      if (enclosing && Array.isArray(enclosing.data?.parameters) && enclosing.data.parameters.length > 0) {
+        const first = enclosing.data.parameters[0];
+        const nextNodes = res.doc.nodes.map((n) =>
+          n.id === res.nodeId ? { ...n, data: { ...n.data, parameterId: first.id, name: first.name, paramType: first.type || 'any' } } : n
+        );
+        return { ...res.doc, nodes: nextNodes };
+      }
+    }
+    if (presetId === 'call') {
+      const allFns = [];
+      const collectFns = (g) => {
+        if (!g?.nodes) return;
+        for (const n of g.nodes) {
+          if (n.type === 'functionDef') allFns.push(n);
+          if (n.type === 'classDef' && n.data?.graph) collectFns(n.data.graph);
+        }
+      };
+      collectFns(doc);
+      if (allFns.length > 0) {
+        const firstFn = allFns[0];
+        const nextNodes = res.doc.nodes.map((n) =>
+          n.id === res.nodeId ? {
+            ...n,
+            data: {
+              ...n.data,
+              targetId: firstFn.id,
+              name: firstFn.data?.name || 'call',
+              argumentNames: (firstFn.data?.parameters || []).map((p) => p.name || 'arg')
+            }
+          } : n
+        );
+        return { ...res.doc, nodes: nextNodes };
+      }
+    }
     return res.doc;
   });
   return createdNodeId ? { doc: nextDoc, nodeId: createdNodeId } : null;

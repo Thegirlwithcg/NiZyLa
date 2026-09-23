@@ -6,7 +6,8 @@
     SUPPORTED_LANGUAGES,
     LANGUAGE_SAMPLE_CODE,
     getSyntaxColorsForLanguage,
-    savePreferences
+    savePreferences,
+    applyThemePreset
   } from '../core/preferences.js';
 
   export let preferences;
@@ -22,17 +23,7 @@
   $: sampleCode = LANGUAGE_SAMPLE_CODE[selectedLanguage] || LANGUAGE_SAMPLE_CODE.default;
 
   function selectTheme(themeId) {
-    preferences.theme = themeId;
-    if (themeId !== 'custom') {
-      const preset = THEME_PRESETS[themeId];
-      if (preset) {
-        preferences.customColors = { ...preset };
-        if (themeId === 'structs') {
-          preferences.fontFamily = FONT_OPTIONS[0].value;
-          preferences.fontUi = true;
-        }
-      }
-    }
+    preferences = applyThemePreset(preferences, themeId);
     saveAndNotify();
   }
 
@@ -149,7 +140,7 @@
                   </div>
                 </div>
                 <div class="theme-card-info">
-                  <strong>{preset.name}</strong>
+                  <strong style="font-family: {preset.uiFont ?? preset.font};">{preset.name}</strong>
                   {#if preset.id === 'structs'}<span class="indie-tag">INDIE SCI-FI</span>{/if}
                 </div>
               </button>

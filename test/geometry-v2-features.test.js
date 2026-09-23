@@ -9,6 +9,7 @@ import {
   addFunctionParameter,
   updateFunctionParameter,
   removeFunctionParameter,
+  addNodeAtScope,
   getGraphAtScope,
   updateGraphAtScope,
   setViewportAtScope,
@@ -76,6 +77,51 @@ test('function signature editing: add, rename, and remove parameters as undoable
   state = redo(state);
   const redoFn = state.present.nodes.find((n) => n.id === 'fn1');
   assert.equal(redoFn.data.parameters.length, 0);
+});
+
+test('addNodeAtScope auto-assigns first parameter when adding parameter preset inside function', () => {
+  let doc = createGeometryDocument('python', 2);
+  const child = createChildGraph();
+  doc.nodes.push({
+    id: 'fn1',
+    type: 'functionDef',
+    position: { x: 100, y: 100 },
+    data: { name: 'my_func', parameters: [], returnType: 'any', isAsync: false, decorators: [], graph: child }
+  });
+
+  const r1 = addFunctionParameter(doc, 'fn1', { name: 'number', type: 'int' });
+  assert.ok(r1);
+  doc = r1.doc;
+
+  const added = addNodeAtScope(doc, ['fn1'], 'parameter', { x: 50, y: 50 });
+  assert.ok(added);
+  const childGraph = getGraphAtScope(added.doc, ['fn1']);
+  const paramNode = childGraph.nodes.find((n) => n.id === added.nodeId);
+  assert.ok(paramNode);
+  assert.equal(paramNode.type, 'parameter');
+  assert.equal(paramNode.data.name, 'number');
+  assert.equal(paramNode.data.paramType, 'int');
+  assert.ok(paramNode.data.parameterId.startsWith('p_'));
+});
+
+test('addNodeAtScope auto-links Call Function preset to defined function and populates arguments', () => {
+  let doc = createGeometryDocument('python', 2);
+  const child = createChildGraph();
+  doc.nodes.push({
+    id: 'fn1',
+    type: 'functionDef',
+    position: { x: 100, y: 100 },
+    data: { name: 'multiplication_table', parameters: [{ id: 'p1', name: 'number', type: 'int' }], returnType: 'void', isAsync: false, decorators: [], graph: child }
+  });
+
+  const added = addNodeAtScope(doc, [], 'call', { x: 200, y: 200 });
+  assert.ok(added);
+  const callNode = added.doc.nodes.find((n) => n.id === added.nodeId);
+  assert.ok(callNode);
+  assert.equal(callNode.type, 'functionCall');
+  assert.equal(callNode.data.targetId, 'fn1');
+  assert.equal(callNode.data.name, 'multiplication_table');
+  assert.deepEqual(callNode.data.argumentNames, ['number']);
 });
 
 test('class definition with inheritance, constructor and methods generates correct Python and GDScript', () => {
