@@ -225,3 +225,28 @@ Geometry Code graphs are integrated into the tab and pane system rather than a s
   - 2+ dirty graphs: Multi-document Thai dialog indicating count and file names ("บันทึกทั้งหมด", "ทิ้งทั้งหมด", "ยกเลิก") with atomic batch saves via `writeGcnAtomicSync`. If save fails, unload is aborted.
 - **Execution concurrency**: Python execution remains singular across the app (`isPythonRunning`), routing output to the integrated terminal panel.
 
+### Files
+`src/core/geometry-editor.js` (pure document ops + history, tested in `test/geometry-editor.test.js`), `src/components/GeometryWorkspace.svelte` (public, wraps `SvelteFlowProvider`) -> `GeometryWorkspaceInner.svelte`, `GeometryNode.svelte` (one component for all node types), `GeometryAddMenu.svelte`, `GeometryField.svelte` (numeric draft input). Dependency: `@xyflow/svelte` 1.6.6.
+
+### Component API
+`<GeometryWorkspace document documentKey active filePath dirty theme preferences showLineNumbers onchange ondraftchange onexport onrun onstop isRunning />`. `document` is a plain .gcn object, never mutated and read only when `documentKey` changes (new key = load, reset history/selection; same key = the echo of our own `onchange` is ignored). `onchange(next)` receives a fresh plain .gcn document (no selection/measured/DOM fields) after every edit and after pan/zoom (viewport). `active` indicates that the pane is focused (keyboard shortcuts on); the workspace is always rendered. No mode switch. History survives remounts via the per-documentKey cache (`historyStore`, max 20 entries).
+
+### Shortcuts (only when focus is not in an input/textarea/select/CodeMirror)
+- **Shift+A**: add-node menu (canvas focus; at the pointer, else canvas center; Add Node button uses the center).
+- **Shift+D**: duplicate selection (canvas focus; Blender-style grab-duplicate when pointer is over canvas where copies follow the mouse until placed via Left click / Enter, or canceled via Esc / Right-click / Ctrl+Z/Y / blur; fallback to immediate +40,+40 offset when pointer is not over canvas).
+- **Ctrl/Cmd+C**: copy selection (canvas focus; non-Start nodes, internal wires, and referenced variable definitions copied to clipboard as .gcn v2 fragment).
+- **Ctrl/Cmd+V**: paste fragment from clipboard at pointer (or canvas center if outside) with variable reconciliation (keep matching id+type, remap matching name+type, or add fresh deduped variable).
+- **Delete / Backspace**: delete selection (canvas focus).
+- **Ctrl/Cmd+Z**: undo.
+- **Ctrl/Cmd+Shift+Z / Ctrl+Y**: redo.
+- **Menu navigation**: search, Up/Down, Enter, Esc.
+
+### Undo/Redo rules
+Snapshots of plain .gcn content, 100 transactions. One transaction = add/delete, wire add/delete, one drag (group), one placed grab-duplicate (one entry for live duplicate + move + place; clicking outside the canvas confirms/places the grab; Undo removes copies and Redo restores at final spot), one paste, one field focus-to-blur edit, one variable edit, target change, an operator change with its removed wires.
+Canceled grab-duplicate leaves zero history entries.
+No-ops, selection, menus, pan/zoom/Fit View make no entry; Undo/Redo keep the current viewport. Wires are added only after `checkConnection` (same-kind output->input, cardinality, no exec/value cycle, no known type mismatch); missing inputs never block a wire. Wires to ports that disappear (And -> Not) are removed in the same transaction; type mismatches from retyping are kept and reported.
+
+### Code preview
+Code preview uses `generateGeometryCode`; with errors or an invalid input draft the preview is cleared and Copy Code is disabled. `CodeEditor` got `readOnly`. Export button triggers `onexport` when valid.
+
+

@@ -268,7 +268,8 @@
       }));
       const refreshError = await refreshFileProject(filePath);
       status = refreshError || `บันทึก ${tab.file.name} สำเร็จ`;
-      return !tab.hasDrafts && sameDocument(tab.doc, snapshot);
+      const current = panes.flatMap((p) => p.tabs).find((t) => t.id === tab.id);
+      return current ? (!current.hasDrafts && sameDocument(current.doc, snapshot)) : false;
     } catch (err) {
       status = `บันทึกล้มเหลว: ${err.message}`;
       return false;
@@ -331,26 +332,86 @@
       }
 
       const targetPath = file.path.replace(/\.(py|gd)$/i, '.gcn');
-      const fileName = targetPath.split(/[/\\]/).pop();
-      const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
-      const newTab = {
-        id: targetPath,
-        kind: 'geometry',
-        file: { name: fileName, path: targetPath, relativePath, type: 'file' },
-        doc: res.document,
-        baseline: null,
-        documentKey: crypto.randomUUID(),
-        hasDrafts: false,
-        dirty: true
-      };
-      const targetPane = panes.find((p) => p.id === activePaneId && !p.detached) ?? panes[0];
-      panes = panes.map((p) => p.id === targetPane.id ? {
-        ...p,
-        active: targetPath,
-        tabs: [...p.tabs.filter((t) => t.id !== targetPath), newTab]
-      } : p);
-      activePaneId = targetPane.id;
-      status = `แปลง ${file.name} สำเร็จ! เปิดเป็น .gcn ที่ยังไม่บันทึก`;
+      const normTarget = targetPath.replace(/\\/g, '/').toLowerCase();
+
+      // Find a tab with the same normalized target path in ANY pane
+      let targetPane = null;
+      let existingTab = null;
+      let existingIndex = -1;
+
+      for (const p of panes) {
+        const idx = p.tabs.findIndex((t) => t.file?.path && t.file.path.replace(/\\/g, '/').toLowerCase() === normTarget);
+        if (idx !== -1) {
+          targetPane = p;
+          existingTab = p.tabs[idx];
+          existingIndex = idx;
+          break;
+        }
+      }
+
+      if (existingTab) {
+        if (isTabDirty(existingTab)) {
+          const decision = await promptUnsavedGeometry(existingTab, 'แทนที่ด้วยผลการแปลง');
+          if (decision === 'cancel') return;
+          if (decision === 'save') {
+            const ok = await saveGeometry(existingTab);
+            if (!ok) return;
+          }
+        }
+
+        const fileName = targetPath.split(/[/\\]/).pop();
+        const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
+        const updatedTab = {
+          ...existingTab,
+          file: { name: fileName, path: targetPath, relativePath, type: 'file' },
+          doc: res.document,
+          baseline: null,
+          documentKey: crypto.randomUUID(),
+          hasDrafts: false,
+          dirty: true
+        };
+
+        panes = panes.map((p) => {
+          if (p.id !== targetPane.id) return p;
+          const nextTabs = [...p.tabs];
+          const curIdx = nextTabs.findIndex((t) => t.id === existingTab.id);
+          const replaceIdx = curIdx !== -1 ? curIdx : existingIndex;
+          nextTabs[replaceIdx] = updatedTab;
+          return {
+            ...p,
+            active: updatedTab.id,
+            tabs: nextTabs
+          };
+        });
+        activePaneId = targetPane.id;
+        if (targetPane.floating) {
+          topZIndex += 1;
+          panes = panes.map((p) => p.id === targetPane.id ? { ...p, zIndex: topZIndex } : p);
+          activeFloatingWindow = `editor-${targetPane.id}`;
+        }
+        status = `แปลง ${file.name} สำเร็จ! แทนที่ .gcn ที่ยังไม่บันทึก`;
+      } else {
+        const fileName = targetPath.split(/[/\\]/).pop();
+        const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
+        const newTab = {
+          id: targetPath,
+          kind: 'geometry',
+          file: { name: fileName, path: targetPath, relativePath, type: 'file' },
+          doc: res.document,
+          baseline: null,
+          documentKey: crypto.randomUUID(),
+          hasDrafts: false,
+          dirty: true
+        };
+        const targetPane = panes.find((p) => p.id === activePaneId && !p.detached) ?? panes[0];
+        panes = panes.map((p) => p.id === targetPane.id ? {
+          ...p,
+          active: targetPath,
+          tabs: [...p.tabs.filter((t) => t.id !== targetPath), newTab]
+        } : p);
+        activePaneId = targetPane.id;
+        status = `แปลง ${file.name} สำเร็จ! เปิดเป็น .gcn ที่ยังไม่บันทึก`;
+      }
     } catch (err) {
       status = `ข้อผิดพลาดในการแปลง: ${err.message}`;
     }

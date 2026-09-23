@@ -48,6 +48,19 @@ const bGcnContent = JSON.stringify({
 }, null, 2) + '\n';
 await fs.writeFile(path.join(projectDir, 'b.gcn'), bGcnContent, 'utf8');
 
+const mainGcnContent = JSON.stringify({
+  format: 'nizyla.geometry-code',
+  version: 2,
+  target: 'python',
+  variables: [],
+  nodes: [
+    { id: 'start', type: 'start', position: { x: 40, y: 100 }, data: {} }
+  ],
+  edges: [],
+  viewport: { x: 0, y: 0, zoom: 1 }
+}, null, 2) + '\n';
+await fs.writeFile(path.join(projectDir, 'main.gcn'), mainGcnContent, 'utf8');
+
 const port = async () => {
   const server = net.createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -442,6 +455,198 @@ try {
     await ui.screenshot(`i_panel_toggle_on_${th}`);
   }
 
+  // Step j: 50/50 split at 1000x680 and at 1400x860
+  console.log('Step j: 50/50 split at 1000x680 and at 1400x860');
+  // Reset theme to structs
+  await ui.evaluate(`(() => {
+    const sel = document.querySelector('.topbar select[aria-label="Theme"]');
+    if (sel) {
+      sel.value = 'structs';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  })()`);
+  await delay(200);
+
+  // Hide the floating window temporarily during step j and k so it does not obstruct docked panes
+  await ui.evaluate(`(() => {
+    const fw = document.querySelector('.floating-window.editor-floating');
+    if (fw) fw.style.display = 'none';
+  })()`);
+  await delay(200);
+
+  // Ensure left pane (a.gcn) is focused
+  await ui.evaluate(`(() => {
+    const docked = Array.from(document.querySelectorAll('.editors .editor-area'));
+    const p1Tab = docked[0]?.querySelector('.tab button');
+    p1Tab?.click();
+  })()`);
+  await delay(400);
+
+  for (const dims of [{ w: 1000, h: 680, name: '1000x680' }, { w: 1400, h: 860, name: '1400x860' }]) {
+    try {
+      await main.evaluate(`testElectron.BrowserWindow.getAllWindows()[0].setSize(${dims.w}, ${dims.h})`);
+    } catch {}
+    await ui.send('Emulation.setDeviceMetricsOverride', { width: dims.w, height: dims.h, deviceScaleFactor: 1, mobile: false });
+    await delay(600);
+
+    // Verify in focused pane (a.gcn)
+    const metrics = await ui.evaluate(`(() => {
+      const pane = document.querySelector('.editors .editor-area.focused');
+      const ws = pane?.querySelector('.gcn-workspace');
+      const canvas = pane?.querySelector('.gcn-canvas');
+      const side = pane?.querySelector('.gcn-side');
+      const stopBtn = pane?.querySelector('.gcn-toolbar .gcn-stop-btn');
+      const targetSel = pane?.querySelector('.gcn-toolbar select[aria-label="Target language"]');
+      const paneRect = pane?.getBoundingClientRect();
+      const wsRect = ws?.getBoundingClientRect();
+      const canvasRect = canvas?.getBoundingClientRect();
+      const sideRect = side?.getBoundingClientRect();
+      const stopRect = stopBtn?.getBoundingClientRect();
+      const targetRect = targetSel?.getBoundingClientRect();
+      return {
+        paneWidth: paneRect?.width,
+        wsWidth: wsRect?.width,
+        canvasHeight: canvasRect?.height,
+        sideHeight: sideRect?.height,
+        stacked: !!(sideRect && canvasRect && sideRect.top >= canvasRect.bottom - 4),
+        stopVisible: !!(stopRect && stopRect.width > 0 && stopRect.right <= (paneRect?.right || 0) + 2),
+        targetVisible: !!(targetRect && targetRect.width > 0 && targetRect.right <= (paneRect?.right || 0) + 2),
+        noClip: (wsRect?.width || 0) <= (paneRect?.width || 0) + 2
+      };
+    })()`);
+    console.log(`Step j metrics at ${dims.name}:`, metrics);
+    assert.ok(metrics.stopVisible, `Stop button must be visible at ${dims.name}`);
+    assert.ok(metrics.targetVisible, `Target select must be visible at ${dims.name}`);
+    assert.ok(metrics.stacked, `Side panel must be stacked below canvas at ${dims.name}`);
+    assert.ok(metrics.noClip, `Workspace must not clip horizontally at ${dims.name}`);
+    await ui.screenshot(`j_split_${dims.name}_panel_stacked`);
+
+    // Panel toggle hides it
+    await ui.evaluate(`document.querySelector('.editors .editor-area.focused .gcn-panel-toggle')?.click()`);
+    await delay(300);
+    const hidden = await ui.evaluate(`!document.querySelector('.editors .editor-area.focused .gcn-side')`);
+    assert.ok(hidden, `Panel toggle must hide side panel at ${dims.name}`);
+    await ui.screenshot(`j_split_${dims.name}_panel_hidden`);
+
+    // Panel toggle restores it
+    await ui.evaluate(`document.querySelector('.editors .editor-area.focused .gcn-panel-toggle')?.click()`);
+    await delay(300);
+  }
+
+  // Step k: convert main.py with main.gcn already open and dirty in the OTHER pane
+  console.log('Step k: convert main.py with main.gcn dirty in other pane -> prompt, cancel, discard');
+  try {
+    await main.evaluate(`testElectron.BrowserWindow.getAllWindows()[0].setSize(1400, 860)`);
+  } catch {}
+  await ui.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 860, deviceScaleFactor: 1, mobile: false });
+  await delay(400);
+
+  // In Pane 1 (left pane): open main.gcn
+  await ui.evaluate(`(() => {
+    const docked = Array.from(document.querySelectorAll('.editors .editor-area'));
+    docked[0]?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  })()`);
+  await delay(200);
+
+  await ui.evaluate(`(() => {
+    const row = Array.from(document.querySelectorAll('.tree-row.file')).find(r => r.querySelector('.name')?.textContent === 'main.gcn');
+    row?.click();
+  })()`);
+  await delay(600);
+  await wait(".editors .editor-area.focused .gcn-workspace");
+
+  // Add a node to main.gcn in Pane 1 to make it dirty
+  await clickAddNode('.editors .editor-area.focused');
+  await pickPreset('Integer');
+  await delay(400);
+
+  const mainNodesBefore = await ui.evaluate(`document.querySelectorAll('.editors .editor-area.focused .svelte-flow__node').length`);
+  assert.ok(mainNodesBefore >= 2, 'main.gcn should have added an Int node');
+  const mainDirtyBefore = await ui.evaluate(`(() => {
+    const tab = Array.from(document.querySelectorAll('.editors .editor-area.focused .tab button')).find(b => b.textContent.includes('main.gcn'));
+    return tab?.textContent.includes('•');
+  })()`);
+  assert.ok(mainDirtyBefore, 'main.gcn in Pane 1 must be dirty');
+
+  // In Pane 2 (right pane): activate main.py
+  await ui.evaluate(`(() => {
+    const docked = Array.from(document.querySelectorAll('.editors .editor-area'));
+    const p2Tab = Array.from(docked[1]?.querySelectorAll('.tab button') || []).find(b => b.textContent.includes('main.py'));
+    p2Tab?.click();
+  })()`);
+  await delay(400);
+
+  // In Pane 2: click Convert to .gcn
+  await ui.evaluate(`(() => {
+    const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Convert to .gcn'));
+    btn?.click();
+  })()`);
+  await delay(400);
+  await wait('.modal[role="dialog"]');
+
+  const promptMsg = await ui.evaluate(`document.querySelector('.modal[role="dialog"] p')?.textContent`);
+  console.log('Convert prompt text:', promptMsg);
+  assert.ok(promptMsg?.includes('แทนที่ด้วยผลการแปลง'), 'Prompt should ask about replacing with conversion result');
+  await ui.screenshot('k_convert_prompt_replace');
+
+  // Cancel -> abort, keep edits
+  await ui.evaluate(`Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.trim() === 'ยกเลิก')?.click()`);
+  await delay(400);
+
+  // Focus Pane 1 and verify edits remain intact
+  await ui.evaluate(`(() => {
+    const docked = Array.from(document.querySelectorAll('.editors .editor-area'));
+    const p1Tab = Array.from(docked[0]?.querySelectorAll('.tab button') || []).find(b => b.textContent.includes('main.gcn'));
+    p1Tab?.click();
+  })()`);
+  await delay(400);
+  const mainNodesAfterCancel = await ui.evaluate(`document.querySelectorAll('.editors .editor-area.focused .svelte-flow__node').length`);
+  assert.equal(mainNodesAfterCancel, mainNodesBefore, 'Edits in main.gcn must be kept after Cancel');
+
+  const mainTabCountAfterCancel = await ui.evaluate(`Array.from(document.querySelectorAll('.tab button')).filter(b => b.textContent.includes('main.gcn')).length`);
+  assert.equal(mainTabCountAfterCancel, 1, 'There must be exactly one main.gcn tab after Cancel');
+  await ui.screenshot('k_convert_canceled_keeps_edits');
+
+  // Switch back to Pane 2 (main.py) and convert again
+  await ui.evaluate(`(() => {
+    const docked = Array.from(document.querySelectorAll('.editors .editor-area'));
+    const p2Tab = Array.from(docked[1]?.querySelectorAll('.tab button') || []).find(b => b.textContent.includes('main.py'));
+    p2Tab?.click();
+  })()`);
+  await delay(400);
+
+  await ui.evaluate(`(() => {
+    const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Convert to .gcn'));
+    btn?.click();
+  })()`);
+  await delay(400);
+  await wait('.modal[role="dialog"]');
+
+  // Discard -> replaces in place (same pane, same index), activated
+  await ui.evaluate(`Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.trim() === 'ทิ้งกราฟ')?.click()`);
+  await delay(800);
+
+  // Verify: Pane 1 is active with main.gcn replaced with converted doc (has Print node from main.py)
+  const mainTabCountAfterDiscard = await ui.evaluate(`Array.from(document.querySelectorAll('.tab button')).filter(b => b.textContent.includes('main.gcn')).length`);
+  assert.equal(mainTabCountAfterDiscard, 1, 'There must be exactly one main.gcn tab after Discard');
+
+  const activeTabTitle = await ui.evaluate(`document.querySelector('.editors .editor-area.focused .tab.active button')?.textContent`);
+  assert.ok(activeTabTitle?.includes('main.gcn'), 'Replaced main.gcn tab should be active');
+
+  const hasPrintNode = await ui.evaluate(`(() => {
+    const heads = Array.from(document.querySelectorAll('.editors .editor-area.focused .gcn-node-head strong'));
+    return heads.some(h => h.textContent.includes('Print'));
+  })()`);
+  assert.ok(hasPrintNode, 'Converted main.gcn must contain a Print node');
+  await ui.screenshot('k_convert_discard_replaces_tab');
+
+  // Restore floating window for step h
+  await ui.evaluate(`(() => {
+    const fw = document.querySelector('.floating-window.editor-floating');
+    if (fw) fw.style.display = '';
+  })()`);
+  await delay(400);
+
   // Step h: close window with two dirty graphs -> multi dialog, Cancel keeps both
   console.log('Step h: close window with two dirty graphs -> multi dialog, Cancel keeps both');
   // Make sure both a.gcn and b.gcn are dirty
@@ -492,7 +697,7 @@ try {
   assert.ok(isAlive.dirtyCount >= 2, 'Both dirty graphs must remain intact');
   await ui.screenshot('h_close_cancel_keeps_both');
 
-  console.log('All smoke test steps (a-i) PASSED successfully!');
+  console.log('All smoke test steps (a-k) PASSED successfully!');
 } finally {
   try {
     child.kill('SIGKILL');
