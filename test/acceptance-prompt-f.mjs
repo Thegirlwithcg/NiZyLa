@@ -198,6 +198,7 @@ try {
   assert.equal(closeNodeBtn.title, 'Close the current Geometry Code Node');
 
   await ui.screenshot('m_07_toolbar_node_buttons');
+  await ui.screenshot('m_7');
   await ui.screenshot('m7');
 
   // m1: the menu with the Value flyout open (Integer / Float / String / Boolean)
@@ -224,6 +225,7 @@ try {
   assert.deepEqual(flyoutPresets, ['Integer', 'Float', 'String', 'Boolean']);
 
   await ui.screenshot('m_01_value_flyout');
+  await ui.screenshot('m_1');
   await ui.screenshot('m1');
 
   async function closeMenuIfOpen() {
@@ -292,6 +294,7 @@ try {
   assert.equal(selectedValueType, 'float', 'Selected literal type must be float');
 
   await ui.screenshot('m_02_keyboard_float_created');
+  await ui.screenshot('m_2');
   await ui.screenshot('m2');
 
   // m3: the flyout flipped to the left when the menu opens near the right edge
@@ -331,6 +334,7 @@ try {
   assert.ok(flyoutFlipped, 'Flyout must flip to the left when menu is near right edge');
 
   await ui.screenshot('m_03_flyout_flipped_left');
+  await ui.screenshot('m_3');
   await ui.screenshot('m3');
 
   // Close menu
@@ -367,6 +371,7 @@ try {
   assert.ok(searchResults.includes('Format String'), 'Search results should contain Format String');
 
   await ui.screenshot('m_04_search_for_flat_list');
+  await ui.screenshot('m_4');
   await ui.screenshot('m4');
 
   // Close menu
@@ -418,6 +423,7 @@ try {
   assert.equal(nodeCountAfterUndo, nodesBeforeM2, 'Ctrl+Z must undo the node creation');
 
   await ui.screenshot('m_05_right_click_tab_float');
+  await ui.screenshot('m_5');
   await ui.screenshot('m5');
 
   // Verify sole-floating disabled state
@@ -473,6 +479,7 @@ try {
   assert.deepEqual(dialogButtons, ['Cancel', "Don't Save", 'Save']);
 
   await ui.screenshot('m_06_unsaved_changes_dialog_english');
+  await ui.screenshot('m_6');
   await ui.screenshot('m6');
 
   // Click Don't Save to close dialog and tab cleanly

@@ -84,11 +84,11 @@ public class TargetInstanceHelper {
     }
 
     public static string ClickDialogButton(uint[] allowedPids, string action) {
-        string target = "\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01"; // ยกเลิก
+        string[] targets = new string[] { "Cancel", "\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01" }; // Cancel / ยกเลิก
         if (action == "discard" || action == "discard-all") {
-            target = "\u0e17\u0e34\u0e49\u0e07"; // Matches "ทิ้งกราฟ" and "ทิ้งทั้งหมด"
+            targets = new string[] { "Don't Save", "Discard All", "Discard", "\u0e17\u0e34\u0e49\u0e07" }; // Matches Don't Save, Discard, ทิ้ง
         } else if (action == "save" || action == "save-all") {
-            target = "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01"; // Matches "บันทึก" and "บันทึกทั้งหมด"
+            targets = new string[] { "Save All", "Save", "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01" }; // Matches Save, Save All, บันทึก
         }
         bool clicked = false;
         string info = "";
@@ -104,7 +104,14 @@ public class TargetInstanceHelper {
                     GetClassName(childHwnd, sbCls, 256);
                     string txt = sb.ToString();
                     string cls = sbCls.ToString();
-                    if (cls == "Button" && txt.Contains(target)) {
+                    bool match = false;
+                    foreach (string t in targets) {
+                        if (txt.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) {
+                            match = true;
+                            break;
+                        }
+                    }
+                    if (cls == "Button" && match) {
                         SendMessage(childHwnd, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
                         clicked = true;
                         info = "CLICKED:" + action;

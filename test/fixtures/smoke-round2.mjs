@@ -724,7 +724,7 @@ try {
 
   // If unsaved prompt appears, discard changes to switch to second.gcn
   await ui.evaluate(`(() => {
-    const discardBtn = Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.includes("Don't Save") || b.textContent.includes('ทิ้งกราฟ') || b.classList.contains('danger'));
+    const discardBtn = Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.includes("Don't Save") || b.classList.contains('danger'));
     discardBtn?.click();
   })()`);
   await delay(800);
@@ -768,7 +768,7 @@ try {
 
   // If unsaved prompt appears, discard changes
   await ui.evaluate(`(() => {
-    const discardBtn = Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.includes("Don't Save") || b.textContent.includes('ทิ้งกราฟ') || b.classList.contains('danger'));
+    const discardBtn = Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.includes("Don't Save") || b.classList.contains('danger'));
     discardBtn?.click();
   })()`);
   await delay(500);
