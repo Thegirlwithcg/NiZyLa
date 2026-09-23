@@ -1,4 +1,4 @@
-import { createChildGraph, getNodePorts, nodeDefinitions, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from './geometry.js';
+import { createChildGraph, getNodePorts, nodeDefinitions, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument, VARIABLE_NODE_TYPES } from './geometry.js';
 
 // Pure document editing + history for the Geometry Code UI. No DOM, no Svelte Flow objects:
 // every function takes a plain .gcn document and returns a new one (inputs are never mutated).
@@ -145,16 +145,26 @@ export function setViewportAtScope(doc, scopePath = [], viewport) {
 
 const preset = (id, label, category, type, data = {}) => ({ id, label, category, type, data });
 export const nodePresets = [
+  // 1. Value
   preset('int', 'Integer', 'Value', 'literal', { valueType: 'int', value: 0 }),
   preset('float', 'Float', 'Value', 'literal', { valueType: 'float', value: 0 }),
   preset('string', 'String', 'Value', 'literal', { valueType: 'string', value: '' }),
   preset('bool', 'Boolean', 'Value', 'literal', { valueType: 'bool', value: false }),
+
+  // 2. Variable
   preset('get', 'Get Variable', 'Variable', 'getVariable'),
   preset('set', 'Set Variable', 'Variable', 'setVariable'),
+
+  // 3. Math
   preset('add', 'Add', 'Math', 'binary', { operator: '+' }),
   preset('subtract', 'Subtract', 'Math', 'binary', { operator: '-' }),
   preset('multiply', 'Multiply', 'Math', 'binary', { operator: '*' }),
   preset('divide', 'Divide', 'Math', 'binary', { operator: '/' }),
+  preset('modulo', 'Modulo', 'Math', 'binary', { operator: '%' }),
+  preset('floor-divide', 'Floor Divide', 'Math', 'binary', { operator: '//' }),
+  preset('power', 'Power', 'Math', 'binary', { operator: '**' }),
+
+  // 4. Logic
   preset('equal', 'Equal', 'Logic', 'compare', { operator: '==' }),
   preset('not-equal', 'Not Equal', 'Logic', 'compare', { operator: '!=' }),
   preset('less', 'Less', 'Logic', 'compare', { operator: '<' }),
@@ -164,30 +174,56 @@ export const nodePresets = [
   preset('and', 'And', 'Logic', 'boolean', { operator: 'and' }),
   preset('or', 'Or', 'Logic', 'boolean', { operator: 'or' }),
   preset('not', 'Not', 'Logic', 'boolean', { operator: 'not' }),
+
+  // 5. Control
   preset('if', 'If / Else', 'Control', 'if'),
   preset('for', 'For Range', 'Control', 'forRange'),
+  preset('for-each', 'For Each', 'Control', 'forEach'),
   preset('while', 'While', 'Control', 'while'),
-  preset('print', 'Print', 'Output', 'print'),
+  preset('break', 'Break', 'Control', 'break'),
+  preset('continue', 'Continue', 'Control', 'continue'),
+
+  // 6. Input / Output
+  preset('print', 'Print', 'Input / Output', 'print'),
+  preset('input', 'Input', 'Input / Output', 'input'),
+
+  // 7. Text
   preset('fstring', 'F-String', 'Text', 'formatText', { style: 'fstring', template: 'Value: {x}' }),
   preset('format-string', 'Format String', 'Text', 'formatText', { style: 'format', template: 'Value: {x}' }),
   preset('concat-text', 'Concat Text', 'Text', 'formatText', { style: 'concat', template: 'Value: {x}' }),
+
+  // 8. Convert
+  preset('to-int', 'To Int', 'Convert', 'convert', { toType: 'int' }),
+  preset('to-float', 'To Float', 'Convert', 'convert', { toType: 'float' }),
+  preset('to-string', 'To String', 'Convert', 'convert', { toType: 'string' }),
+
+  // 9. Collection
   preset('list', 'List', 'Collection', 'list', { itemCount: 0 }),
   preset('array', 'Array', 'Collection', 'array', { elementType: 'int', itemCount: 0 }),
   preset('dict', 'Dictionary', 'Collection', 'dict', { entries: [] }),
   preset('get-item', 'Get Item', 'Collection', 'getItem'),
   preset('set-item', 'Set Item', 'Collection', 'setItem'),
+  preset('append', 'Append', 'Collection', 'append'),
+  preset('length', 'Length', 'Collection', 'length'),
+  preset('contains', 'Contains', 'Collection', 'contains'),
 
-  // v2 presets
+  // 10. Function
   preset('function', 'Function', 'Function', 'functionDef', { name: 'my_function', parameters: [], returnType: 'any' }),
   preset('call', 'Call Function', 'Function', 'functionCall', { name: 'call', argumentNames: [] }),
   preset('parameter', 'Parameter', 'Function', 'parameter', { parameterId: '', name: 'param', paramType: 'any' }),
   preset('return', 'Return', 'Function', 'return', { hasValue: true }),
+
+  // 11. Class
   preset('class', 'Class', 'Class', 'classDef', { name: 'MyClass', baseClass: '' }),
   preset('instantiate', 'New Instance', 'Class', 'instantiate', { className: 'MyClass', argumentNames: [] }),
+  preset('get-member', 'Get Member', 'Class', 'getMember', { memberName: '' }),
+  preset('set-member', 'Set Member', 'Class', 'setMember', { memberName: '' }),
+
+  // 12. Module
   preset('import', 'Import', 'Module', 'import', { importType: 'module', module: '', names: [] }),
   preset('symbol', 'Symbol', 'Module', 'symbolRef', { symbol: '' }),
-  preset('get-member', 'Get Member', 'Member', 'getMember', { memberName: '' }),
-  preset('set-member', 'Set Member', 'Member', 'setMember', { memberName: '' }),
+
+  // 13. Code
   preset('code-stmt', 'Code (Statement)', 'Code', 'codeNode', { codeKind: 'statement', code: 'pass', language: 'python' }),
   preset('code-expr', 'Code (Expression)', 'Code', 'codeNode', { codeKind: 'expression', code: 'None', language: 'python' }),
   preset('code-block', 'Code (Block)', 'Code', 'codeNode', { codeKind: 'block', code: 'pass', language: 'python' })
@@ -201,7 +237,7 @@ export function addNode(doc, presetId, position) {
   const item = nodePresets.find((p) => p.id === presetId);
   if (!item) return null;
   const data = { ...nodeDefinitions[item.type].defaults, ...item.data };
-  if (item.type === 'getVariable' || item.type === 'setVariable') data.variableId = doc.variables[0]?.id ?? '';
+  if (item.type === 'getVariable' || item.type === 'setVariable' || item.type === 'forEach') data.variableId = doc.variables[0]?.id ?? '';
   if (item.type === 'forRange') data.variableId = doc.variables.find((v) => v.type === 'int')?.id ?? '';
   if (['functionDef', 'classDef'].includes(item.type) && !data.graph) {
     data.graph = createChildGraph();
@@ -418,8 +454,10 @@ export function checkConnection(graph, { source, sourceHandle, target, targetHan
   const from = graph.nodes.find((n) => n.id === source);
   const to = graph.nodes.find((n) => n.id === target);
   if (!from || !to) return { ok: false, message: 'Connection refers to a missing node.' };
-  const out = getNodePorts(from, graph.variables).find((p) => p.id === sourceHandle);
-  const inn = getNodePorts(to, graph.variables).find((p) => p.id === targetHandle);
+  const fromPorts = getNodePorts(from, graph.variables);
+  const toPorts = getNodePorts(to, graph.variables);
+  const out = fromPorts.find((p) => p.id === sourceHandle && p.direction === 'out') || fromPorts.find((p) => p.id === sourceHandle);
+  const inn = toPorts.find((p) => p.id === targetHandle && p.direction === 'in') || toPorts.find((p) => p.id === targetHandle);
   if (!out || !inn) return { ok: false, message: 'Unknown port.' };
   if (out.direction !== 'out' || inn.direction !== 'in') return { ok: false, message: 'Connect an output to an input.' };
   if (out.kind !== inn.kind) return { ok: false, message: 'Execution and value ports cannot connect.' };
@@ -462,7 +500,7 @@ export function addEdgeAtScope(doc, scopePath, connection) {
 
 // ---- variables --------------------------------------------------------------------------------
 
-const referencing = ['getVariable', 'setVariable', 'forRange'];
+const referencing = VARIABLE_NODE_TYPES;
 export const variableUsage = (doc, id) => doc.nodes.filter((n) => referencing.includes(n.type) && n.data?.variableId === id).length;
 
 export function addVariable(doc) {

@@ -1,7 +1,9 @@
 export const valueTypes = ['int', 'float', 'string', 'bool'];
 export const variableTypes = [...valueTypes, 'list', 'dict'];
+export const VARIABLE_NODE_TYPES = ['getVariable', 'setVariable', 'forRange', 'forEach'];
+export const LOOP_VARIABLE_NODE_TYPES = ['forRange', 'forEach'];
 const operators = {
-  binary: ['+', '-', '*', '/'],
+  binary: ['+', '-', '*', '/', '%', '//', '**'],
   compare: ['==', '!=', '<', '<=', '>', '>='],
   boolean: ['and', 'or', 'not']
 };
@@ -17,7 +19,8 @@ const reservedNames = new Set(`False None True and as assert async await break c
   Signal Dictionary Array Variant Vector2 Vector2i Rect2 Rect2i Vector3 Vector3i
   Transform2D Vector4 Vector4i Plane Quaternion AABB Basis Transform3D Projection Color
   PackedByteArray PackedInt32Array PackedInt64Array PackedFloat32Array PackedFloat64Array
-  PackedStringArray PackedVector2Array PackedVector3Array PackedColorArray PackedVector4Array`.split(/\s+/));
+  PackedStringArray PackedVector2Array PackedVector3Array PackedColorArray PackedVector4Array
+  len input posmod fposmod floori floor printraw OS`.split(/\s+/));
 
 const port = (id, direction, kind, valueType = null, label = null) => ({ id, direction, kind, valueType, ...(label !== null && label !== undefined ? { label } : {}) });
 const input = (id, type, label = null) => port(id, 'in', 'value', type, label);
@@ -111,6 +114,10 @@ export const nodeDefinitions = {
   while: { label: 'While', category: 'Control', defaults: {}, ports: [...execution('body', 'next'), input('condition', 'bool')] },
   forRange: { label: 'For Range', category: 'Control', defaults: { variableId: '' },
     ports: [...execution('body', 'next'), input('start', 'int'), input('stop', 'int'), input('step', 'int')] },
+  forEach: { label: 'For Each', category: 'Control', defaults: { variableId: '' },
+    ports: [...execution('body', 'next'), input('items', 'any')] },
+  break: { label: 'Break', category: 'Control', defaults: {}, ports: [port('in', 'in', 'exec')] },
+  continue: { label: 'Continue', category: 'Control', defaults: {}, ports: [port('in', 'in', 'exec')] },
   print: {
     label: 'Print', category: 'Output',
     defaults: { argCount: 1 },
@@ -178,6 +185,31 @@ export const nodeDefinitions = {
     label: 'Set Item', category: 'Collection',
     defaults: {},
     ports: [...execution('next'), input('container', 'any'), input('key', 'any'), input('value', 'any')]
+  },
+  append: {
+    label: 'Append', category: 'Collection',
+    defaults: {},
+    ports: [...execution('next'), input('list', 'list'), input('value', 'any')]
+  },
+  length: {
+    label: 'Length', category: 'Collection',
+    defaults: {},
+    ports: [input('value', 'any'), output('int')]
+  },
+  contains: {
+    label: 'Contains', category: 'Collection',
+    defaults: {},
+    ports: [input('item', 'any'), input('container', 'any'), output('bool')]
+  },
+  convert: {
+    label: 'Convert', category: 'Convert',
+    defaults: { toType: 'int' },
+    ports: (node) => [input('value', 'any'), output(['int', 'float', 'string'].includes(node.data?.toType) ? node.data.toType : 'int')]
+  },
+  input: {
+    label: 'Input', category: 'Input',
+    defaults: { prompt: '' },
+    ports: [output('string')]
   },
 
   // --- v2 nodes ---
@@ -354,8 +386,14 @@ function validateGraphShape(graph, path = '', isV1 = false) {
     if (Object.hasOwn(operators, node.type)) {
       check(operators[node.type].includes(data.operator), 'Unknown or missing operator.', location);
     }
-    if (['getVariable', 'setVariable', 'forRange'].includes(node.type)) {
+    if (VARIABLE_NODE_TYPES.includes(node.type)) {
       check(typeof data.variableId === 'string', 'variableId must be a string.', location);
+    }
+    if (node.type === 'convert') {
+      check(['int', 'float', 'string'].includes(data.toType), 'Convert toType must be int, float, or string.', location);
+    }
+    if (node.type === 'input') {
+      check(typeof data.prompt === 'string', 'Input prompt must be a string.', location);
     }
     if (node.type === 'functionDef') {
       check(typeof data.name === 'string' && data.name.trim().length > 0, 'Function requires a name.', location);
@@ -656,7 +694,7 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
         seenKeys.add(entry.key);
       }
     }
-    if (['getVariable', 'setVariable', 'forRange'].includes(node.type)) {
+    if (VARIABLE_NODE_TYPES.includes(node.type)) {
       const variable = accessibleVariables.get(node.data?.variableId);
       if (!variable) error('missing-variable', `Variable ${node.data?.variableId || '(unselected)'} does not exist.`, { nodeId: node.id });
       else if (node.type === 'forRange' && variable.type !== 'int') error('for-variable-type', 'For Range requires an int variable.', { nodeId: node.id });
@@ -680,7 +718,9 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     }
   }
 
-  const portMaps = new Map(graph.nodes.map((node) => [node.id, new Map(getNodePorts(node, [...accessibleVariables.values()]).map((p) => [p.id, p]))]));
+  const portInMaps = new Map(graph.nodes.map((node) => [node.id, new Map(getNodePorts(node, [...accessibleVariables.values()]).filter((p) => p.direction === 'in').map((p) => [p.id, p]))]));
+  const portOutMaps = new Map(graph.nodes.map((node) => [node.id, new Map(getNodePorts(node, [...accessibleVariables.values()]).filter((p) => p.direction === 'out').map((p) => [p.id, p]))]));
+  const portAllMaps = new Map(graph.nodes.map((node) => [node.id, new Map(getNodePorts(node, [...accessibleVariables.values()]).map((p) => [p.id, p]))]));
   const execOut = new Map(graph.nodes.map((node) => [node.id, []]));
   const valueOut = new Map(graph.nodes.map((node) => [node.id, []]));
   const incoming = new Map(graph.nodes.map((node) => [node.id, new Map()]));
@@ -692,8 +732,8 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
       error('missing-node', 'Edge refers to a missing node.', location);
       continue;
     }
-    const source = portMaps.get(edge.source).get(edge.sourceHandle);
-    const target = portMaps.get(edge.target).get(edge.targetHandle);
+    const source = portOutMaps.get(edge.source)?.get(edge.sourceHandle) || portAllMaps.get(edge.source)?.get(edge.sourceHandle);
+    const target = portInMaps.get(edge.target)?.get(edge.targetHandle) || portAllMaps.get(edge.target)?.get(edge.targetHandle);
     if (!source || !target) { error('missing-port', 'Edge refers to an unknown port.', location); continue; }
     if (source.direction !== 'out' || target.direction !== 'in') { error('port-direction', 'Connections must run from output to input.', location); continue; }
     if (source.kind !== target.kind) { error('port-kind', 'Execution and value ports cannot connect.', location); continue; }
@@ -726,7 +766,7 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     used.add(id);
     for (const edge of execOut.get(id) || []) pending.push(edge.target);
     for (const [handle, edge] of incoming.get(id) || []) {
-      if (portMaps.get(id)?.get(handle)?.kind === 'value') pending.push(edge.source);
+      if (portInMaps.get(id)?.get(handle)?.kind === 'value') pending.push(edge.source);
     }
   }
 
@@ -735,8 +775,8 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
       diagnostics.push(diagnostic('unused-node', 'Node is not used by Start and will not be generated.', { nodeId: node.id, scopePath }, 'warning'));
       continue;
     }
-    for (const p of portMaps.get(node.id)?.values() || []) {
-      if (p.direction === 'in' && p.kind === 'value' && !incoming.get(node.id).has(p.id)) {
+    for (const p of portInMaps.get(node.id)?.values() || []) {
+      if (p.kind === 'value' && !incoming.get(node.id).has(p.id)) {
         // Special case: optional inputs like method target or arguments can be checked
         error('missing-input', `Connect input ${p.label ?? p.id}.`, { nodeId: node.id });
       }
@@ -748,7 +788,7 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     const node = nodes.get(id);
     const types = {};
     for (const [handle, edge] of incoming.get(id) || []) {
-      if (portMaps.get(id)?.get(handle)?.kind === 'value') types[handle] = outputTypes.get(edge.source) ?? 'unknown';
+      if (portInMaps.get(id)?.get(handle)?.kind === 'value') types[handle] = outputTypes.get(edge.source) ?? 'unknown';
     }
     const ports = getNodePorts(node, [...accessibleVariables.values()], types);
     outputTypes.set(id, ports.find((p) => p.direction === 'out' && p.kind === 'value')?.valueType ?? 'unknown');
@@ -773,12 +813,31 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
   const scopes = new Map();
   for (const id of execOrder) {
     const node = nodes.get(id);
-    const scope = scopes.get(id) ?? new Set();
-    if (node.type === 'forRange' && scope.has(node.data?.variableId)) error('nested-for-variable', 'Nested For Range nodes must use different variables.', { nodeId: id });
+    const scope = scopes.get(id) ?? { loopVars: new Set(), inLoop: false };
+    if (LOOP_VARIABLE_NODE_TYPES.includes(node.type) && scope.loopVars.has(node.data?.variableId)) {
+      error('nested-for-variable', 'Nested loops must use different variables.', { nodeId: id });
+    }
     for (const edge of execOut.get(id) || []) {
-      if (node.type === 'forRange' && edge.sourceHandle === 'body') {
-        scopes.set(edge.target, new Set([...scope, node.data?.variableId]));
-      } else scopes.set(edge.target, scope);
+      const isLoopBody = edge.sourceHandle === 'body' && (node.type === 'forRange' || node.type === 'forEach' || node.type === 'while');
+      const nextLoopVars = isLoopBody && LOOP_VARIABLE_NODE_TYPES.includes(node.type) && node.data?.variableId
+        ? new Set([...scope.loopVars, node.data.variableId])
+        : new Set(scope.loopVars);
+      const nextInLoop = isLoopBody ? true : scope.inLoop;
+      scopes.set(edge.target, { loopVars: nextLoopVars, inLoop: nextInLoop });
+    }
+  }
+
+  for (const node of graph.nodes) {
+    if (used.has(node.id) && (node.type === 'break' || node.type === 'continue')) {
+      const scope = scopes.get(node.id);
+      if (!scope?.inLoop) {
+        error('loop-control-outside-loop', 'Break and Continue must be inside a loop body.', { nodeId: node.id });
+      }
+    }
+    if (node.type === 'input') {
+      if ((valueOut.get(node.id) || []).length > 1) {
+        error('input-reused', 'Input reads a new line each time it is used. Store it with Set Variable and read it with Get Variable.', { nodeId: node.id });
+      }
     }
   }
 

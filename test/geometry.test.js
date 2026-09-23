@@ -87,7 +87,7 @@ test('malformed JSON, unsupported format/version and invalid schema are rejected
     (d) => { d.nodes[0].type = 'constructor'; },
     (d) => { d.nodes[0].id = ' '; }, (d) => { d.nodes[0].position.x = '10'; },
     (d) => { d.nodes[0].data = []; },
-    (d) => { node(d, 'bad', 'binary', { operator: '%' }); },
+    (d) => { node(d, 'bad', 'binary', { operator: '^' }); },
     (d) => { node(d, 'bad', 'getVariable', { variableId: null }); },
     (d) => { d.edges.push({ id: 'bad' }); },
     (d) => { d.variables.push({ id: 'v', name: 'v', type: 'int', initialValue: '1' }); }
@@ -310,3 +310,76 @@ test('long chains validate without exhausting the JavaScript call stack', () => 
   }
   assert.deepEqual(errors(doc), []);
 });
+
+test('loop control (break/continue) must be inside a loop body', () => {
+  const doc = createGeometryDocument();
+  node(doc, 'brk', 'break');
+  edge(doc, 'start', 'next', 'brk', 'in');
+  assert.ok(codes(doc).includes('loop-control-outside-loop'));
+
+  const docCont = createGeometryDocument();
+  node(docCont, 'cnt', 'continue');
+  edge(docCont, 'start', 'next', 'cnt', 'in');
+  assert.ok(codes(docCont).includes('loop-control-outside-loop'));
+
+  // Break under If under While -> no error
+  const docNested = createGeometryDocument();
+  node(docNested, 'cond', 'literal', { valueType: 'bool', value: true });
+  node(docNested, 'loop', 'while');
+  edge(docNested, 'start', 'next', 'loop', 'in');
+  edge(docNested, 'cond', 'value', 'loop', 'condition');
+
+  node(docNested, 'ifNode', 'if');
+  edge(docNested, 'loop', 'body', 'ifNode', 'in');
+  edge(docNested, 'cond', 'value', 'ifNode', 'condition');
+
+  node(docNested, 'brkInner', 'break');
+  edge(docNested, 'ifNode', 'then', 'brkInner', 'in');
+  assert.deepEqual(errors(docNested), []);
+});
+
+test('input node can only be wired to a single input port', () => {
+  const doc = createGeometryDocument();
+  node(doc, 'inp', 'input', { prompt: 'Name: ' });
+  node(doc, 'p1', 'print');
+  edge(doc, 'start', 'next', 'p1', 'in');
+  edge(doc, 'inp', 'value', 'p1', 'value');
+  assert.deepEqual(errors(doc), []);
+
+  // Wiring inp to a second consumer causes input-reused
+  node(doc, 'p2', 'print');
+  edge(doc, 'p1', 'next', 'p2', 'in');
+  edge(doc, 'inp', 'value', 'p2', 'value');
+  assert.ok(codes(doc).includes('input-reused'));
+});
+
+test('forEach validates variable, nesting, and missing variable', () => {
+  const doc = createGeometryDocument();
+  doc.variables.push({ id: 'item', name: 'item', type: 'int', initialValue: 0 });
+  node(doc, 'loop', 'forEach', { variableId: 'item' });
+  edge(doc, 'start', 'next', 'loop', 'in');
+  node(doc, 'list', 'list', { itemCount: 0 });
+  edge(doc, 'list', 'value', 'loop', 'items');
+  assert.deepEqual(errors(doc), []);
+
+  // Missing variable
+  doc.nodes.find((n) => n.id === 'loop').data.variableId = '';
+  assert.ok(codes(doc).includes('missing-variable'));
+
+  // Non-existent variable
+  doc.nodes.find((n) => n.id === 'loop').data.variableId = 'nonexistent';
+  assert.ok(codes(doc).includes('missing-variable'));
+
+  // Nested with same variable
+  doc.nodes.find((n) => n.id === 'loop').data.variableId = 'item';
+  node(doc, 'inner', 'forEach', { variableId: 'item' });
+  edge(doc, 'list', 'value', 'inner', 'items');
+  edge(doc, 'loop', 'body', 'inner', 'in');
+  assert.ok(codes(doc).includes('nested-for-variable'));
+
+  // Nested with different variable -> OK
+  doc.variables.push({ id: 'item2', name: 'item2', type: 'int', initialValue: 0 });
+  doc.nodes.find((n) => n.id === 'inner').data.variableId = 'item2';
+  assert.deepEqual(errors(doc), []);
+});
+

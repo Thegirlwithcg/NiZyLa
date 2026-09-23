@@ -1,7 +1,7 @@
 <script>
   import { getContext } from 'svelte';
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
-  import { nodeDefinitions } from '../core/geometry.js';
+  import { nodeDefinitions, VARIABLE_NODE_TYPES } from '../core/geometry.js';
   import GeometryField from './GeometryField.svelte';
   import CodeEditor from './CodeEditor.svelte';
 
@@ -16,7 +16,7 @@
   const inputs = $derived(ports.filter((p) => p.direction === 'in'));
   const outputs = $derived(ports.filter((p) => p.direction === 'out'));
   const diagnostics = $derived(view.diagnostics.get(id) ?? []);
-  const isVariableNode = $derived(node && ['getVariable', 'setVariable', 'forRange'].includes(node.type));
+  const isVariableNode = $derived(node && VARIABLE_NODE_TYPES.includes(node.type));
   const variableChoices = $derived(node?.type === 'forRange' ? view.variables.filter((v) => v.type === 'int' || v.id === node.data?.variableId) : view.variables);
   const variableKnown = $derived(isVariableNode && view.variables.some((v) => v.id === node.data?.variableId));
   const operatorLabels = { and: 'And', or: 'Or', not: 'Not' };
@@ -80,6 +80,17 @@
           {#each variableChoices as variable (variable.id)}
             <option value={variable.id}>{variable.name || '(unnamed)'} : {variable.type}</option>
           {/each}
+        </select>
+
+      {:else if node.type === 'input'}
+        <input aria-label="Prompt (optional)" value={node.data?.prompt || ''} placeholder="Prompt (optional)"
+          oninput={onInputData('prompt')} onblur={ctx.endEdit} spellcheck="false" />
+
+      {:else if node.type === 'convert'}
+        <select aria-label="Convert to type" value={node.data?.toType || 'int'} onchange={onSelectData('toType')}>
+          <option value="int">int</option>
+          <option value="float">float</option>
+          <option value="string">string</option>
         </select>
 
       {:else if node.type === 'functionDef'}

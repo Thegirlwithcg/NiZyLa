@@ -676,3 +676,38 @@ test('pasteFragment: function body reading module variable remapped properly (sa
   const getPastedLocal = fnPastedLocal.data.graph.nodes.find((n) => n.type === 'getVariable');
   assert.equal(getPastedLocal.data.variableId, scoreId);
 });
+
+test('variableUsage counts forEach and copy/pasteFragment remaps forEach variableId', () => {
+  let doc = createGeometryDocument();
+  const v = addVariable(doc);
+  doc = updateVariable(v.doc, v.variableId, { name: 'item', type: 'int', initialValue: 0 });
+  const varId = v.variableId;
+
+  // Add forEach node
+  const fe = add(doc, 'for-each', 0, 0);
+  doc = setNodeData(fe.doc, fe.nodeId, { variableId: varId }).doc;
+
+  // variableUsage includes forEach
+  assert.equal(variableUsage(doc, varId), 1);
+
+  // Copy fragment with forEach
+  const clip = copyFragment(doc, [fe.nodeId], doc.variables);
+  assert.ok(clip);
+
+  // Paste into a target that has a variable with the same name 'item' but different ID
+  let target = createGeometryDocument();
+  target = {
+    ...target,
+    variables: [
+      { id: 'diff_item_id', name: 'item', type: 'int', initialValue: 10 }
+    ]
+  };
+
+  const pasted = pasteFragment(target, clip, { x: 50, y: 50 }, target.variables);
+  assert.equal(pasted.nodeIds.length, 1);
+  const pastedNode = pasted.doc.nodes.find((n) => n.id === pasted.nodeIds[0]);
+  assert.equal(pastedNode.type, 'forEach');
+  assert.equal(pastedNode.data.variableId, 'diff_item_id');
+  assert.equal(variableUsage(pasted.doc, 'diff_item_id'), 1);
+});
+

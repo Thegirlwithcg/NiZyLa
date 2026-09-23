@@ -11,6 +11,7 @@ const targets = ['python', 'gdscript'];
 
 // ---- graph builders (real contract documents) ----
 const graph = (target = 'python') => Object.assign(createGeometryDocument(target, 1), { target });
+const graph2 = (target = 'python') => Object.assign(createGeometryDocument(target, 2), { target });
 function add(doc, id, type, data = {}) {
   doc.nodes.push({ id, type, position: { x: 0, y: 0 }, data: { ...nodeDefinitions[type].defaults, ...data } });
 }
@@ -313,10 +314,16 @@ writeFileSync(join(scratch, 'main.tscn'), '[gd_scene load_steps=2 format=3]\n\n[
 writeFileSync(join(scratch, 'harness.gd'), 'extends SceneTree\n\nfunc _init():\n    print("<<<BEGIN")\n    var scene = load("res://main.tscn").instantiate()\n    root.add_child(scene)\n    await process_frame\n    print("<<<END")\n    quit()\n');
 
 const lines = (text) => text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
-function runPython(code) {
+function runPython(code, inputStr = null) {
   const file = join(scratch, 'generated.py');
   writeFileSync(file, code, 'utf8');
-  const run = spawnSync(python, [file], { encoding: 'utf8', timeout: 30000, shell: false, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+  const run = spawnSync(python, [file], {
+    encoding: 'utf8',
+    timeout: 30000,
+    shell: false,
+    input: inputStr !== null ? inputStr : undefined,
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+  });
   assert.ifError(run.error);
   assert.equal(run.signal, null);
   assert.equal(run.status, 0, run.stderr);
@@ -328,9 +335,14 @@ function compilePython(code) {
   const run = spawnSync(python, ['-m', 'py_compile', file], { encoding: 'utf8', timeout: 30000, shell: false });
   assert.equal(run.status, 0, run.stderr);
 }
-function runGodot(code) {
+function runGodot(code, inputStr = null) {
   writeFileSync(join(scratch, 'generated.gd'), code, 'utf8');
-  return godotLines(spawnSync(godot, ['--headless', '--path', scratch, '--script', 'res://harness.gd'], { encoding: 'utf8', timeout: 90000, shell: false }));
+  return godotLines(spawnSync(godot, ['--headless', '--path', scratch, '--script', 'res://harness.gd'], {
+    encoding: 'utf8',
+    timeout: 90000,
+    shell: false,
+    input: inputStr !== null ? inputStr : undefined
+  }));
 }
 /** Validates a spawnSync result from the Godot harness; returns the lines printed between the markers. */
 function godotLines(run) {
@@ -421,7 +433,126 @@ const cases = [
     get(doc, 'gs', 's'); print(doc, 'show', 'gs');
     literal(doc, 'mixed', 'string', mixed); print(doc, 'show-mixed', 'mixed'); sequence(doc, 'show', 'show-mixed');
     return doc;
-  }, [...tricky.split('\n'), mixed]]
+  }, [...tricky.split('\n'), mixed]],
+  ['for each over list with break and continue', (target) => {
+    const doc = graph2(target);
+    variable(doc, 'x', 'x', 'int', 0);
+    add(doc, 'list', 'list', { itemCount: 4 });
+    for (const [idx, val] of [[0, 10], [1, 20], [2, 30], [3, 40]]) {
+      literal(doc, `lit-${idx}`, 'int', val);
+      wire(doc, `lit-${idx}`, 'value', 'list', `item_${idx}`);
+    }
+    add(doc, 'loop', 'forEach', { variableId: 'x' });
+    wire(doc, 'list', 'value', 'loop', 'items');
+
+    // if x == 20: continue
+    get(doc, 'gx20', 'x'); literal(doc, 'l20', 'int', 20);
+    operation(doc, 'eq20', 'compare', '==', 'gx20', 'l20');
+    add(doc, 'if20', 'if'); wire(doc, 'eq20', 'value', 'if20', 'condition');
+    add(doc, 'cnt', 'continue'); wire(doc, 'if20', 'then', 'cnt', 'in');
+
+    // if x == 40: break
+    get(doc, 'gx40', 'x'); literal(doc, 'l40', 'int', 40);
+    operation(doc, 'eq40', 'compare', '==', 'gx40', 'l40');
+    add(doc, 'if40', 'if'); wire(doc, 'eq40', 'value', 'if40', 'condition');
+    add(doc, 'brk', 'break'); wire(doc, 'if40', 'then', 'brk', 'in');
+
+    // print(x)
+    get(doc, 'gxShow', 'x'); print(doc, 'showX', 'gxShow');
+
+    sequence(doc, 'loop');
+    wire(doc, 'loop', 'body', 'if20', 'in');
+    wire(doc, 'if20', 'next', 'if40', 'in');
+    wire(doc, 'if40', 'next', 'showX', 'in');
+    return doc;
+  }, ['10', '30']],
+  ['append, length and contains', (target) => {
+    const doc = graph2(target);
+    variable(doc, 'items', 'items', 'list', []);
+
+    // append 5
+    add(doc, 'app1', 'append');
+    get(doc, 'g1', 'items'); wire(doc, 'g1', 'value', 'app1', 'list');
+    literal(doc, 'l5', 'int', 5); wire(doc, 'l5', 'value', 'app1', 'value');
+
+    // append 7
+    add(doc, 'app2', 'append');
+    get(doc, 'g2', 'items'); wire(doc, 'g2', 'value', 'app2', 'list');
+    literal(doc, 'l7', 'int', 7); wire(doc, 'l7', 'value', 'app2', 'value');
+
+    // print length
+    add(doc, 'len', 'length');
+    get(doc, 'g3', 'items'); wire(doc, 'g3', 'value', 'len', 'value');
+    print(doc, 'showLen', 'len');
+
+    // print contains(7)
+    add(doc, 'cont', 'contains');
+    get(doc, 'g4', 'items'); wire(doc, 'g4', 'value', 'cont', 'container');
+    literal(doc, 'l7b', 'int', 7); wire(doc, 'l7b', 'value', 'cont', 'item');
+    print(doc, 'showCont', 'cont');
+
+    sequence(doc, 'app1', 'app2', 'showLen', 'showCont');
+    return doc;
+  }, (target) => ['2', bool(target, true)]],
+  ['math modulo, floor divide and power', (target) => {
+    const doc = graph2(target);
+    // -7 % 3
+    literal(doc, 'neg7', 'int', -7); literal(doc, 'pos3', 'int', 3);
+    operation(doc, 'm1', 'binary', '%', 'neg7', 'pos3');
+    print(doc, 'p1', 'm1');
+
+    // 7 % -3
+    literal(doc, 'pos7', 'int', 7); literal(doc, 'neg3', 'int', -3);
+    operation(doc, 'm2', 'binary', '%', 'pos7', 'neg3');
+    print(doc, 'p2', 'm2');
+
+    // -7 // 2
+    literal(doc, 'neg7b', 'int', -7); literal(doc, 'pos2', 'int', 2);
+    operation(doc, 'm3', 'binary', '//', 'neg7b', 'pos2');
+    print(doc, 'p3', 'm3');
+
+    // 7.5 % 2
+    literal(doc, 'f75', 'float', 7.5); literal(doc, 'pos2b', 'int', 2);
+    operation(doc, 'm4', 'binary', '%', 'f75', 'pos2b');
+    print(doc, 'p4', 'm4');
+
+    // 2 ** 10
+    literal(doc, 'two', 'int', 2); literal(doc, 'ten', 'int', 10);
+    operation(doc, 'm5', 'binary', '**', 'two', 'ten');
+    print(doc, 'p5', 'm5');
+
+    sequence(doc, 'p1', 'p2', 'p3', 'p4', 'p5');
+    return doc;
+  }, ['2', '-2', '-4', '1.5', '1024']],
+  ['convert to int, float and string with concat', (target) => {
+    const doc = graph2(target);
+    // int("42") + 1
+    literal(doc, 's42', 'string', '42');
+    add(doc, 'cInt', 'convert', { toType: 'int' });
+    wire(doc, 's42', 'value', 'cInt', 'value');
+    literal(doc, 'one', 'int', 1);
+    operation(doc, 'add1', 'binary', '+', 'cInt', 'one');
+    print(doc, 'p1', 'add1');
+
+    // float("2.5") * 3
+    literal(doc, 's25', 'string', '2.5');
+    add(doc, 'cFloat', 'convert', { toType: 'float' });
+    wire(doc, 's25', 'value', 'cFloat', 'value');
+    literal(doc, 'three', 'int', 3);
+    operation(doc, 'mul3', 'binary', '*', 'cFloat', 'three');
+    print(doc, 'p2', 'mul3');
+
+    // Concat "n=" + str(5)
+    literal(doc, 'five', 'int', 5);
+    add(doc, 'cStr', 'convert', { toType: 'string' });
+    wire(doc, 'five', 'value', 'cStr', 'value');
+    add(doc, 'concat', 'formatText', { style: 'concat', template: 'n={s}' });
+    wire(doc, 'cStr', 'value', 'concat', '{s}');
+    print(doc, 'p3', 'concat');
+
+    sequence(doc, 'p1', 'p2', 'p3');
+    return doc;
+  }, ['43', '7.5', 'n=5']]
 ];
 
 for (const [target, runtime, available, reason] of [
@@ -569,3 +700,232 @@ test('Python codegen: emits global for root variables assigned inside functions'
   assert.ok(classPy.code);
   assert.ok(classPy.code.includes('global score'));
 });
+
+test('input runtime reads stdin and prints result in Python', { skip: python ? false : 'Python 3 not found' }, () => {
+  const doc = graph2('python');
+  add(doc, 'inp', 'input', { prompt: 'Name: ' });
+  add(doc, 'p', 'print');
+  wire(doc, 'start', 'next', 'p', 'in');
+  wire(doc, 'inp', 'value', 'p', 'value');
+  const code = codeFor(doc, 'python');
+  const out = runPython(code, 'Ada\n');
+  assert.ok(out.some((line) => line.includes('Ada')), JSON.stringify(out));
+});
+
+test('input runtime reads stdin and prints result in Godot', { skip: godot ? false : 'Godot 4 not found' }, () => {
+  const doc = graph2('gdscript');
+  add(doc, 'inp', 'input', { prompt: 'Name: ' });
+  add(doc, 'p', 'print');
+  wire(doc, 'start', 'next', 'p', 'in');
+  wire(doc, 'inp', 'value', 'p', 'value');
+  const code = codeFor(doc, 'gdscript');
+  const out = runGodot(code, 'Ada\n');
+  assert.ok(out.some((line) => line.includes('Ada')), JSON.stringify(out));
+});
+
+test('GDScript _gcn_input helper is emitted correctly based on scope', () => {
+  // Case 1: emitted once at root when Input used in root
+  const rootDoc = createGeometryDocument('gdscript', 2);
+  add(rootDoc, 'inp', 'input', { prompt: 'Enter: ' });
+  add(rootDoc, 'p', 'print');
+  wire(rootDoc, 'start', 'next', 'p', 'in');
+  wire(rootDoc, 'inp', 'value', 'p', 'value');
+  const rootCode = codeFor(rootDoc, 'gdscript');
+  const rootMatches = rootCode.match(/static func _gcn_input/g);
+  assert.equal(rootMatches?.length, 1);
+  assert.match(rootCode, /^static func _gcn_input/m);
+
+  // Case 2: emitted once inside class when Input used in class method
+  const classDoc = createGeometryDocument('gdscript', 2);
+  const classChildGraph = {
+    nodes: [
+      { id: 'c_start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+      { id: 'c_fn', type: 'functionDef', position: { x: 200, y: 0 }, data: {
+        name: 'ask', parameters: [], returnType: 'void',
+        graph: {
+          nodes: [
+            { id: 'f_start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+            { id: 'f_inp', type: 'input', position: { x: 100, y: 0 }, data: { prompt: 'Enter: ' } },
+            { id: 'f_p', type: 'print', position: { x: 200, y: 0 }, data: { argCount: 1 } }
+          ],
+          edges: [
+            { id: 'fe1', source: 'f_start', sourceHandle: 'next', target: 'f_p', targetHandle: 'in' },
+            { id: 'fe2', source: 'f_inp', sourceHandle: 'value', target: 'f_p', targetHandle: 'value' }
+          ],
+          variables: [],
+          viewport: { x: 0, y: 0, zoom: 1 }
+        }
+      }}
+    ],
+    edges: [],
+    variables: [],
+    viewport: { x: 0, y: 0, zoom: 1 }
+  };
+  classDoc.nodes.push({
+    id: 'cls1',
+    type: 'classDef',
+    position: { x: 100, y: 0 },
+    data: { name: 'Dialog', baseClass: '', graph: classChildGraph }
+  });
+  const classCode = codeFor(classDoc, 'gdscript');
+  const classMatches = classCode.match(/static func _gcn_input/g);
+  assert.equal(classMatches?.length, 1);
+  assert.doesNotMatch(classCode, /^static func _gcn_input/m);
+  assert.match(classCode, /^    static func _gcn_input/m);
+
+  // Case 3: emitted in both when used in both
+  const bothDoc = structuredClone(classDoc);
+  add(bothDoc, 'root_inp', 'input', { prompt: 'Root: ' });
+  add(bothDoc, 'root_p', 'print');
+  wire(bothDoc, 'start', 'next', 'root_p', 'in');
+  wire(bothDoc, 'root_inp', 'value', 'root_p', 'value');
+  const bothCode = codeFor(bothDoc, 'gdscript');
+  const bothMatches = bothCode.match(/static func _gcn_input/g);
+  assert.equal(bothMatches?.length, 2);
+  assert.match(bothCode, /^static func _gcn_input/m);
+  assert.match(bothCode, /^    static func _gcn_input/m);
+
+  // Case 4: absent when Input not used
+  const noInputDoc = createGeometryDocument('gdscript', 2);
+  const noInputCode = codeFor(noInputDoc, 'gdscript');
+  assert.equal(noInputCode.includes('_gcn_input'), false);
+});
+
+test('Python function running For Each over a module variable emits global', () => {
+  const doc = createGeometryDocument('python', 2);
+  const scoreId = 'var-score';
+  doc.variables.push({ id: scoreId, name: 'score', type: 'int', initialValue: 0 });
+
+  const childGraph = {
+    nodes: [
+      { id: 'fn_start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+      { id: 'fn_list', type: 'list', position: { x: 100, y: 0 }, data: { itemCount: 0 } },
+      { id: 'fn_fe', type: 'forEach', position: { x: 200, y: 0 }, data: { variableId: scoreId } }
+    ],
+    edges: [
+      { id: 'fe1', source: 'fn_start', sourceHandle: 'next', target: 'fn_fe', targetHandle: 'in' },
+      { id: 'fe2', source: 'fn_list', sourceHandle: 'value', target: 'fn_fe', targetHandle: 'items' }
+    ],
+    variables: [],
+    viewport: { x: 0, y: 0, zoom: 1 }
+  };
+
+  const fnNode = {
+    id: 'fn1',
+    type: 'functionDef',
+    position: { x: 200, y: 0 },
+    data: { name: 'process_items', parameters: [], returnType: 'void', graph: childGraph }
+  };
+  doc.nodes.push(fnNode);
+
+  const res = generateGeometryCode(doc, 'python');
+  assert.ok(res.code);
+  assert.ok(res.code.includes('global score'), res.code);
+});
+
+test('exact-text codegen for new nodes in Python and GDScript', () => {
+  // 1. Math operators %, //, **
+  const mathDoc = graph2();
+  literal(mathDoc, 'a', 'int', 10);
+  literal(mathDoc, 'b', 'int', 3);
+  literal(mathDoc, 'fa', 'float', 10.5);
+  literal(mathDoc, 'fb', 'float', 3.0);
+  operation(mathDoc, 'mod', 'binary', '%', 'a', 'b');
+  operation(mathDoc, 'fmod', 'binary', '%', 'fa', 'fb');
+  operation(mathDoc, 'fdiv', 'binary', '//', 'a', 'b');
+  operation(mathDoc, 'ffdiv', 'binary', '//', 'fa', 'fb');
+  operation(mathDoc, 'pow', 'binary', '**', 'a', 'b');
+  for (const id of ['mod', 'fmod', 'fdiv', 'ffdiv', 'pow']) print(mathDoc, `p_${id}`, id);
+  sequence(mathDoc, 'p_mod', 'p_fmod', 'p_fdiv', 'p_ffdiv', 'p_pow');
+
+  const pyMath = codeFor(mathDoc, 'python');
+  assert.ok(pyMath.includes('print((10 % 3))'));
+  assert.ok(pyMath.includes('print((10.5 % 3.0))'));
+  assert.ok(pyMath.includes('print((10 // 3))'));
+  assert.ok(pyMath.includes('print((10.5 // 3.0))'));
+  assert.ok(pyMath.includes('print((10 ** 3))'));
+
+  const gdMath = codeFor(mathDoc, 'gdscript');
+  assert.ok(gdMath.includes('print(posmod(10, 3))'));
+  assert.ok(gdMath.includes('print(fposmod(10.5, 3.0))'));
+  assert.ok(gdMath.includes('print(floori(float(10) / 3))'));
+  assert.ok(gdMath.includes('print(floor(float(10.5) / 3.0))'));
+  assert.ok(gdMath.includes('print((10 ** 3))'));
+
+  // 2. forEach, break, continue
+  const loopDoc = graph2();
+  variable(loopDoc, 'item', 'item', 'int', 0);
+  add(loopDoc, 'list', 'list', { itemCount: 0 });
+  add(loopDoc, 'fe', 'forEach', { variableId: 'item' });
+  wire(loopDoc, 'list', 'value', 'fe', 'items');
+  add(loopDoc, 'brk', 'break');
+  add(loopDoc, 'cnt', 'continue');
+  sequence(loopDoc, 'fe');
+  wire(loopDoc, 'fe', 'body', 'brk', 'in');
+  const pyLoop = codeFor(loopDoc, 'python');
+  assert.ok(pyLoop.includes('for _gcn_i0 in []:\n    item = _gcn_i0\n    break'), pyLoop);
+  const gdLoop = codeFor(loopDoc, 'gdscript');
+  assert.ok(gdLoop.includes('for _gcn_i0 in []:\n        item = _gcn_i0\n        break'), gdLoop);
+
+  // 3. append, length, contains
+  const collDoc = graph2();
+  variable(collDoc, 'lst', 'lst', 'list', []);
+  add(collDoc, 'app', 'append');
+  get(collDoc, 'g_lst1', 'lst'); wire(collDoc, 'g_lst1', 'value', 'app', 'list');
+  literal(collDoc, 'val', 'int', 42); wire(collDoc, 'val', 'value', 'app', 'value');
+
+  add(collDoc, 'len', 'length');
+  get(collDoc, 'g_lst2', 'lst'); wire(collDoc, 'g_lst2', 'value', 'len', 'value');
+  print(collDoc, 'p_len', 'len');
+
+  add(collDoc, 'cntn', 'contains');
+  get(collDoc, 'g_lst3', 'lst'); wire(collDoc, 'g_lst3', 'value', 'cntn', 'container');
+  literal(collDoc, 'val2', 'int', 42); wire(collDoc, 'val2', 'value', 'cntn', 'item');
+  print(collDoc, 'p_cntn', 'cntn');
+
+  sequence(collDoc, 'app', 'p_len', 'p_cntn');
+
+  const pyColl = codeFor(collDoc, 'python');
+  assert.ok(pyColl.includes('lst.append(42)'));
+  assert.ok(pyColl.includes('print(len(lst))'));
+  assert.ok(pyColl.includes('print((42 in lst))'));
+
+  const gdColl = codeFor(collDoc, 'gdscript');
+  assert.ok(gdColl.includes('lst.append(42)'));
+  assert.ok(gdColl.includes('print(len(lst))'));
+  assert.ok(gdColl.includes('print((42 in lst))'));
+
+  // 4. convert (int, float, string)
+  const convDoc = graph2();
+  literal(convDoc, 'strLit', 'string', '123');
+  add(convDoc, 'toInt', 'convert', { toType: 'int' }); wire(convDoc, 'strLit', 'value', 'toInt', 'value');
+  add(convDoc, 'toFloat', 'convert', { toType: 'float' }); wire(convDoc, 'strLit', 'value', 'toFloat', 'value');
+  add(convDoc, 'toStr', 'convert', { toType: 'string' }); wire(convDoc, 'toInt', 'value', 'toStr', 'value');
+  print(convDoc, 'p_int', 'toInt');
+  print(convDoc, 'p_float', 'toFloat');
+  print(convDoc, 'p_str', 'toStr');
+  sequence(convDoc, 'p_int', 'p_float', 'p_str');
+
+  const pyConv = codeFor(convDoc, 'python');
+  assert.ok(pyConv.includes('print(int("123"))'));
+  assert.ok(pyConv.includes('print(float("123"))'));
+  assert.ok(pyConv.includes('print(str(int("123")))'));
+
+  const gdConv = codeFor(convDoc, 'gdscript');
+  assert.ok(gdConv.includes('print(int("123"))'));
+  assert.ok(gdConv.includes('print(float("123"))'));
+  assert.ok(gdConv.includes('print(str(int("123")))'));
+
+  // 5. input
+  const inpDoc = graph2();
+  add(inpDoc, 'inp', 'input', { prompt: 'Prompt: ' });
+  print(inpDoc, 'p_inp', 'inp');
+  sequence(inpDoc, 'p_inp');
+
+  const pyInp = codeFor(inpDoc, 'python');
+  assert.ok(pyInp.includes('print(input("Prompt: "))'));
+
+  const gdInp = codeFor(inpDoc, 'gdscript');
+  assert.ok(gdInp.includes('print(_gcn_input("Prompt: "))'));
+});
+

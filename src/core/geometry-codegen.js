@@ -1,4 +1,4 @@
-import { getNodePorts, validateGeometryDocument, migrateV1ToV2, parseTemplate } from './geometry.js';
+import { getNodePorts, validateGeometryDocument, migrateV1ToV2, parseTemplate, LOOP_VARIABLE_NODE_TYPES } from './geometry.js';
 
 // Limits keep output inside what Python (100 indent levels, 200 nested parentheses) accepts.
 const MAX_BLOCK_DEPTH = 50;
@@ -90,6 +90,15 @@ function render(node, sources, context) {
     text = `(not ${a?.text ?? 'False'})`;
   } else if (node.type === 'binary' && operator === '/' && target === 'gdscript') {
     text = `(float(${a?.text ?? '0'}) / ${b?.text ?? '1'})`;
+  } else if (node.type === 'binary' && operator === '%' && target === 'gdscript') {
+    text = types.a === 'int' && types.b === 'int'
+      ? `posmod(${a?.text ?? '0'}, ${b?.text ?? '0'})`
+      : `fposmod(${a?.text ?? '0'}, ${b?.text ?? '0'})`;
+  } else if (node.type === 'binary' && operator === '//' && target === 'gdscript') {
+    // ponytail: exact only below 2^53; switch to integer arithmetic if large ints matter
+    text = types.a === 'int' && types.b === 'int'
+      ? `floori(float(${a?.text ?? '0'}) / ${b?.text ?? '1'})`
+      : `floor(float(${a?.text ?? '0'}) / ${b?.text ?? '1'})`;
   } else if (node.type === 'binary' || node.type === 'compare' || node.type === 'boolean') {
     text = `(${a?.text ?? '0'} ${operator} ${b?.text ?? '0'})`;
   } else if (node.type === 'getMember') {
@@ -146,6 +155,22 @@ function render(node, sources, context) {
     const container = inputs.container?.text ?? 'None';
     const key = inputs.key?.text ?? 'None';
     text = `${container}[${key}]`;
+  } else if (node.type === 'length') {
+    text = `len(${inputs.value?.text ?? '[]'})`;
+  } else if (node.type === 'contains') {
+    text = `(${inputs.item?.text ?? 'None'} in ${inputs.container?.text ?? '[]'})`;
+  } else if (node.type === 'convert') {
+    const to = node.data?.toType;
+    const fn = to === 'float' ? 'float' : to === 'string' ? 'str' : 'int';
+    const defVal = to === 'float' ? '0.0' : to === 'string' ? '""' : '0';
+    text = `${fn}(${inputs.value?.text ?? defVal})`;
+  } else if (node.type === 'input') {
+    const prompt = node.data?.prompt;
+    if (target === 'python') {
+      text = prompt ? `input(${stringLiteral(prompt, 'python', location)})` : 'input()';
+    } else {
+      text = `_gcn_input(${stringLiteral(prompt || '', 'gdscript', location)})`;
+    }
   } else if (node.type === 'formatText') {
     const parsed = parseTemplate(node.data?.template ?? 'Value: {x}');
     const { parts, names } = parsed;
@@ -362,6 +387,12 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       emitLine(depth, `${container}[${key}] = ${val}`, id, scopePath);
       statementsEmitted++;
       schedule(chain(exit('next'), depth));
+    } else if (node.type === 'append') {
+      const list = inputVal('list').text;
+      const val = inputVal('value').text;
+      emitLine(depth, `${list}.append(${val})`, id, scopePath);
+      statementsEmitted++;
+      schedule(chain(exit('next'), depth));
     } else if (node.type === 'if') {
       emitLine(depth, `if ${inputVal('condition').text}:`, id, scopePath);
       statementsEmitted++;
@@ -383,6 +414,14 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       emitLine(depth + 1, `${varName} = ${iterator}`, id, scopePath);
       statementsEmitted++;
       schedule(chain(exit('body'), depth + 1), chain(exit('next'), depth));
+    } else if (node.type === 'forEach') {
+      const iterator = `_gcn_i${iterators++}`;
+      emitLine(depth, `for ${iterator} in ${inputVal('items').text}:`, id, scopePath);
+      const variable = localContext.variables.get(node.data?.variableId);
+      const varName = variable ? variable.name : (node.data?.variableId || 'v');
+      emitLine(depth + 1, `${varName} = ${iterator}`, id, scopePath);
+      statementsEmitted++;
+      schedule(chain(exit('body'), depth + 1), chain(exit('next'), depth));
     } else if (node.type === 'return') {
       if (node.data?.hasValue !== false) {
         emitLine(depth, `return ${inputVal('value').text}`, id, scopePath);
@@ -391,6 +430,14 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       }
       statementsEmitted++;
       // return ends control flow for this branch
+    } else if (node.type === 'break') {
+      emitLine(depth, 'break', id, scopePath);
+      statementsEmitted++;
+      // break ends control flow for this branch
+    } else if (node.type === 'continue') {
+      emitLine(depth, 'continue', id, scopePath);
+      statementsEmitted++;
+      // continue ends control flow for this branch
     } else if (node.type === 'functionCall') {
       const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
       const funcName = targetNode?.data?.name || node.data?.name || 'call';
@@ -479,7 +526,7 @@ function generateFunction(node, baseDepth, context, scopePath = [], isClassMetho
     const rootVars = context.rootVariablesList || [];
     const assignedIds = new Set();
     for (const n of node.data.graph.nodes || []) {
-      if ((n.type === 'setVariable' || n.type === 'forRange') && n.data?.variableId) {
+      if ((n.type === 'setVariable' || LOOP_VARIABLE_NODE_TYPES.includes(n.type)) && n.data?.variableId) {
         assignedIds.add(n.data.variableId);
       }
     }
@@ -548,6 +595,14 @@ function generateClass(node, baseDepth, context, scopePath = []) {
       }
     }
 
+    if (!python && scopeUsesInput(graph)) {
+      emitLine(baseDepth + 1, 'static func _gcn_input(prompt: String = "") -> String:', null, childScope);
+      emitLine(baseDepth + 2, 'printraw(prompt)', null, childScope);
+      emitLine(baseDepth + 2, 'return OS.read_string_from_stdin().trim_suffix("\\n").trim_suffix("\\r")', null, childScope);
+      emptyLine();
+      itemsEmitted++;
+    }
+
     // Statements from start inside class (if any)
     const stmtCount = generateGraphStatements(graph, baseDepth + 1, context, childScope, true);
     itemsEmitted += stmtCount;
@@ -557,6 +612,17 @@ function generateClass(node, baseDepth, context, scopePath = []) {
     emitLine(baseDepth + 1, 'pass', node.id, childScope);
   }
   emptyLine();
+}
+
+function scopeUsesInput(graph) {
+  if (!graph || !Array.isArray(graph.nodes)) return false;
+  for (const node of graph.nodes) {
+    if (node.type === 'input') return true;
+    if (node.type === 'functionDef' && node.data?.graph) {
+      if (scopeUsesInput(node.data.graph)) return true;
+    }
+  }
+  return false;
 }
 
 function hasExecutableStatements(graph) {
@@ -661,6 +727,12 @@ function generate(doc, target) {
       const readyFunc = workingDoc.nodes.find((n) => n.type === 'functionDef' && n.data?.name === '_ready');
       emitLine(0, 'extends Node');
       emptyLine();
+      if (scopeUsesInput(workingDoc)) {
+        emitLine(0, 'static func _gcn_input(prompt: String = "") -> String:');
+        emitLine(1, 'printraw(prompt)');
+        emitLine(1, 'return OS.read_string_from_stdin().trim_suffix("\\n").trim_suffix("\\r")');
+        emptyLine();
+      }
       emitLine(0, 'func _ready():', readyFunc?.id);
       if (readyFunc?.data?.graph) {
         const count = generateGraphStatements(readyFunc.data.graph, 1, context, [readyFunc.id]);
@@ -756,6 +828,13 @@ function generate(doc, target) {
     if (node.type === 'functionDef') {
       generateFunction(node, 0, context, [], false);
     }
+  }
+
+  if (!python && scopeUsesInput(workingDoc)) {
+    emitLine(0, 'static func _gcn_input(prompt: String = "") -> String:');
+    emitLine(1, 'printraw(prompt)');
+    emitLine(1, 'return OS.read_string_from_stdin().trim_suffix("\\n").trim_suffix("\\r")');
+    emptyLine();
   }
 
   // 5. Root statements from Start node

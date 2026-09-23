@@ -81,21 +81,30 @@ Each value output below has ID `value`; execution inputs have ID `in`.
 | `literal` | `{ valueType, value }` | none | out declared type |
 | `getVariable` | `{ variableId }` | none | out variable type |
 | `setVariable` | `{ variableId }` | in; out `next` | in `value`: variable type |
-| `binary` | `{ operator: '+' / '-' / '*' / '/' }` | none | in `a`, `b`: numbers; out inferred numeric type |
+| `binary` | `{ operator: '+' / '-' / '*' / '/' / '%' / '//' / '**' }` | none | in `a`, `b`: numbers; out inferred numeric type |
 | `compare` | `{ operator: '==' / '!=' / '<' / '<=' / '>' / '>=' }` | none | in `a`, `b`; out bool |
 | `boolean` | `{ operator: 'and' / 'or' / 'not' }` | none | bool in `a`, `b` (only `a` for not); out bool |
 | `if` | `{}` | in; out `then`, `else`, `next` | bool in `condition` |
 | `while` | `{}` | in; out `body`, `next` | bool in `condition` |
 | `forRange` | `{ variableId }` | in; out `body`, `next` | int in `start`, `stop`, `step` |
+| `forEach` | `{ variableId }` | in; out `body`, `next` | any in `iterable` |
+| `break` | `{}` | in | none |
+| `continue` | `{}` | in | none |
 | `print` | `{ argCount }` (default 1, 0..16) | in; out `next` | in `value`, `value_1`..`value_{n-1}`: any |
+| `input` | `{ prompt }` | none | out `string` |
 | `formatText` | `{ style, template }` | none | in `{name}`: any per placeholder; out declared `string` |
 | `list` | `{ itemCount }` (default 0, 0..64) | none | in `item_0`..: any; out `list` |
 | `array` | `{ elementType, itemCount }` (default int/0, 0..64) | none | in `item_0`..: elementType; out `list` |
 | `dict` | `{ entries: [{ id, key }] }` | none | in `{entry.id}` (labeled `key`): any; out `dict` |
 | `getItem` | `{}` | none | in `container`: any, `key`: any; out `any` |
 | `setItem` | `{}` | in; out `next` | in `container`: any, `key`: any, `value`: any |
+| `append` | `{}` | in; out `next` | in `container`: any, `value`: any |
+| `length` | `{}` | none | in `value`: any; out `int` |
+| `contains` | `{}` | none | in `container`: any, `item`: any; out `bool` |
+| `convert` | `{ targetType: 'int' / 'float' / 'string' }` | none | in `value`: any; out `targetType` |
 
 Defaults: int literal 0; binary `+`; compare `==`; boolean `and`;
+convert `int`; input prompt `""`;
 variable references `''` (unselected). An empty variable reference is a
 saveable graph error, not an invalid file shape.
 
@@ -143,6 +152,7 @@ Diagnostic codes: `invalid-json`, `invalid-format`, `unsupported-version`,
 `port-kind`, `input-connected`, `exec-output-connected`, `exec-cycle`,
 `value-cycle`, `unused-node`, `missing-input`, `type-mismatch`,
 `comparison-type`, `zero-step`, `nested-for-variable`,
+`loop-control-outside-loop`, `input-reused`,
 `invalid-template`, `duplicate-dict-key`,
 `gdscript-ready-conflict`, `gdscript-member-conflict`.
 

@@ -20,7 +20,7 @@ export const nodeHelp = {
     gdscript: 'var total: int = 0\ntotal = (total + 5)'
   },
   binary: {
-    summary: 'Performs arithmetic operations (+, -, *, /) on two numbers and outputs the result.',
+    summary: 'Performs arithmetic operations (+, -, *, /, %, //, **) on two numbers and outputs the result.',
     python: 'result = (10 + 20)',
     gdscript: 'var result = (10 + 20)'
   },
@@ -49,10 +49,30 @@ export const nodeHelp = {
     python: 'for i in range(0, 5, 1):\n    print(i)',
     gdscript: 'for i in range(0, 5, 1):\n    print(i)'
   },
+  forEach: {
+    summary: 'Iterates over elements of a collection or sequence, assigning each item to a variable.',
+    python: 'items = [1, 2, 3]\nfor item in items:\n    print(item)',
+    gdscript: 'var items = [1, 2, 3]\nfor item in items:\n    print(item)'
+  },
+  break: {
+    summary: 'Terminates the nearest enclosing loop immediately.',
+    python: 'while True:\n    break',
+    gdscript: 'while true:\n    break'
+  },
+  continue: {
+    summary: 'Skips the rest of the current loop iteration and moves to the next iteration.',
+    python: 'for i in range(5):\n    continue',
+    gdscript: 'for i in range(5):\n    continue'
+  },
   print: {
     summary: 'Outputs a value or expression to the console or standard output.',
     python: 'print("Hello, world!")',
     gdscript: 'print("Hello, world!")'
+  },
+  input: {
+    summary: 'Reads a line of text from standard input with an optional prompt. Note: GDScript Input reads the console, so the game must be run from a terminal.',
+    python: 'name = input("Name: ")',
+    gdscript: 'var name = _gcn_input("Name: ")'
   },
   functionDef: {
     summary: 'Defines a reusable function with parameters and return type. Contains a child graph for its body.',
@@ -138,5 +158,25 @@ export const nodeHelp = {
     summary: 'Assigns an element into a collection or dictionary at a specific index or key.',
     python: 'items = [1, 2]\nitems[0] = 99\nprint(items)',
     gdscript: 'var items = [1, 2]\nitems[0] = 99\nprint(items)'
+  },
+  append: {
+    summary: 'Appends a new value or item to the end of a list.',
+    python: 'items = [1, 2]\nitems.append(3)\nprint(items)',
+    gdscript: 'var items = [1, 2]\nitems.append(3)\nprint(items)'
+  },
+  length: {
+    summary: 'Calculates the number of elements in a collection, sequence, or string.',
+    python: 'items = [1, 2, 3]\ncount = len(items)\nprint(count)',
+    gdscript: 'var items = [1, 2, 3]\nvar count = len(items)\nprint(count)'
+  },
+  contains: {
+    summary: 'Checks whether an item exists in a collection, sequence, or container.',
+    python: 'items = [1, 2, 3]\nhas_two = (2 in items)\nprint(has_two)',
+    gdscript: 'var items = [1, 2, 3]\nvar has_two = (2 in items)\nprint(has_two)'
+  },
+  convert: {
+    summary: 'Converts a value to int, float, or string. Note: GDScript int("3.7") returns 3, while Python raises ValueError.',
+    python: 'x = int("42")\ny = float("3.14")\ns = str(100)',
+    gdscript: 'var x = int("42")\nvar y = float("3.14")\nvar s = str(100)'
   }
 };
