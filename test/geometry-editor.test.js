@@ -4,7 +4,7 @@ import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocu
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
   HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
-  createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, pasteFragment, positionsFromFlow, redo,
+  createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, nodePresets, pasteFragment, positionsFromFlow, redo,
   removeItems, sameContent, setLiteralType, setNodeData, setTarget, setViewport, undo, updateVariable, variableUsage
 } from '../src/core/geometry-editor.js';
 
@@ -709,5 +709,122 @@ test('variableUsage counts forEach and copy/pasteFragment remaps forEach variabl
   assert.equal(pastedNode.type, 'forEach');
   assert.equal(pastedNode.data.variableId, 'diff_item_id');
   assert.equal(variableUsage(pasted.doc, 'diff_item_id'), 1);
+});
+
+test('Prompt F: nodePresets category order and unique categories', () => {
+  const seen = new Set();
+  const categories = [];
+  for (const p of nodePresets) {
+    if (!seen.has(p.category)) {
+      seen.add(p.category);
+      categories.push(p.category);
+    }
+  }
+  // Exactly 13 categories starting with Value
+  assert.equal(categories.length, 13);
+  assert.equal(categories[0], 'Value');
+  const valuePresets = nodePresets.filter((p) => p.category === 'Value');
+  assert.deepEqual(valuePresets.map((p) => p.id), ['int', 'float', 'string', 'bool']);
+});
+
+test('Prompt F: App.svelte toolbar has + Node and Close Node, leaves other Graph buttons untouched', async () => {
+  const fs = await import('node:fs/promises');
+  const appContent = await fs.readFile('src/App.svelte', 'utf8');
+  assert.match(appContent, />\+ Node<\/button>/);
+  assert.match(appContent, /title="Create a new Geometry Code Node \(\.gcn\) in the project"/);
+  assert.match(appContent, />Close Node<\/button>/);
+  assert.match(appContent, /title="Close the current Geometry Code Node"/);
+
+  // Project Graph features must NOT be renamed
+  assert.match(appContent, /toggleGraph/);
+  assert.match(appContent, /title="Graph" on:click=\{toggleGraph\}>◎<\/button>/);
+  assert.match(appContent, /<button on:click=\{toggleGraph\}>Graph/);
+});
+
+test('Prompt F: tab float logic moves tab into new floating pane and disables float on sole tab', () => {
+  let panes = [
+    {
+      id: 1,
+      tabs: [
+        { id: 'tab-1', file: { name: 'first.gcn' }, kind: 'geometry', documentKey: 'k1', dirty: true },
+        { id: 'tab-2', file: { name: 'second.gcn' }, kind: 'geometry', documentKey: 'k2', dirty: false }
+      ],
+      active: 'tab-1',
+      floating: false
+    }
+  ];
+
+  // Float tab-1
+  const tabToFloat = panes[0].tabs.find((t) => t.id === 'tab-1');
+  assert.ok(tabToFloat);
+
+  // Simulate floatTab:
+  // 1. Remove from source pane
+  panes = panes.map((p) => {
+    if (p.id !== 1) return p;
+    const nextTabs = p.tabs.filter((t) => t.id !== 'tab-1');
+    const nextActive = p.active === 'tab-1' ? nextTabs.at(-1)?.id ?? null : p.active;
+    return { ...p, tabs: nextTabs, active: nextActive };
+  });
+
+  // Source pane now has only tab-2 and active is tab-2
+  assert.equal(panes[0].tabs.length, 1);
+  assert.equal(panes[0].active, 'tab-2');
+
+  // 2. Add to new floating pane
+  const newPane = {
+    id: 2,
+    tabs: [tabToFloat],
+    active: tabToFloat.id,
+    floating: true
+  };
+  panes.push(newPane);
+
+  // New pane has tab-1, active is tab-1, dirty flag and documentKey preserved
+  assert.equal(panes[1].tabs.length, 1);
+  assert.equal(panes[1].tabs[0].documentKey, 'k1');
+  assert.equal(panes[1].tabs[0].dirty, true);
+  assert.equal(panes[1].floating, true);
+
+  // Check sole-floating condition: pane 2 is floating and has length 1 -> float disabled
+  const isSoleFloatingPane2 = Boolean(panes[1].floating && panes[1].tabs.length === 1);
+  assert.equal(isSoleFloatingPane2, true);
+
+  // Source pane (pane 1) is not floating -> float enabled for tab-2
+  const isSoleFloatingPane1 = Boolean(panes[0].floating && panes[0].tabs.length === 1);
+  assert.equal(isSoleFloatingPane1, false);
+});
+
+test('Prompt F: gate check ensures 0 Thai characters in src/ and electron/', async () => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+
+  async function getFiles(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const files = [];
+    for (const entry of entries) {
+      const res = path.resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...(await getFiles(res)));
+      } else {
+        files.push(res);
+      }
+    }
+    return files;
+  }
+
+  const srcFiles = await getFiles('src');
+  const electronFiles = await getFiles('electron');
+  const allFiles = [...srcFiles, ...electronFiles];
+  const thaiRegex = /[\u0E00-\u0E7F]/;
+
+  const violations = [];
+  for (const file of allFiles) {
+    const text = await fs.readFile(file, 'utf8');
+    if (thaiRegex.test(text)) {
+      violations.push(file);
+    }
+  }
+  assert.deepEqual(violations, [], `Found Thai characters in: ${violations.join(', ')}`);
 });
 

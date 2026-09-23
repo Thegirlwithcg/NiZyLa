@@ -74,6 +74,7 @@
   let createBusy = false;
   let resolveGeometrySave = null;
   let contextMenu = null;
+  let tabMenu = null;
   let deleteTarget = null;
   let workspaceEl;
   let layoutDrag = null;
@@ -123,13 +124,13 @@
     windowControl('close');
   }
 
-  function promptUnsavedGeometry(tab, actionLabel = 'ดำเนินการต่อ') {
+  function promptUnsavedGeometry(tab, actionLabel = 'continuing') {
     if (!isTabDirty(tab)) return Promise.resolve('discard');
-    const name = tab?.file?.name || 'Scratch Graph';
+    const name = tab?.file?.name || 'Scratch Node';
     return new Promise((resolve) => {
       geometryConfirmDialog = {
-        title: 'งานที่ยังไม่ได้บันทึก',
-        message: `มีงานที่ยังไม่ได้บันทึกใน ${name} ก่อน${actionLabel} ต้องการบันทึกก่อนหรือไม่?`,
+        title: 'Unsaved Changes',
+        message: `${name} has unsaved changes. Save before ${actionLabel}?`,
         hasDrafts: !!tab?.hasDrafts,
         resolve
       };
@@ -238,12 +239,12 @@
     if (!tab || tab.kind !== 'geometry') return false;
     if (isSavingTabs.has(tab.id)) return false;
     if (tab.hasDrafts) {
-      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนบันทึก';
+      status = 'Please fix draft errors before saving.';
       return false;
     }
     if (!tab.file?.path || saveAs) {
       if (!project) {
-        status = 'กรุณาเปิดโฟลเดอร์โปรเจกต์ก่อนบันทึกกราฟ';
+        status = 'Please open a project folder before saving Geometry Code.';
         return false;
       }
       if (createDialog) return false;
@@ -268,11 +269,11 @@
         } : t)
       }));
       const refreshError = await refreshFileProject(filePath);
-      status = refreshError || `บันทึก ${tab.file.name} สำเร็จ`;
+      status = refreshError || `Saved ${tab.file.name} successfully.`;
       const current = panes.flatMap((p) => p.tabs).find((t) => t.id === tab.id);
       return current ? (!current.hasDrafts && sameDocument(current.doc, snapshot)) : false;
     } catch (err) {
-      status = `บันทึกล้มเหลว: ${err.message}`;
+      status = `Save failed: ${err.message}`;
       return false;
     } finally {
       const next = new Set(isSavingTabs);
@@ -290,7 +291,7 @@
   async function handleNewGeometryCode() {
     if (createBusy || createDialog) return;
     if (!project) {
-      status = 'กรุณาเปิดโฟลเดอร์โปรเจกต์ก่อนสร้างกราฟ';
+      status = 'Please open a project folder before creating Geometry Code.';
       return;
     }
     openCreateDialog('geometry');
@@ -310,7 +311,7 @@
       source = await api.readFile(file.path);
     }
 
-    status = `กำลังแปลง ${file.name} เป็น Geometry Code...`;
+    status = `Converting ${file.name} to Geometry Code...`;
     try {
       let res;
       if (isPy) {
@@ -328,7 +329,7 @@
       }
 
       if (!res || !res.ok || !res.document) {
-        status = `การแปลงล้มเหลว: ${res?.error || 'Unknown error'}`;
+        status = `Conversion failed: ${res?.error || 'Unknown error'}`;
         return;
       }
 
@@ -352,7 +353,7 @@
 
       if (existingTab) {
         if (isTabDirty(existingTab)) {
-          const decision = await promptUnsavedGeometry(existingTab, 'แทนที่ด้วยผลการแปลง');
+          const decision = await promptUnsavedGeometry(existingTab, 'replacing it with the conversion result');
           if (decision === 'cancel') return;
           if (decision === 'save') {
             const ok = await saveGeometry(existingTab);
@@ -390,7 +391,7 @@
           panes = panes.map((p) => p.id === targetPane.id ? { ...p, zIndex: topZIndex } : p);
           activeFloatingWindow = `editor-${targetPane.id}`;
         }
-        status = `แปลง ${file.name} สำเร็จ! แทนที่ .gcn ที่ยังไม่บันทึก`;
+        status = `Converted ${file.name} successfully! Replaced unsaved .gcn`;
       } else {
         const fileName = targetPath.split(/[/\\]/).pop();
         const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
@@ -411,37 +412,37 @@
           tabs: [...p.tabs.filter((t) => t.id !== targetPath), newTab]
         } : p);
         activePaneId = targetPane.id;
-        status = `แปลง ${file.name} สำเร็จ! เปิดเป็น .gcn ที่ยังไม่บันทึก`;
+        status = `Converted ${file.name} successfully! Opened as unsaved .gcn`;
       }
     } catch (err) {
-      status = `ข้อผิดพลาดในการแปลง: ${err.message}`;
+      status = `Conversion error: ${err.message}`;
     }
   }
 
   async function handleRunPython(tab = activeTab) {
     if (isPythonRunning || !tab || tab.kind !== 'geometry') return;
     if (tab.doc.target !== 'python') {
-      status = 'NiZyLa รองรับการรันเฉพาะภาษา Python ในรุ่นนี้';
+      status = 'NiZyLa only supports running Python in this version.';
       return;
     }
 
     if (tab.hasDrafts) {
-      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนรัน';
+      status = 'Please fix draft errors before running.';
       return;
     }
 
     const diags = validateGeometryDocument(tab.doc);
     const errors = diags.filter((d) => d.severity === 'error');
     if (errors.length > 0) {
-      status = `กราฟมีข้อผิดพลาด (${errors.length} ข้อ) ไม่สามารถรันได้`;
+      status = `Geometry Code has errors (${errors.length}) and cannot be run.`;
       return;
     }
 
-    status = 'กำลังเตรียม Terminal สำหรับรัน Python...';
+    status = 'Preparing terminal for Python run...';
     terminalVisible = true;
     await tick();
     await terminalPanelRef?.openRunTab('pending');
-    status = 'กำลังเริ่มต้นการรัน Python...';
+    status = 'Starting Python run...';
     try {
       const res = await api.runPython({
         document: tab.doc,
@@ -452,7 +453,7 @@
       });
 
       if (!res || !res.ok) {
-        status = `รันไม่สำเร็จ: ${res?.error || 'Unknown error'}`;
+        status = `Run failed: ${res?.error || 'Unknown error'}`;
         if (res?.noInterpreter) {
           showPreferences = true;
         }
@@ -462,9 +463,9 @@
       isPythonRunning = true;
       activeRunId = res.runId;
       await terminalPanelRef?.openRunTab(res.runId);
-      status = 'กำลังรันโปรแกรม...';
+      status = 'Running program...';
     } catch (err) {
-      status = `รันล้มเหลว: ${err.message}`;
+      status = `Run failed: ${err.message}`;
     }
   }
 
@@ -474,22 +475,22 @@
       await api.stopPython(activeRunId);
       isPythonRunning = false;
       activeRunId = null;
-      status = 'หยุดโปรแกรมแล้ว';
+      status = 'Program stopped.';
     } catch (err) {
-      status = `หยุดโปรแกรมไม่สำเร็จ: ${err.message}`;
+      status = `Failed to stop program: ${err.message}`;
     }
   }
 
   async function handleExportGeometry(tab = activeTab) {
     if (!tab || tab.kind !== 'geometry') return;
     if (tab.hasDrafts) {
-      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อน Export';
+      status = 'Please fix draft errors before export.';
       return;
     }
     const diagnostics = validateGeometryDocument(tab.doc);
     const errors = diagnostics.filter((d) => d.severity === 'error');
     if (errors.length > 0) {
-      status = `กราฟมีข้อผิดพลาด (${errors.length} ข้อ) ไม่สามารถ Export ได้`;
+      status = `Geometry Code has errors (${errors.length}) and cannot be exported.`;
       return;
     }
     try {
@@ -501,13 +502,13 @@
         document: tab.doc
       });
       if (res.canceled) {
-        status = 'ยกเลิกการ Export';
+        status = 'Export cancelled.';
       } else {
         const refreshError = await refreshFileProject(res.filePath);
-        status = refreshError || `Export สำเร็จ: ${res.filePath}`;
+        status = refreshError || `Export succeeded: ${res.filePath}`;
       }
     } catch (err) {
-      status = `Export ล้มเหลว: ${err.message}`;
+      status = `Export failed: ${err.message}`;
     }
   }
 
@@ -614,12 +615,13 @@
       if (activeRunId === runId) {
         isPythonRunning = false;
         activeRunId = null;
-        status = `โปรแกรมสิ้นสุด (exit code ${exitCode})`;
+        status = `Program finished (exit code ${exitCode})`;
       }
     });
 
     const closeContextMenuOnOutsideClick = (event) => {
       if (contextMenu && !event.target.closest('.context-menu')) contextMenu = null;
+      if (tabMenu && !event.target.closest('.context-menu')) tabMenu = null;
     };
     const keydown = async (event) => {
       const mod = event.metaKey || event.ctrlKey;
@@ -629,7 +631,7 @@
       if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
       if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
       if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
-      if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; }
+      if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; contextMenu = null; tabMenu = null; }
     };
     const beforeUnload = (event) => {
       const dirtyTabs = [];
@@ -733,7 +735,7 @@
       await Promise.all(owners.map((p) => refreshProject(p.rootPath)));
     } catch (error) {
       // The write already succeeded; do not report it as a failed save.
-      return `เขียนไฟล์สำเร็จ แต่ Refresh Explorer ไม่สำเร็จ: ${error.message}`;
+      return `File written successfully, but Refresh Explorer failed: ${error.message}`;
     }
   }
 
@@ -1041,7 +1043,7 @@
     for (const pane of panes) {
       for (const tab of pane.tabs) {
         if (tab.kind === 'geometry' && tab.file?.path && isSameOrDescendant(tab.file.path, closing.rootPath) && isTabDirty(tab)) {
-          const decision = await promptUnsavedGeometry(tab, 'ปิดโปรเจกต์');
+          const decision = await promptUnsavedGeometry(tab, 'closing the project');
           if (decision === 'cancel') return;
           if (decision === 'save') {
             const ok = await saveGeometry(tab);
@@ -1174,7 +1176,7 @@
     const pane = panes.find((p) => p.id === paneId);
     const tab = pane?.tabs.find((t) => t.id === tabId);
     if (tab && tab.kind === 'geometry' && isTabDirty(tab)) {
-      const decision = await promptUnsavedGeometry(tab, 'ปิดแท็บ');
+      const decision = await promptUnsavedGeometry(tab, 'closing this tab');
       if (decision === 'cancel') return;
       if (decision === 'save') {
         const ok = await saveGeometry(tab);
@@ -1189,10 +1191,43 @@
     });
   }
 
-  function addPane(floating = false) {
+  function openTabMenu(paneId, tabId, event) {
+    tabMenu = {
+      paneId,
+      tabId,
+      x: event.clientX,
+      y: event.clientY
+    };
+  }
+
+  function floatTab(paneId, tabId) {
+    const sourcePane = panes.find((p) => p.id === paneId);
+    const tab = sourcePane?.tabs.find((t) => t.id === tabId);
+    if (!sourcePane || !tab) return;
+
+    console.log('[floatTab] Panes before:', JSON.stringify(panes.map(p => ({ id: p.id, floating: p.floating, tabs: p.tabs.map(t => t.id), active: p.active }))));
+
+    panes = panes.map((p) => {
+      if (p.id !== paneId) return p;
+      const nextTabs = p.tabs.filter((t) => t.id !== tabId);
+      const nextActive = p.active === tabId ? nextTabs.at(-1)?.id ?? null : p.active;
+      return { ...p, tabs: nextTabs, active: nextActive };
+    });
+
+    const newPane = addPane(true, [tab]);
+    newPane.active = tab.id;
+    activePaneId = newPane.id;
+    activeFloatingWindow = `editor-${newPane.id}`;
+    status = `Floated tab ${tab.file?.name ?? ''} into window #${newPane.id}`;
+
+    console.log('[floatTab] Panes after:', JSON.stringify(panes.map(p => ({ id: p.id, floating: p.floating, tabs: p.tabs.map(t => t.id), active: p.active }))));
+  }
+
+  function addPane(floating = false, customTabs = null) {
     const newId = nextPaneId++;
     const currentActiveTab = activeTab;
-    const initialTabs = currentActiveTab && currentActiveTab.kind !== 'geometry' ? [{ ...currentActiveTab, dirty: false }] : [];
+    const defaultInitialTabs = currentActiveTab && currentActiveTab.kind !== 'geometry' ? [{ ...currentActiveTab, dirty: false }] : [];
+    const initialTabs = customTabs !== null ? customTabs : defaultInitialTabs;
     const offset = (panes.length % 6) * 32;
     const newPane = {
       id: newId,
@@ -1637,7 +1672,7 @@
     const relativePath = parent.path === project.rootPath ? name : `${parent.relativePath}/${name}`;
     const savingGraph = createDialog === 'geometry-save';
     if (savingGraph && savingGeometryTab?.hasDrafts) {
-      status = 'กรุณาแก้ไขข้อผิดพลาดในช่องกรอก (draft) ก่อนบันทึก';
+      status = 'Please fix draft errors before saving.';
       return;
     }
     createBusy = true;
@@ -1699,7 +1734,7 @@
         }
 
         const refreshError = await refreshFileProject(filePath);
-        status = refreshError || `บันทึกกราฟ ${gcnName.split('/').pop()} สำเร็จ`;
+        status = refreshError || `Saved Geometry Code ${gcnName.split('/').pop()} successfully.`;
         createBusy = false;
         closeCreateDialog(true);
         return;
@@ -2136,10 +2171,10 @@
         {/if}
         <button on:click={toggleGraph}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
         {#if isGeometryTab(activeTab)}
-          <button on:click={handleNewGeometryCode} title="Create a new Geometry Code graph in project">+ Graph</button>
+          <button on:click={handleNewGeometryCode} title="Create a new Geometry Code Node (.gcn) in the project">+ Node</button>
           <button on:click={() => saveGeometry(activeTab, true)} disabled={activeTab?.hasDrafts || isSavingTabs.has(activeTab?.id) || !!createDialog} title="Save a copy in the selected Explorer folder">Save As</button>
           <button on:click={() => handleExportGeometry(activeTab)} disabled={!canExportTab(activeTab)} title="Export Python / GDScript">Export</button>
-          <button on:click={closeGeometryGraph} title="Close current geometry graph">Close Graph</button>
+          <button on:click={closeGeometryGraph} title="Close the current Geometry Code Node">Close Node</button>
         {:else if activeFile && /\.(py|gd)$/i.test(activeFile.name)}
           <button class="primary" on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code (.gcn)">⇄ Convert to .gcn</button>
         {/if}
@@ -2300,7 +2335,7 @@
                 <div class="tabs-scroll">
                   {#if pane.tabs.length}
                     {#each pane.tabs as tab (tab.id)}
-                      <div class="tab tab-wrap" class:active={tab.id === pane.active}>
+                      <div class="tab tab-wrap" role="presentation" class:active={tab.id === pane.active} on:contextmenu|preventDefault={(e) => openTabMenu(pane.id, tab.id, e)}>
                         <button on:click|stopPropagation={() => activateTab(pane.id, tab.id)}>{tab.file.name}{tab.dirty ? ' •' : ''}</button>
                         <button class="tab-close" aria-label="Close tab" on:click|stopPropagation={() => closeTab(pane.id, tab.id)}>×</button>
                       </div>
@@ -2440,7 +2475,7 @@
           <div class="tabs-scroll">
             {#if pane.tabs.length}
               {#each pane.tabs as tab (tab.id)}
-                <div class="tab tab-wrap" class:active={tab.id === pane.active}>
+                <div class="tab tab-wrap" role="presentation" class:active={tab.id === pane.active} on:contextmenu|preventDefault={(e) => openTabMenu(pane.id, tab.id, e)}>
                   <button on:click|stopPropagation={() => activateTab(pane.id, tab.id)}>{tab.file.name}{tab.dirty ? ' •' : ''}</button>
                   <button class="tab-close" aria-label="Close tab" on:click|stopPropagation={() => closeTab(pane.id, tab.id)}>×</button>
                 </div>
@@ -2556,13 +2591,29 @@
       </div>
     {/if}
 
+    {#if tabMenu}
+      {@const pane = panes.find((p) => p.id === tabMenu.paneId)}
+      {@const tab = pane?.tabs.find((t) => t.id === tabMenu.tabId)}
+      {@const isSoleFloating = Boolean(pane?.floating && pane?.tabs.length === 1)}
+      {#if tab}
+        <div class="context-menu" style="left: {tabMenu.x}px; top: {tabMenu.y}px">
+          <div class="context-title">{tab.file?.name ?? 'Untitled'}</div>
+          <button
+            disabled={isSoleFloating}
+            title={isSoleFloating ? 'Already floating' : ''}
+            on:click={() => { floatTab(tabMenu.paneId, tabMenu.tabId); tabMenu = null; }}
+          >Float</button>
+        </div>
+      {/if}
+    {/if}
+
     {#if deleteTarget}
       <div class="modal-backdrop" role="presentation" on:click={() => (deleteTarget = null)}>
         <div class="modal" role="dialog" aria-label="Confirm delete">
           <h2>Delete {deleteTarget.type}?</h2>
           <p>This permanently removes <strong>{deleteTarget.relativePath}</strong>{deleteTarget.type === 'folder' ? ' and everything inside it' : ''}.</p>
           {#if panes.some(p => p.tabs.some(tab => tab.kind === 'geometry' && tab.file?.path && isSameOrDescendant(tab.file.path, deleteTarget.path) && isTabDirty(tab)))}
-            <p class="gcn-var-error">กราฟนี้มีงานที่ยังไม่ได้บันทึก การลบจะทำให้ข้อมูลที่ยังไม่ได้บันทึกหายไปอย่างถาวร</p>
+            <p class="gcn-var-error">This file has unsaved changes. Deleting it permanently discards them.</p>
           {/if}
           <div class="modal-actions">
             <button on:click={() => (deleteTarget = null)}>Cancel</button>
@@ -2592,12 +2643,12 @@
           <h2>{geometryConfirmDialog.title}</h2>
           <p>{geometryConfirmDialog.message}</p>
           {#if geometryConfirmDialog.hasDrafts}
-            <p class="gcn-var-error">มีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) ต้องแก้ไขก่อนบันทึก</p>
+            <p class="gcn-var-error">Some fields have invalid input (draft). Fix them before saving.</p>
           {/if}
           <div class="modal-actions">
-            <button type="button" on:click={() => handleGeometryConfirmChoice('cancel')}>ยกเลิก</button>
-            <button type="button" class="danger" on:click={() => handleGeometryConfirmChoice('discard')}>ทิ้งกราฟ</button>
-            <button type="button" class="primary" on:click={() => handleGeometryConfirmChoice('save')} disabled={geometryConfirmDialog.hasDrafts}>บันทึก</button>
+            <button type="button" on:click={() => handleGeometryConfirmChoice('cancel')}>Cancel</button>
+            <button type="button" class="danger" on:click={() => handleGeometryConfirmChoice('discard')}>Don't Save</button>
+            <button type="button" class="primary" on:click={() => handleGeometryConfirmChoice('save')} disabled={geometryConfirmDialog.hasDrafts}>Save</button>
           </div>
         </div>
       </div>

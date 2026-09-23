@@ -228,15 +228,15 @@ function createWindow() {
         const choice = dialog.showMessageBoxSync(mainWindow, {
           type: 'warning',
           title: 'NiZyLa',
-          message: `มีงานที่ยังไม่ได้บันทึกใน ${fileName}`,
-          detail: 'หากปิดหรือรีโหลดโดยไม่บันทึก การเปลี่ยนแปลงทั้งหมดจะหายไป',
-          buttons: ['บันทึก', 'ทิ้งกราฟ', 'ยกเลิก'],
+          message: `Unsaved changes in ${fileName}`,
+          detail: 'If you close or reload without saving, all changes will be lost.',
+          buttons: ['Save', "Don't Save", 'Cancel'],
           defaultId: 0,
           cancelId: 2
         });
 
         if (choice === 0) {
-          // บันทึก
+          // Save
           try {
             const diagnostics = validateGeometryDocument(docItem.document);
             const hasShapeErrors = diagnostics.some((d) =>
@@ -250,28 +250,28 @@ function createWindow() {
             dialog.showMessageBoxSync(mainWindow, {
               type: 'error',
               title: 'NiZyLa',
-              message: 'บันทึกไฟล์ไม่สำเร็จ',
+              message: 'Failed to save file',
               detail: saveErr.message,
-              buttons: ['ตกลง']
+              buttons: ['OK']
             });
             // Abort unload
           }
         } else if (choice === 1) {
-          // ทิ้งกราฟ
+          // Don't save
           event.preventDefault();
         }
         // choice === 2 is Cancel -> do not call event.preventDefault() -> abort unload
       } else {
         const detailMsg = hasDrafts
-          ? 'มีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) ไม่สามารถบันทึกได้ หากปิดหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?'
-          : 'หากปิดหรือรีโหลดหน้าต่าง การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งกราฟหรือไม่?';
+          ? 'Some fields contain invalid input (draft) and cannot be saved. If you close or reload, all changes will be lost. Do you want to discard changes?'
+          : 'If you close or reload the window, all changes will be lost. Do you want to discard changes?';
 
         const choice = dialog.showMessageBoxSync(mainWindow, {
           type: 'warning',
           title: 'NiZyLa',
-          message: 'มีกราฟที่ยังไม่ได้บันทึก',
+          message: 'Unsaved Geometry Code',
           detail: detailMsg,
-          buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
+          buttons: ['Cancel', "Don't Save"],
           defaultId: 0,
           cancelId: 0
         });
@@ -283,22 +283,22 @@ function createWindow() {
     } else {
       // 2+ documents
       const canSaveAll = docs.every((d) => d.filePath && !d.hasDrafts && d.document);
-      const fileNames = docs.map((d) => d.filePath ? path.basename(d.filePath) : 'Scratch Graph').join(', ');
+      const fileNames = docs.map((d) => d.filePath ? path.basename(d.filePath) : 'Scratch Node').join(', ');
       const hasAnyDrafts = docs.some((d) => d.hasDrafts);
 
       if (canSaveAll) {
         const choice = dialog.showMessageBoxSync(mainWindow, {
           type: 'warning',
           title: 'NiZyLa',
-          message: `มีงานที่ยังไม่ได้บันทึก ${docs.length} กราฟ (${fileNames})`,
-          detail: 'หากปิดหรือรีโหลดโดยไม่บันทึก การเปลี่ยนแปลงทั้งหมดจะหายไป',
-          buttons: ['บันทึกทั้งหมด', 'ทิ้งทั้งหมด', 'ยกเลิก'],
+          message: `Unsaved changes in ${docs.length} documents (${fileNames})`,
+          detail: 'If you close or reload without saving, all changes will be lost.',
+          buttons: ['Save All', 'Discard All', 'Cancel'],
           defaultId: 0,
           cancelId: 2
         });
 
         if (choice === 0) {
-          // บันทึกทั้งหมด
+          // Save all
           try {
             for (const docItem of docs) {
               const diagnostics = validateGeometryDocument(docItem.document);
@@ -314,34 +314,34 @@ function createWindow() {
             dialog.showMessageBoxSync(mainWindow, {
               type: 'error',
               title: 'NiZyLa',
-              message: 'บันทึกไฟล์ไม่สำเร็จ',
+              message: 'Failed to save file',
               detail: saveErr.message,
-              buttons: ['ตกลง']
+              buttons: ['OK']
             });
             // Abort unload
           }
         } else if (choice === 1) {
-          // ทิ้งทั้งหมด
+          // Discard all
           event.preventDefault();
         }
         // choice === 2 is Cancel -> abort unload
       } else {
         const detailMsg = hasAnyDrafts
-          ? `ไฟล์: ${fileNames}\nมีข้อมูลในช่องกรอกที่ไม่ถูกต้อง (draft) หรือเป็นกราฟใหม่ที่ยังไม่มีไฟล์ ไม่สามารถบันทึกได้ หากปิดหรือรีโหลด การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งทั้งหมดหรือไม่?`
-          : `ไฟล์: ${fileNames}\nหากปิดหรือรีโหลดหน้าต่าง การเปลี่ยนแปลงทั้งหมดจะหายไป ต้องการทิ้งทั้งหมดหรือไม่?`;
+          ? `Files: ${fileNames}\nSome fields contain invalid input (draft) or are unsaved new documents. If you close or reload, all changes will be lost. Do you want to discard all?`
+          : `Files: ${fileNames}\nIf you close or reload the window, all changes will be lost. Do you want to discard all?`;
 
         const choice = dialog.showMessageBoxSync(mainWindow, {
           type: 'warning',
           title: 'NiZyLa',
-          message: `มีงานที่ยังไม่ได้บันทึก ${docs.length} กราฟ`,
+          message: `Unsaved changes in ${docs.length} documents`,
           detail: detailMsg,
-          buttons: ['ยกเลิก', 'ทิ้งทั้งหมด'],
+          buttons: ['Cancel', 'Discard All'],
           defaultId: 0,
           cancelId: 0
         });
 
         if (choice === 1) {
-          // ทิ้งทั้งหมด
+          // Discard all
           event.preventDefault();
         }
       }

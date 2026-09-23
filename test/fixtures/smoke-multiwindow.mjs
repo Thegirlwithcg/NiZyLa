@@ -620,11 +620,11 @@ try {
 
   const promptMsg = await ui.evaluate(`document.querySelector('.modal[role="dialog"] p')?.textContent`);
   console.log('Convert prompt text:', promptMsg);
-  assert.ok(promptMsg?.includes('แทนที่ด้วยผลการแปลง'), 'Prompt should ask about replacing with conversion result');
+  assert.ok(promptMsg?.includes('replacing it with the conversion result') || promptMsg?.includes('แทนที่ด้วยผลการแปลง'), 'Prompt should ask about replacing with conversion result');
   await ui.screenshot('k_convert_prompt_replace');
 
   // Cancel -> abort, keep edits
-  await ui.evaluate(`Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.trim() === 'ยกเลิก')?.click()`);
+  await ui.evaluate(`Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.trim() === 'Cancel' || b.textContent.trim() === 'ยกเลิก')?.click()`);
   await delay(400);
 
   // Focus Pane 1 and verify edits remain intact
@@ -657,7 +657,7 @@ try {
   await wait('.modal[role="dialog"]');
 
   // Discard -> replaces in place (same pane, same index), activated
-  await ui.evaluate(`Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.trim() === 'ทิ้งกราฟ')?.click()`);
+  await ui.evaluate(`Array.from(document.querySelectorAll('.modal-actions button')).find(b => b.textContent.trim() === "Don't Save" || b.textContent.trim() === 'ทิ้งกราฟ')?.click()`);
   await delay(800);
 
   // Verify: Pane 1 is active with main.gcn replaced with converted doc (has Print node from main.py)

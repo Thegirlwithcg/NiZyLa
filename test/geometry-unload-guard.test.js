@@ -102,14 +102,14 @@ test('electron/main.js registers will-prevent-unload with synchronous dialog and
   assert.match(content, /dialog\.showMessageBoxSync\s*\(\s*mainWindow\s*,/);
 
   // Supports Save when file path is present, plus Discard and Cancel
-  assert.match(content, /buttons:\s*\[['"]บันทึก['"],\s*['"]ทิ้งกราฟ['"],\s*['"]ยกเลิก['"]\]/);
+  assert.match(content, /buttons:\s*\[['"]Save['"],\s*["']Don't Save["'],\s*['"]Cancel['"]\]/);
 
   // Supports multi-document Save all
-  assert.match(content, /buttons:\s*\[['"]บันทึกทั้งหมด['"],\s*['"]ทิ้งทั้งหมด['"],\s*['"]ยกเลิก['"]\]/);
+  assert.match(content, /buttons:\s*\[['"]Save All['"],\s*['"]Discard All['"],\s*['"]Cancel['"]\]/);
 
   // Also supports Cancel and Discard when scratch or drafts
-  assert.match(content, /buttons:\s*\[['"]ยกเลิก['"],\s*['"]ทิ้งกราฟ['"]\]/);
-  assert.match(content, /buttons:\s*\[['"]ยกเลิก['"],\s*['"]ทิ้งทั้งหมด['"]\]/);
+  assert.match(content, /buttons:\s*\[['"]Cancel['"],\s*["']Don't Save["']\]/);
+  assert.match(content, /buttons:\s*\[['"]Cancel['"],\s*['"]Discard All['"]\]/);
 
   // No window.close() or location.reload() inside will-prevent-unload
   const willPreventUnloadBlock = content.match(/mainWindow\.webContents\.on\('will-prevent-unload'[\s\S]*?\n  \}\);/)?.[0];
@@ -125,7 +125,7 @@ test('will-prevent-unload handler semantics: Save writes and unloads, Discard un
     if (canSave) {
       const choice = showMessageBoxSync({
         type: 'warning',
-        buttons: ['บันทึก', 'ทิ้งกราฟ', 'ยกเลิก'],
+        buttons: ['Save', "Don't Save", 'Cancel'],
         defaultId: 0,
         cancelId: 2
       });
@@ -140,7 +140,7 @@ test('will-prevent-unload handler semantics: Save writes and unloads, Discard un
     } else {
       const choice = showMessageBoxSync({
         type: 'warning',
-        buttons: ['ยกเลิก', 'ทิ้งกราฟ'],
+        buttons: ['Cancel', "Don't Save"],
         defaultId: 0,
         cancelId: 0
       });
@@ -239,7 +239,7 @@ test('multi-document unload guard handles 2+ dirty graphs correctly', () => {
     if (canSaveAll) {
       const choice = showMessageBoxSync({
         type: 'warning',
-        buttons: ['บันทึกทั้งหมด', 'ทิ้งทั้งหมด', 'ยกเลิก'],
+        buttons: ['Save All', 'Discard All', 'Cancel'],
         defaultId: 0,
         cancelId: 2
       });
@@ -256,7 +256,7 @@ test('multi-document unload guard handles 2+ dirty graphs correctly', () => {
     } else {
       const choice = showMessageBoxSync({
         type: 'warning',
-        buttons: ['ยกเลิก', 'ทิ้งทั้งหมด'],
+        buttons: ['Cancel', 'Discard All'],
         defaultId: 0,
         cancelId: 0
       });
@@ -309,7 +309,7 @@ test('multi-document unload guard handles 2+ dirty graphs correctly', () => {
     assert.equal(preventDefaultCalled, false);
   }
 
-  // 5: Scratch tab or draft present -> buttons are ['ยกเลิก', 'ทิ้งทั้งหมด']
+  // 5: Scratch tab or draft present -> buttons are ['Cancel', 'Discard All']
   const docsWithScratch = [
     { filePath: null, document: docA, hasDrafts: false },
     { filePath: '/project/b.gcn', document: docB, hasDrafts: false }
