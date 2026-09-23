@@ -40,6 +40,7 @@
 
   let status = 'Open a project folder to begin.';
   let graphVisible = true;
+  let graphAutoHidden = false;
   let graphFloating = false;
   let graphDetached = false;
   let graphFloat = { x: 320, y: 90, width: 760, height: 560, maximized: false, zIndex: 12 };
@@ -650,10 +651,13 @@
       event.preventDefault();
       event.returnValue = '';
     };
+    handleWindowResize();
+    window.addEventListener('resize', handleWindowResize);
     window.addEventListener('keydown', keydown);
     window.addEventListener('beforeunload', beforeUnload);
     window.addEventListener('pointerdown', closeContextMenuOnOutsideClick);
     return () => {
+      window.removeEventListener('resize', handleWindowResize);
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('beforeunload', beforeUnload);
       window.removeEventListener('pointerdown', closeContextMenuOnOutsideClick);
@@ -1439,6 +1443,20 @@
     terminalVisible = !terminalVisible;
   }
 
+  function handleWindowResize() {
+    if (window.innerWidth < 1100) {
+      if (graphVisible && !graphDetached) {
+        graphVisible = false;
+        graphAutoHidden = true;
+      }
+    } else {
+      if (graphAutoHidden) {
+        graphVisible = true;
+        graphAutoHidden = false;
+      }
+    }
+  }
+
   async function toggleGraph() {
     if (graphDetached) {
       if (api?.closeDetachedWindow) {
@@ -1447,10 +1465,12 @@
       graphDetached = false;
       graphVisible = true;
       graphFloating = false;
+      graphAutoHidden = false;
       status = 'Project Graph restored to main window';
       return;
     }
     graphVisible = !graphVisible;
+    graphAutoHidden = false;
   }
 
   function handleDetachedClosed({ windowId, state }) {
@@ -2365,7 +2385,7 @@
               <button on:click={() => toggleMaximizeFloatingWindow('graph')}>
                 {graphFloat.maximized || graphFullscreen ? 'Restore' : 'Full'}
               </button>
-              <button aria-label="Close graph" on:click={() => (graphVisible = false)}>×</button>
+              <button aria-label="Close graph" on:click={() => { graphVisible = false; graphAutoHidden = false; }}>×</button>
             </div>
           </div>
           {#if project}

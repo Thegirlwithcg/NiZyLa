@@ -483,11 +483,40 @@ try {
   await delay(400);
 
   for (const dims of [{ w: 1000, h: 680, name: '1000x680' }, { w: 1400, h: 860, name: '1400x860' }]) {
-    try {
-      await main.evaluate(`testElectron.BrowserWindow.getAllWindows()[0].setSize(${dims.w}, ${dims.h})`);
-    } catch {}
-    await ui.send('Emulation.setDeviceMetricsOverride', { width: dims.w, height: dims.h, deviceScaleFactor: 1, mobile: false });
-    await delay(600);
+    await main.evaluate(`(() => {
+      const win = testElectron.BrowserWindow.getAllWindows()[0];
+      if (win) {
+        win.unmaximize();
+        win.setSize(${dims.w}, ${dims.h});
+        win.setBounds({ width: ${dims.w}, height: ${dims.h} });
+      }
+    })()`);
+    await ui.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    for (let i = 0; i < 40; i++) {
+      const inner = await ui.evaluate(`({ w: window.innerWidth, h: window.innerHeight })`);
+      if (inner.w === dims.w && inner.h === dims.h) break;
+      await delay(50);
+    }
+    await delay(400);
+
+    if (dims.name === '1000x680') {
+      const layout1000 = await ui.evaluate(`(() => {
+        const ws = document.querySelector('.workspace');
+        const wsStyle = getComputedStyle(ws);
+        const sidebar = document.querySelector('.sidebar');
+        const editorAreas = Array.from(document.querySelectorAll('.editors .editor-area'));
+        const graphPanel = document.querySelector('.graph-panel');
+        return {
+          gridTemplateColumns: wsStyle.gridTemplateColumns,
+          sidebarWidth: sidebar?.getBoundingClientRect().width,
+          editorWidths: editorAreas.map(e => e.getBoundingClientRect().width),
+          graphPanelWidth: graphPanel?.getBoundingClientRect().width ?? 0,
+          sidebarWidthCustomProp: wsStyle.getPropertyValue('--sidebar-width'),
+          graphWidthCustomProp: wsStyle.getPropertyValue('--graph-width')
+        };
+      })()`);
+      console.log('Real window 1000x680 layout details:', layout1000);
+    }
 
     // Verify in focused pane (a.gcn)
     const metrics = await ui.evaluate(`(() => {
@@ -535,10 +564,15 @@ try {
 
   // Step k: convert main.py with main.gcn already open and dirty in the OTHER pane
   console.log('Step k: convert main.py with main.gcn dirty in other pane -> prompt, cancel, discard');
-  try {
-    await main.evaluate(`testElectron.BrowserWindow.getAllWindows()[0].setSize(1400, 860)`);
-  } catch {}
-  await ui.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 860, deviceScaleFactor: 1, mobile: false });
+  await main.evaluate(`(() => {
+    const win = testElectron.BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.unmaximize();
+      win.setSize(1400, 860);
+      win.setBounds({ width: 1400, height: 860 });
+    }
+  })()`);
+  await ui.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
   await delay(400);
 
   // In Pane 1 (left pane): open main.gcn

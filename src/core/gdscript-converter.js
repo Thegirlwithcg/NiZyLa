@@ -76,6 +76,50 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
 
   const X_STEP = 280;
 
+  function getBinaryOp(node) {
+    if (node?.type !== 'binary_operator') return null;
+    const opChild = node.children.find((c) => !c.isNamed);
+    return opChild ? opChild.type : null;
+  }
+
+  function flattenGdscriptAdd(node) {
+    if (node && node.type === 'binary_operator') {
+      const op = getBinaryOp(node);
+      if (op === '+') {
+        const left = node.childForFieldName('left') || node.namedChild(0);
+        const right = node.childForFieldName('right') || node.namedChild(1);
+        return [...flattenGdscriptAdd(left), ...flattenGdscriptAdd(right)];
+      }
+    }
+    return [node];
+  }
+
+  function allocateGdscriptPlaceholder(subExpr, placeholders, distinctPlaceholders, anonCounterRef) {
+    const isIdent = subExpr?.type === 'identifier';
+    const idName = isIdent ? source.slice(subExpr.startIndex, subExpr.endIndex).trim() : null;
+    const baseName = idName || `v${anonCounterRef.value++}`;
+
+    let chosenName = baseName;
+    const existing = placeholders.get(baseName);
+    if (existing) {
+      if (isIdent && existing.isIdent && existing.idName === idName) {
+        return { chosenName: baseName, isNew: false };
+      }
+      let suffix = 2;
+      while (placeholders.has(`${baseName}_${suffix}`)) {
+        suffix++;
+      }
+      chosenName = `${baseName}_${suffix}`;
+      placeholders.set(chosenName, { isIdent, idName: isIdent ? idName : undefined, node: subExpr });
+      distinctPlaceholders.push({ placeholderName: chosenName, node: subExpr });
+      return { chosenName, isNew: true };
+    }
+
+    placeholders.set(chosenName, { isIdent, idName: isIdent ? idName : undefined, node: subExpr });
+    distinctPlaceholders.push({ placeholderName: chosenName, node: subExpr });
+    return { chosenName, isNew: true };
+  }
+
   function buildExpression(node, graph, posX, posY) {
     if (!node) return null;
     const text = source.slice(node.startIndex, node.endIndex).trim();
@@ -172,9 +216,61 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
     }
 
     if (node.type === 'binary_operator') {
-      const opNodeText = source.slice(node.startIndex, node.endIndex);
-      const match = opNodeText.match(/([+\-*/%]|==|!=|<=|>=|<|>|and|or)/);
-      const op = match ? match[1] : '+';
+      const op = getBinaryOp(node) || (source.slice(node.startIndex, node.endIndex).match(/([+\-*/%]|==|!=|<=|>=|<|>|and|or)/)?.[1] ?? '+');
+
+      if (op === '+') {
+        const leaves = flattenGdscriptAdd(node);
+        const hasStrLit = leaves.some((l) => l?.type === 'string');
+        if (hasStrLit) {
+          let template = '';
+          const placeholders = new Map();
+          const distinctPlaceholders = [];
+          const anonRef = { value: 0 };
+
+          for (const leaf of leaves) {
+            if (leaf?.type === 'string') {
+              const raw = source.slice(leaf.startIndex, leaf.endIndex).trim();
+              const unquoted = raw.replace(/^("""|'''|"|')|("""|'''|"|')$/g, '');
+              template += unquoted.replace(/\{/g, '{{').replace(/\}/g, '}}');
+            } else {
+              let subExpr = leaf;
+              if (leaf?.type === 'call') {
+                const fnNode = leaf.namedChild(0);
+                const fnName = fnNode ? source.slice(fnNode.startIndex, fnNode.endIndex).trim() : '';
+                const argsNode = leaf.namedChild(1);
+                if (fnName === 'str' && argsNode && argsNode.namedChildCount === 1) {
+                  subExpr = argsNode.namedChild(0);
+                }
+              }
+              const { chosenName } = allocateGdscriptPlaceholder(subExpr, placeholders, distinctPlaceholders, anonRef);
+              template += `{${chosenName}}`;
+            }
+          }
+
+          const fmtNode = {
+            id: `fmt_${uuid().slice(0, 8)}`,
+            type: 'formatText',
+            position: { x: posX, y: posY },
+            data: { style: 'concat', template }
+          };
+          graph.nodes.push(fmtNode);
+
+          distinctPlaceholders.forEach(({ placeholderName, node: subNode }, index) => {
+            const subRes = buildExpression(subNode, graph, posX - 180, posY + (index * 40));
+            if (subRes) {
+              graph.edges.push({
+                id: `e_${uuid().slice(0, 8)}`,
+                source: subRes.node.id,
+                sourceHandle: subRes.outputHandle,
+                target: fmtNode.id,
+                targetHandle: `{${placeholderName}}`
+              });
+            }
+          });
+
+          return { node: fmtNode, outputHandle: 'value' };
+        }
+      }
 
       if (['+', '-', '*', '/'].includes(op)) {
         const bNode = {
@@ -585,16 +681,65 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
         if (exprChild && exprChild.type === 'call') {
           const fnChild = exprChild.namedChild(0);
           const fnName = fnChild ? source.slice(fnChild.startIndex, fnChild.endIndex).trim() : '';
+          const argsNode = exprChild.namedChild(1);
+          const argsList = [];
+          if (argsNode && argsNode.namedChildCount > 0) {
+            for (let i = 0; i < argsNode.namedChildCount; i++) {
+              argsList.push(argsNode.namedChild(i));
+            }
+          }
+
           if (fnName === 'print') {
-            const argsNode = exprChild.namedChild(1);
-            const pNode = { id: `print_${uuid().slice(0, 8)}`, type: 'print', position: { x: curX, y: curY }, data: {} };
+            if (argsList.length < 2) {
+              const pNode = { id: `print_${uuid().slice(0, 8)}`, type: 'print', position: { x: curX, y: curY }, data: { argCount: argsList.length } };
+              targetGraph.nodes.push(pNode);
+              targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: pNode.id, targetHandle: 'in' });
+
+              if (argsList.length === 1) {
+                const valRes = buildExpression(argsList[0], targetGraph, curX - 180, curY + 40);
+                if (valRes) {
+                  targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: valRes.node.id, sourceHandle: valRes.outputHandle, target: pNode.id, targetHandle: 'value' });
+                }
+              }
+              prevId = pNode.id;
+              prevHandle = 'next';
+              curX += X_STEP;
+              continue;
+            } else {
+              // 2+ args: codeNode statement (Godot print joins without spaces; the node emits prints)
+              const cNode = {
+                id: `code_${uuid().slice(0, 8)}`,
+                type: 'codeNode',
+                position: { x: curX, y: curY },
+                data: {
+                  codeKind: 'statement',
+                  code: text,
+                  language: 'gdscript',
+                  sourceLocation: { startLine: node.startPosition.row + 1, startCol: node.startPosition.column, endLine: node.endPosition.row + 1, endCol: node.endPosition.column }
+                }
+              };
+              targetGraph.nodes.push(cNode);
+              if (prevId) {
+                targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: cNode.id, targetHandle: 'in' });
+              }
+              prevId = cNode.id;
+              prevHandle = 'next';
+              curX += X_STEP;
+              continue;
+            }
+          }
+
+          if (fnName === 'prints') {
+            const count = argsList.length;
+            const pNode = { id: `print_${uuid().slice(0, 8)}`, type: 'print', position: { x: curX, y: curY }, data: { argCount: count } };
             targetGraph.nodes.push(pNode);
             targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: pNode.id, targetHandle: 'in' });
 
-            if (argsNode && argsNode.namedChildCount > 0) {
-              const valRes = buildExpression(argsNode.namedChild(0), targetGraph, curX - 180, curY + 40);
+            for (let i = 0; i < count; i++) {
+              const handle = i === 0 ? 'value' : `value_${i}`;
+              const valRes = buildExpression(argsList[i], targetGraph, curX - 180, curY + (i * 40));
               if (valRes) {
-                targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: valRes.node.id, sourceHandle: valRes.outputHandle, target: pNode.id, targetHandle: 'value' });
+                targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: valRes.node.id, sourceHandle: valRes.outputHandle, target: pNode.id, targetHandle: handle });
               }
             }
             prevId = pNode.id;

@@ -47,9 +47,80 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     return symbolDefinitions.get(name) || '';
   }
 
+  function flattenPythonAdd(expr) {
+    if (expr?.type === 'BinOp' && expr.operator === '+') {
+      return [...flattenPythonAdd(expr.left), ...flattenPythonAdd(expr.right)];
+    }
+    return [expr];
+  }
+
+  function allocatePlaceholder(subExpr, placeholders, distinctPlaceholders, anonCounterRef) {
+    const isName = subExpr?.type === 'Name' && Boolean(subExpr.id);
+    const baseName = isName ? subExpr.id : `v${anonCounterRef.value++}`;
+
+    let chosenName = baseName;
+    const existing = placeholders.get(baseName);
+    if (existing) {
+      if (isName && existing.isName && existing.id === subExpr.id) {
+        return { chosenName: baseName, isNew: false };
+      }
+      let suffix = 2;
+      while (placeholders.has(`${baseName}_${suffix}`)) {
+        suffix++;
+      }
+      chosenName = `${baseName}_${suffix}`;
+      placeholders.set(chosenName, { isName, id: isName ? subExpr.id : undefined, expr: subExpr });
+      distinctPlaceholders.push({ placeholderName: chosenName, expr: subExpr });
+      return { chosenName, isNew: true };
+    }
+
+    placeholders.set(chosenName, { isName, id: isName ? subExpr.id : undefined, expr: subExpr });
+    distinctPlaceholders.push({ placeholderName: chosenName, expr: subExpr });
+    return { chosenName, isNew: true };
+  }
+
   function buildExpression(expr, graph, posX, posY) {
     if (!expr) return null;
     const t = expr.type;
+
+    if (t === 'JoinedStr') {
+      let template = '';
+      const placeholders = new Map();
+      const distinctPlaceholders = [];
+      const anonRef = { value: 0 };
+
+      for (const part of (expr.parts || [])) {
+        if (typeof part.text === 'string') {
+          template += part.text.replace(/\{/g, '{{').replace(/\}/g, '}}');
+        } else if (part.expr) {
+          const { chosenName } = allocatePlaceholder(part.expr, placeholders, distinctPlaceholders, anonRef);
+          template += `{${chosenName}}`;
+        }
+      }
+
+      const fmtNode = {
+        id: `fmt_${uuid().slice(0, 8)}`,
+        type: 'formatText',
+        position: { x: posX, y: posY },
+        data: { style: 'fstring', template }
+      };
+      graph.nodes.push(fmtNode);
+
+      distinctPlaceholders.forEach(({ placeholderName, expr: subExpr }, index) => {
+        const subRes = buildExpression(subExpr, graph, posX - 180, posY + (index * 40));
+        if (subRes) {
+          graph.edges.push({
+            id: `e_${uuid().slice(0, 8)}`,
+            source: subRes.node.id,
+            sourceHandle: subRes.outputHandle,
+            target: fmtNode.id,
+            targetHandle: `{${placeholderName}}`
+          });
+        }
+      });
+
+      return { node: fmtNode, outputHandle: 'value' };
+    }
 
     if (t === 'Constant') {
       const node = {
@@ -97,6 +168,62 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       };
       graph.nodes.push(node);
       return { node, outputHandle: 'value' };
+    }
+
+    if (t === 'BinOp' && expr.operator === '+') {
+      const leaves = flattenPythonAdd(expr);
+      const hasStrConstant = leaves.some(
+        (leaf) => leaf?.type === 'Constant' && leaf.value_type === 'string'
+      );
+      if (hasStrConstant) {
+        let template = '';
+        const placeholders = new Map();
+        const distinctPlaceholders = [];
+        const anonRef = { value: 0 };
+
+        for (const leaf of leaves) {
+          if (leaf?.type === 'Constant' && leaf.value_type === 'string') {
+            const text = String(leaf.value ?? '');
+            template += text.replace(/\{/g, '{{').replace(/\}/g, '}}');
+          } else {
+            let subExpr = leaf;
+            if (
+              leaf?.type === 'Call' &&
+              leaf.func?.id === 'str' &&
+              leaf.args?.length === 1 &&
+              (!leaf.keywords || leaf.keywords.length === 0) &&
+              !leaf.has_keywords
+            ) {
+              subExpr = leaf.args[0];
+            }
+            const { chosenName } = allocatePlaceholder(subExpr, placeholders, distinctPlaceholders, anonRef);
+            template += `{${chosenName}}`;
+          }
+        }
+
+        const fmtNode = {
+          id: `fmt_${uuid().slice(0, 8)}`,
+          type: 'formatText',
+          position: { x: posX, y: posY },
+          data: { style: 'concat', template }
+        };
+        graph.nodes.push(fmtNode);
+
+        distinctPlaceholders.forEach(({ placeholderName, expr: subExpr }, index) => {
+          const subRes = buildExpression(subExpr, graph, posX - 180, posY + (index * 40));
+          if (subRes) {
+            graph.edges.push({
+              id: `e_${uuid().slice(0, 8)}`,
+              source: subRes.node.id,
+              sourceHandle: subRes.outputHandle,
+              target: fmtNode.id,
+              targetHandle: `{${placeholderName}}`
+            });
+          }
+        });
+
+        return { node: fmtNode, outputHandle: 'value' };
+      }
     }
 
     if (t === 'BinOp' && ['+', '-', '*', '/'].includes(expr.operator)) {
@@ -236,6 +363,93 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     }
 
     if (t === 'Call') {
+      const isFormatMethod =
+        expr.func?.type === 'Attribute' &&
+        expr.func.attr === 'format' &&
+        expr.func.value?.type === 'Constant' &&
+        expr.func.value.value_type === 'string' &&
+        typeof expr.func.value.value === 'string' &&
+        (!expr.keywords || expr.keywords.length === 0) &&
+        !expr.has_keywords &&
+        !expr.has_starred_args;
+
+      if (isFormatMethod) {
+        const templateStr = expr.func.value.value;
+        const formatRegex = /^(?:[^{}]|\{\{|\}\}|\{\})*$/;
+        if (formatRegex.test(templateStr)) {
+          let braceCount = 0;
+          for (let i = 0; i < templateStr.length; ) {
+            if (templateStr[i] === '{') {
+              if (i + 1 < templateStr.length && templateStr[i + 1] === '{') {
+                i += 2;
+              } else if (i + 1 < templateStr.length && templateStr[i + 1] === '}') {
+                braceCount++;
+                i += 2;
+              } else {
+                i++;
+              }
+            } else if (templateStr[i] === '}' && i + 1 < templateStr.length && templateStr[i + 1] === '}') {
+              i += 2;
+            } else {
+              i++;
+            }
+          }
+
+          const callArgs = expr.args || [];
+          if (braceCount === callArgs.length) {
+            let template = '';
+            let argIndex = 0;
+            const placeholders = new Map();
+            const distinctPlaceholders = [];
+            const anonRef = { value: 0 };
+
+            for (let i = 0; i < templateStr.length; ) {
+              if (templateStr[i] === '{') {
+                if (i + 1 < templateStr.length && templateStr[i + 1] === '{') {
+                  template += '{{';
+                  i += 2;
+                } else if (i + 1 < templateStr.length && templateStr[i + 1] === '}') {
+                  const subExpr = callArgs[argIndex++];
+                  const { chosenName } = allocatePlaceholder(subExpr, placeholders, distinctPlaceholders, anonRef);
+                  template += `{${chosenName}}`;
+                  i += 2;
+                } else {
+                  template += templateStr[i++];
+                }
+              } else if (templateStr[i] === '}' && i + 1 < templateStr.length && templateStr[i + 1] === '}') {
+                template += '}}';
+                i += 2;
+              } else {
+                template += templateStr[i++];
+              }
+            }
+
+            const fmtNode = {
+              id: `fmt_${uuid().slice(0, 8)}`,
+              type: 'formatText',
+              position: { x: posX, y: posY },
+              data: { style: 'format', template }
+            };
+            graph.nodes.push(fmtNode);
+
+            distinctPlaceholders.forEach(({ placeholderName, expr: subExpr }, index) => {
+              const subRes = buildExpression(subExpr, graph, posX - 180, posY + (index * 40));
+              if (subRes) {
+                graph.edges.push({
+                  id: `e_${uuid().slice(0, 8)}`,
+                  source: subRes.node.id,
+                  sourceHandle: subRes.outputHandle,
+                  target: fmtNode.id,
+                  targetHandle: `{${placeholderName}}`
+                });
+              }
+            });
+
+            return { node: fmtNode, outputHandle: 'value' };
+          }
+        }
+      }
+
       const funcName = expr.func?.id || expr.func?.attr || expr.segment || 'call';
       const isMethod = expr.func?.type === 'Attribute';
       const argNames = (expr.args || []).map((_, i) => `arg_${i}`);
@@ -479,11 +693,13 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       }
 
       if (k === 'Print') {
+        const values = stmt.values || (stmt.value ? [stmt.value] : []);
+        const count = values.length;
         const pNode = {
           id: `print_${uuid().slice(0, 8)}`,
           type: 'print',
           position: { x: curX, y: curY },
-          data: {}
+          data: { argCount: count }
         };
         targetGraph.nodes.push(pNode);
         targetGraph.edges.push({
@@ -494,15 +710,18 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           targetHandle: 'in'
         });
 
-        const val = buildExpression(stmt.value, targetGraph, curX - 180, curY + 60);
-        if (val) {
-          targetGraph.edges.push({
-            id: `e_${uuid().slice(0, 8)}`,
-            source: val.node.id,
-            sourceHandle: val.outputHandle,
-            target: pNode.id,
-            targetHandle: 'value'
-          });
+        for (let i = 0; i < count; i++) {
+          const handle = i === 0 ? 'value' : `value_${i}`;
+          const val = buildExpression(values[i], targetGraph, curX - 180, curY + (i * 40));
+          if (val) {
+            targetGraph.edges.push({
+              id: `e_${uuid().slice(0, 8)}`,
+              source: val.node.id,
+              sourceHandle: val.outputHandle,
+              target: pNode.id,
+              targetHandle: handle
+            });
+          }
         }
 
         prevId = pNode.id;

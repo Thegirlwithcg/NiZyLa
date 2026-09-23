@@ -90,6 +90,36 @@ def serialize_expr(node, source):
             "type": "Call",
             "func": func_expr,
             "args": args_expr,
+            "has_keywords": bool(node.keywords),
+            "has_starred_args": any(isinstance(a, ast.Starred) for a in node.args),
+            "segment": segment,
+            "lineno": getattr(node, 'lineno', 1)
+        }
+    if isinstance(node, ast.JoinedStr):
+        valid = True
+        for v in node.values:
+            if isinstance(v, ast.FormattedValue):
+                if v.conversion != -1 or v.format_spec is not None:
+                    valid = False
+                    break
+            elif not isinstance(v, ast.Constant):
+                valid = False
+                break
+        if valid:
+            parts = []
+            for v in node.values:
+                if isinstance(v, ast.Constant):
+                    parts.append({"text": str(v.value)})
+                elif isinstance(v, ast.FormattedValue):
+                    parts.append({"expr": serialize_expr(v.value, source)})
+            return {
+                "type": "JoinedStr",
+                "parts": parts,
+                "segment": segment,
+                "lineno": getattr(node, 'lineno', 1)
+            }
+        return {
+            "type": "OtherExpr",
             "segment": segment,
             "lineno": getattr(node, 'lineno', 1)
         }
@@ -211,10 +241,13 @@ def serialize_stmt(node, source):
             func_name = ""
             if isinstance(node.value.func, ast.Name):
                 func_name = node.value.func.id
-            if func_name == "print" and len(node.value.args) == 1:
+            if (func_name == "print" and
+                len(node.value.keywords) == 0 and
+                0 <= len(node.value.args) <= 16 and
+                not any(isinstance(a, ast.Starred) for a in node.value.args)):
                 return {
                     "kind": "Print",
-                    "value": serialize_expr(node.value.args[0], source),
+                    "values": [serialize_expr(a, source) for a in node.value.args],
                     "segment": segment,
                     "loc": loc
                 }

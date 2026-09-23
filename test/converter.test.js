@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { convertPythonAstToGcn } from '../src/core/python-converter.js';
@@ -231,4 +232,192 @@ func _ready():
   assert.ifError(codeReady.diagnostics.find((d) => d.severity === 'error'));
   // c's assignment is the first line of _ready
   assert.ok(codeReady.code.includes('func _ready():\n    c = get_count()\n    print("Ready!")'));
+});
+
+test('electron/python-parser.py and resource/python-parser.py are byte-identical', () => {
+  const electronBytes = fs.readFileSync('electron/python-parser.py');
+  const resourceBytes = fs.readFileSync('resource/python-parser.py');
+  assert.equal(electronBytes.equals(resourceBytes), true, 'Both python-parser.py files must be byte-identical');
+});
+
+test('Example 1 (fstring): source -> convert -> generateGeometryCode -> exact text, 0 errors, runs with Python 3', () => {
+  const source = 'print(f"Player: {name}, Level: {level}")\n';
+  const parsed = parsePythonSource(source);
+  assert.equal(parsed.error, false);
+  const { document, error } = convertPythonAstToGcn(parsed, source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const exported = generateGeometryCode(document, 'python');
+  assert.equal(exported.code, source);
+
+  // Run with real values in Python 3
+  const runSource = 'name = "Alice"\nlevel = 5\n' + exported.code;
+  const proc = spawnSync('python', ['-c', runSource], { encoding: 'utf8' });
+  assert.equal(proc.status, 0);
+  assert.equal(proc.stdout.trim(), 'Player: Alice, Level: 5');
+});
+
+test('Example 2 (multi-arg print): source -> convert -> generateGeometryCode -> exact text, 0 errors, runs with Python 3', () => {
+  const source = 'print("Position:", x, y, "Equipment:", items)\n';
+  const parsed = parsePythonSource(source);
+  assert.equal(parsed.error, false);
+  const { document, error } = convertPythonAstToGcn(parsed, source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const exported = generateGeometryCode(document, 'python');
+  assert.equal(exported.code, source);
+
+  // Run with real values in Python 3
+  const runSource = 'x = 10\ny = 20\nitems = ["sword"]\n' + exported.code;
+  const proc = spawnSync('python', ['-c', runSource], { encoding: 'utf8' });
+  assert.equal(proc.status, 0);
+  assert.equal(proc.stdout.trim(), "Position: 10 20 Equipment: ['sword']");
+});
+
+test('Example 3 (str.format): source -> convert -> generateGeometryCode -> exact text, 0 errors, runs with Python 3', () => {
+  const source = 'print("Rank {}: {}".format(rank, name))\n';
+  const parsed = parsePythonSource(source);
+  assert.equal(parsed.error, false);
+  const { document, error } = convertPythonAstToGcn(parsed, source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const exported = generateGeometryCode(document, 'python');
+  assert.equal(exported.code, source);
+
+  // Run with real values in Python 3
+  const runSource = 'rank = 1\nname = "Alice"\n' + exported.code;
+  const proc = spawnSync('python', ['-c', runSource], { encoding: 'utf8' });
+  assert.equal(proc.status, 0);
+  assert.equal(proc.stdout.trim(), 'Rank 1: Alice');
+});
+
+test('Example 4 (concat): source -> convert -> generateGeometryCode -> exact text, 0 errors, runs with Python 3', () => {
+  // Source with contract regenerated form
+  const source = 'print(("Current score: " + str(score) + " pts"))\n';
+  const parsed = parsePythonSource(source);
+  assert.equal(parsed.error, false);
+  const { document, error } = convertPythonAstToGcn(parsed, source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const exported = generateGeometryCode(document, 'python');
+  assert.equal(exported.code, source);
+
+  // Also test unparenthesized concat input regenerates as contract output
+  const unparenthesized = 'print("Current score: " + str(score) + " pts")\n';
+  const parsed2 = parsePythonSource(unparenthesized);
+  const doc2 = convertPythonAstToGcn(parsed2, unparenthesized).document;
+  const exported2 = generateGeometryCode(doc2, 'python');
+  assert.equal(exported2.code, source);
+
+  // Run with real values in Python 3
+  const runSource = 'score = 100\n' + exported.code;
+  const proc = spawnSync('python', ['-c', runSource], { encoding: 'utf8' });
+  assert.equal(proc.status, 0);
+  assert.equal(proc.stdout.trim(), 'Current score: 100 pts');
+});
+
+test('Python print with 0 args converts to print node with argCount 0', () => {
+  const source = 'print()\n';
+  const parsed = parsePythonSource(source);
+  const { document, error } = convertPythonAstToGcn(parsed, source);
+  assert.equal(error, null);
+  const pNode = document.nodes.find((n) => n.type === 'print');
+  assert.ok(pNode);
+  assert.equal(pNode.data?.argCount, 0);
+  const exported = generateGeometryCode(document, 'python');
+  assert.equal(exported.code, source);
+});
+
+test('Python fstring with same Name reused creates one port and one wire', () => {
+  const source = 'print(f"Hello {name}, goodbye {name}!")\n';
+  const parsed = parsePythonSource(source);
+  const { document } = convertPythonAstToGcn(parsed, source);
+  const fmtNode = document.nodes.find((n) => n.type === 'formatText');
+  assert.ok(fmtNode);
+  assert.equal(fmtNode.data?.template, 'Hello {name}, goodbye {name}!');
+
+  // Out edges to fmtNode should only be 1 (from name to {name})
+  const edgesToFmt = document.edges.filter((e) => e.target === fmtNode.id);
+  assert.equal(edgesToFmt.length, 1);
+  assert.equal(edgesToFmt[0].targetHandle, '{name}');
+});
+
+test('Python purely numeric + chain stays binary', () => {
+  const source = 'x = 1 + 2 + 3\n';
+  const parsed = parsePythonSource(source);
+  const { document } = convertPythonAstToGcn(parsed, source);
+  const binNodes = document.nodes.filter((n) => n.type === 'binary');
+  assert.equal(binNodes.length, 2);
+  const fmtNodes = document.nodes.filter((n) => n.type === 'formatText');
+  assert.equal(fmtNodes.length, 0);
+});
+
+function getAllNodes(graph) {
+  const nodes = [...(graph.nodes || [])];
+  for (const n of graph.nodes || []) {
+    if (n.data?.graph) nodes.push(...getAllNodes(n.data.graph));
+  }
+  return nodes;
+}
+
+test('GDScript prints(a, b) round trip', async () => {
+  const source = 'extends Node\n\nfunc _ready():\n    prints(a, b)\n';
+  const { document, error } = await convertGdscriptToGcn(source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const allNodes = getAllNodes(document);
+  const pNode = allNodes.find((n) => n.type === 'print');
+  assert.ok(pNode);
+  assert.equal(pNode.data?.argCount, 2);
+
+  const exported = generateGeometryCode(document, 'gdscript');
+  assert.equal(exported.code, source);
+});
+
+test('GDScript print(a, b) with 2+ args stays a code node with unchanged text', async () => {
+  const source = 'extends Node\n\nfunc _ready():\n    print(a, b)\n';
+  const { document, error } = await convertGdscriptToGcn(source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const allNodes = getAllNodes(document);
+  const cNode = allNodes.find((n) => n.type === 'codeNode');
+  assert.ok(cNode);
+  assert.equal(cNode.data?.code, 'print(a, b)');
+  assert.equal(allNodes.some((n) => n.type === 'print'), false);
+
+  const exported = generateGeometryCode(document, 'gdscript');
+  assert.equal(exported.code, source);
+});
+
+test('GDScript string concat + chain converts to formatText concat', async () => {
+  const source = 'extends Node\n\nfunc _ready():\n    print("Current score: " + str(score) + " pts")\n';
+  const { document, error } = await convertGdscriptToGcn(source);
+  assert.equal(error, null);
+  const diags = validateGeometryDocument(document);
+  assert.equal(diags.filter((d) => d.severity === 'error').length, 0);
+
+  const allNodes = getAllNodes(document);
+  const fmtNode = allNodes.find((n) => n.type === 'formatText');
+  assert.ok(fmtNode);
+  assert.equal(fmtNode.data?.style, 'concat');
+  assert.equal(fmtNode.data?.template, 'Current score: {score} pts');
+
+  const pNode = allNodes.find((n) => n.type === 'print');
+  assert.ok(pNode);
+  assert.equal(pNode.data?.argCount, 1);
+
+  const exported = generateGeometryCode(document, 'gdscript');
+  assert.ok(exported.code.includes('print(("Current score: " + str(score) + " pts"))'));
 });
