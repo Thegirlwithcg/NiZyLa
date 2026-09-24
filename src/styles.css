@@ -2019,6 +2019,25 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
 .svelte-flow__edge.selected .svelte-flow__edge-path { stroke: var(--accent); }
 
 .gcn-node { min-width: 170px; max-width: 260px; border: 1.5px solid var(--border-strong); border-radius: 7px; background: var(--panel-solid, var(--panel)); color: var(--text); box-shadow: 0 4px 14px var(--shadow); font-size: 12px; }
+/* ponytail: size not persisted, auto-fits content on reopen */
+.gcn-node[data-node-type="literal"],
+.gcn-node[data-node-type="formatText"] {
+  max-width: 600px;
+}
+.gcn-node[data-node-type="literal"] textarea,
+.gcn-node[data-node-type="formatText"] textarea {
+  field-sizing: content;
+  resize: both;
+  max-width: 560px;
+  max-height: 320px;
+  box-sizing: border-box;
+}
+.gcn-node[data-node-type="formatText"] textarea {
+  min-height: 26px;
+}
+.gcn-node[data-node-type="functionDef"] { max-width: 340px; }
+.gcn-returns-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; }
+.gcn-returns-row select { width: auto; flex: 1; }
 .svelte-flow__node.selected .gcn-node { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 14px var(--shadow); }
 .gcn-node.has-error { border-color: var(--gcn-error); }
 .gcn-node-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 6px 6px 0 0; }

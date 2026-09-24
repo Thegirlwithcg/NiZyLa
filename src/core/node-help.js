@@ -10,7 +10,7 @@ export const nodeHelp = {
     gdscript: 'var x = 42\nprint(x)'
   },
   getVariable: {
-    summary: 'Reads the current value of a defined variable. Connects to expression input ports.',
+    summary: 'Declares a variable (name, type, starting value) and outputs its current value. Use Set Variable to change it.',
     python: 'x = 10\ny = (x + 1)',
     gdscript: 'var x: int = 10\nvar y = (x + 1)'
   },

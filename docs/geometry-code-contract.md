@@ -65,11 +65,10 @@ outputs. Call `getNodePorts` rather than using the registry's internal static
 array/function directly. Treat registry metadata as read-only and copy defaults
 when adding nodes.
 
-Diagnostics are `{ severity: 'error' | 'warning', code, message, nodeId?, edgeId? }`.
+Diagnostics are `{ severity: 'error' | 'warning', code, message, nodeId?, edgeId?, variableId? }`.
 Codes are for programmatic handling; messages are human-readable English.
-Graph-level and variable diagnostics may lack node/edge IDs. Variable messages
-identify the variable. Validation stops after file-shape errors or duplicate
-IDs because graph references would otherwise be ambiguous.
+Graph-level diagnostics may lack node/edge/variable IDs. Variable diagnostics carry `variableId`.
+Validation stops after file-shape errors or duplicate IDs because graph references would otherwise be ambiguous.
 
 ## Node data and ports
 
@@ -79,7 +78,7 @@ Each value output below has ID `value`; execution inputs have ID `in`.
 | --- | --- | --- | --- |
 | `start` | `{}` | out `next` | none |
 | `literal` | `{ valueType, value }` | none | out declared type |
-| `getVariable` | `{ variableId }` | none | out variable type |
+| `getVariable` (label Var) | `{ variableId }` | none | out variable type (declares & reads; no `unused-node`) |
 | `setVariable` | `{ variableId }` | in; out `next` | in `value`: variable type |
 | `binary` | `{ operator: '+' / '-' / '*' / '/' / '%' / '//' / '**' }` | none | in `a`, `b`: numbers; out inferred numeric type |
 | `compare` | `{ operator: '==' / '!=' / '<' / '<=' / '>' / '>=' }` | none | in `a`, `b`; out bool |
@@ -141,6 +140,14 @@ with real Python 3 and Godot 4 (`GODOT_BIN` = a Godot console executable, or
   A For inside another For's body, even through If/While, must use a different
   variable ID. A following For via next may reuse the ID. This rule also
   applies to disconnected execution trees.
+- Variables are pruned automatically when deep usage (including nested function/class graphs)
+  was > 0 before and drops to 0 after deleting nodes or relinking variables. Unused variables
+  created via the panel survive.
+- In nested scopes (functions and classes), variable pickers and port computation resolve
+  accessible variables hierarchically (local first, then enclosing scopes innermost to outermost).
+- Function parameter names must match `^[A-Za-z_][A-Za-z0-9_]*$` and not start with `_gcn_`
+  (`invalid-parameter-name`), and must not repeat (`duplicate-parameter-name`). Target reserved
+  words like `self`, `len`, `type` are permitted as parameter names.
 - Errors block future code generation/export, not saving an editable graph.
   `serializeGeometryDocument` checks file shape only. Parsing never replaces
   bad files with an empty document and never executes graph content.
@@ -154,6 +161,7 @@ Diagnostic codes: `invalid-json`, `invalid-format`, `unsupported-version`,
 `comparison-type`, `zero-step`, `nested-for-variable`,
 `loop-control-outside-loop`, `input-reused`,
 `invalid-template`, `duplicate-dict-key`,
+`invalid-parameter-name`, `duplicate-parameter-name`,
 `gdscript-ready-conflict`, `gdscript-member-conflict`.
 
 ## Code generation (stage 2, `src/core/geometry-codegen.js`)
@@ -258,5 +266,26 @@ No-ops, selection, menus, pan/zoom/Fit View make no entry; Undo/Redo keep the cu
 
 ### Code preview
 Code preview uses `generateGeometryCode`; with errors or an invalid input draft the preview is cleared and Copy Code is disabled. `CodeEditor` got `readOnly`. Export button triggers `onexport` when valid.
+
+### Stage 3: Beginner-friendly Nodes
+- **Var node inline declaration**:
+  - `getVariable` relabeled to `Var` in menus and card headers.
+  - Adding a `var` preset auto-creates a new variable in the current scope (`value`, `value2`, ...) and binds the node to it.
+  - Var node renders inline variable fields (`name`, `type`, and starting value control) directly on the node via `GeometryVariableFields.svelte`.
+  - When selected or when pointing to an outer variable, a picker select is shown to rebind or inspect outer-scope variables (`(outer)` suffix).
+  - Orphan variable pruning: Deleting a node or relinking a Var node prunes any variable whose deep references dropped to 0 (as long as it was previously referenced).
+- **Growing text nodes**:
+  - String literal (`literal`) and Format Text (`formatText`) nodes have `.gcn-node` max-width lifted.
+  - Both textareas feature `field-sizing: content` (auto-expanding) and native `resize: both`, capped at max 560px width and 320px height.
+  - Format Text template commits on blur (`onchange`).
+  - Size is not persisted into `.gcn` (auto-fits content on reopen).
+- **New line tick**:
+  - String literal and Format Text nodes feature a `↵ New line` checkbox directly below the text area.
+  - Toggling appends or removes a trailing `\n` character, staying in bidirectional sync with manual typing.
+- **Function node inline editing**:
+  - `functionDef` node card contains parameter rows (live name edit, type selector, remove button `×`), `+ Param` button, and `returns [type ▾]` selector directly on the node.
+  - Card max-width capped at 340px (`.gcn-node[data-node-type="functionDef"]`).
+  - Parameter validation reports `invalid-parameter-name` and `duplicate-parameter-name` carrying the function's `nodeId`. Parameter names allow Python/GDScript built-ins such as `self`, `len`, and `type`.
+
 
 

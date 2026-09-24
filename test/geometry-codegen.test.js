@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGeometryDocument, nodeDefinitions } from '../src/core/geometry.js';
+import { createGeometryDocument, createChildGraph, nodeDefinitions } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 
 const targets = ['python', 'gdscript'];
@@ -927,5 +927,52 @@ test('exact-text codegen for new nodes in Python and GDScript', () => {
 
   const gdInp = codeFor(inpDoc, 'gdscript');
   assert.ok(gdInp.includes('print(_gcn_input("Prompt: "))'));
+});
+
+test('Prompt H: string literal and formatText with trailing newline produce escaped \\n; python runtime prints followed by empty line', { skip: python ? false : 'Python 3 not found' }, () => {
+  const doc = graph2('python');
+  literal(doc, 'lit_hi', 'string', 'Hi\n');
+  print(doc, 'p_hi', 'lit_hi');
+
+  variable(doc, 'v_name', 'user_name', 'string', 'Ada');
+  get(doc, 'g_name', 'v_name');
+  add(doc, 'fmt', 'formatText', { style: 'fstring', template: 'Hello {user_name}\n' });
+  wire(doc, 'g_name', 'value', 'fmt', '{user_name}');
+  print(doc, 'p_fmt', 'fmt');
+
+  sequence(doc, 'p_hi', 'p_fmt');
+
+  const pyCode = codeFor(doc, 'python');
+  assert.ok(pyCode.includes('"Hi\\n"'));
+  assert.ok(pyCode.includes('f"Hello {user_name}\\n"'));
+
+  const gdCode = codeFor(doc, 'gdscript');
+  assert.ok(gdCode.includes('"Hi\\n"'));
+  assert.ok(gdCode.includes('"Hello {0}\\n"'));
+
+  const pyOut = runPython(pyCode);
+  assert.deepEqual(pyOut, ['Hi', '', 'Hello Ada', '']);
+});
+
+test('Prompt H regression guard: function body Set Variable of module variable emits global', () => {
+  const doc = graph2('python');
+  variable(doc, 'v_mod', 'score', 'int', 100);
+
+  const child = createChildGraph();
+  add(child, 'set_score', 'setVariable', { variableId: 'v_mod' });
+  literal(child, 'lit_new', 'int', 200);
+  wire(child, 'start', 'next', 'set_score', 'in');
+  wire(child, 'lit_new', 'value', 'set_score', 'value');
+
+  add(doc, 'fn_update', 'functionDef', {
+    name: 'update_score',
+    parameters: [],
+    returnType: 'void',
+    graph: child
+  });
+
+  const pyCode = codeFor(doc, 'python');
+  assert.ok(pyCode.includes('global score'), `Expected Python code to include "global score", got:\n${pyCode}`);
+  assert.ok(pyCode.includes('score = 200'));
 });
 

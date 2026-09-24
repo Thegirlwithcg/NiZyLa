@@ -152,7 +152,7 @@ export const nodePresets = [
   preset('bool', 'Boolean', 'Value', 'literal', { valueType: 'bool', value: false }),
 
   // 2. Variable
-  preset('get', 'Get Variable', 'Variable', 'getVariable'),
+  preset('var', 'Var', 'Variable', 'getVariable'),
   preset('set', 'Set Variable', 'Variable', 'setVariable'),
 
   // 3. Math
@@ -236,14 +236,25 @@ const finitePoint = (p) => ({ x: Number.isFinite(p?.x) ? Math.round(p.x) : 0, y:
 export function addNode(doc, presetId, position) {
   const item = nodePresets.find((p) => p.id === presetId);
   if (!item) return null;
+  let currentDoc = doc;
+  let varId;
+  if (presetId === 'var') {
+    const res = addVariable(currentDoc);
+    currentDoc = res.doc;
+    varId = res.variableId;
+  }
   const data = { ...nodeDefinitions[item.type].defaults, ...item.data };
-  if (item.type === 'getVariable' || item.type === 'setVariable' || item.type === 'forEach') data.variableId = doc.variables[0]?.id ?? '';
-  if (item.type === 'forRange') data.variableId = doc.variables.find((v) => v.type === 'int')?.id ?? '';
+  if (varId !== undefined) {
+    data.variableId = varId;
+  } else {
+    if (item.type === 'setVariable' || item.type === 'forEach') data.variableId = currentDoc.variables[0]?.id ?? '';
+    if (item.type === 'forRange') data.variableId = currentDoc.variables.find((v) => v.type === 'int')?.id ?? '';
+  }
   if (['functionDef', 'classDef'].includes(item.type) && !data.graph) {
     data.graph = createChildGraph();
   }
   const node = { id: uuid(), type: item.type, position: finitePoint(position), data };
-  return { doc: { ...doc, nodes: [...doc.nodes, node] }, nodeId: node.id };
+  return { doc: { ...currentDoc, nodes: [...currentDoc.nodes, node] }, nodeId: node.id };
 }
 
 export function addNodeAtScope(doc, scopePath, presetId, position) {
@@ -307,7 +318,9 @@ export function removeItems(doc, { nodeIds = [], edgeIds = [] } = {}) {
   const wires = new Set(edgeIds);
   const nodes = doc.nodes.filter((n) => !gone.has(n.id));
   const edges = doc.edges.filter((e) => !wires.has(e.id) && !gone.has(e.source) && !gone.has(e.target));
-  return nodes.length === doc.nodes.length && edges.length === doc.edges.length ? null : { ...doc, nodes, edges };
+  if (nodes.length === doc.nodes.length && edges.length === doc.edges.length) return null;
+  const after = { ...doc, nodes, edges };
+  return pruneOrphanVariables(doc, after);
 }
 
 export function duplicateNodes(graph, nodeIds, offset = { x: 40, y: 40 }) {
@@ -396,8 +409,16 @@ export function setNodeData(doc, nodeId, patch) {
   const removedEdges = doc.edges.filter((e) => (e.target === nodeId && !ports.has(e.targetHandle))
     || (e.source === nodeId && !ports.has(e.sourceHandle)));
   const removed = new Set(removedEdges);
+  let afterDoc = {
+    ...doc,
+    nodes: doc.nodes.map((n) => n === node ? next : n),
+    edges: removed.size ? doc.edges.filter((e) => !removed.has(e)) : doc.edges
+  };
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'variableId')) {
+    afterDoc = pruneOrphanVariables(doc, afterDoc);
+  }
   return {
-    doc: { ...doc, nodes: doc.nodes.map((n) => n === node ? next : n), edges: removed.size ? doc.edges.filter((e) => !removed.has(e)) : doc.edges },
+    doc: afterDoc,
     removedEdges
   };
 }
@@ -545,7 +566,31 @@ export function addEdgeAtScope(doc, scopePath, connection) {
 // ---- variables --------------------------------------------------------------------------------
 
 const referencing = VARIABLE_NODE_TYPES;
-export const variableUsage = (doc, id) => doc.nodes.filter((n) => referencing.includes(n.type) && n.data?.variableId === id).length;
+
+export function variableUsage(doc, id) {
+  let count = 0;
+  for (const node of doc.nodes || []) {
+    if (referencing.includes(node.type) && node.data?.variableId === id) {
+      count++;
+    }
+    if (['functionDef', 'classDef'].includes(node.type) && node.data?.graph) {
+      count += variableUsage(node.data.graph, id);
+    }
+  }
+  return count;
+}
+
+export function pruneOrphanVariables(before, after) {
+  if (!before?.variables || !after?.variables) return after;
+  const pruned = after.variables.filter((v) => {
+    const beforeUses = variableUsage(before, v.id);
+    const afterUses = variableUsage(after, v.id);
+    if (beforeUses > 0 && afterUses === 0) return false;
+    return true;
+  });
+  if (pruned.length === after.variables.length) return after;
+  return { ...after, variables: pruned };
+}
 
 export function addVariable(doc) {
   const names = new Set(doc.variables.map((v) => v.name));

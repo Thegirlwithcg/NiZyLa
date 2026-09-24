@@ -613,10 +613,22 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           for (let i = 0; i < paramsNode.namedChildCount; i++) {
             const pNode = paramsNode.namedChild(i);
             const pNameNode = pNode.childForFieldName('name') || pNode;
-            const pName = source.slice(pNameNode.startIndex, pNameNode.endIndex).trim();
+            let pName = source.slice(pNameNode.startIndex, pNameNode.endIndex).trim();
+            let pType = 'any';
+            let pDefault = null;
+            if (pName.includes('=')) {
+              const eqParts = pName.split('=');
+              pDefault = eqParts[1].trim();
+              pName = eqParts[0].trim();
+            }
+            if (pName.includes(':')) {
+              const colParts = pName.split(':');
+              pName = colParts[0].trim();
+              pType = colParts[1].trim() || 'any';
+            }
             const pid = `p_${uuid().slice(0, 8)}`;
             child._currentParams.set(pName, pid);
-            params.push({ id: pid, name: pName, type: 'any', defaultValue: null });
+            params.push({ id: pid, name: pName, type: pType, defaultValue: pDefault });
           }
         }
 

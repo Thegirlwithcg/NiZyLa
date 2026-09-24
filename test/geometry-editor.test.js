@@ -4,7 +4,8 @@ import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocu
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
   HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
-  createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, nodePresets, pasteFragment, positionsFromFlow, redo,
+  createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
+  pruneOrphanVariables, redo,
   removeItems, sameContent, setLiteralType, setNodeData, setTarget, setViewport, undo, updateVariable, variableUsage
 } from '../src/core/geometry-editor.js';
 
@@ -122,7 +123,7 @@ test('renaming a variable keeps its ID and references', () => {
   const v = addVariable(doc); doc = v.doc;
   assert.equal(doc.variables[0].name, 'value1');
   assert.equal(addVariable(doc).doc.variables[1].name, 'value2');
-  const get = add(doc, 'get'); doc = get.doc;
+  const get = add(doc, 'var'); doc = setNodeData(get.doc, get.nodeId, { variableId: v.variableId }).doc;
   assert.equal(doc.nodes.at(-1).data.variableId, v.variableId);
   doc = updateVariable(doc, v.variableId, { name: 'total' });
   assert.equal(doc.variables[0].id, v.variableId);
@@ -221,7 +222,7 @@ test('execution and value cycles are rejected', () => {
 test('pre-existing errors do not block an unrelated valid connection', () => {
   let doc = createGeometryDocument();
   doc = addVariable(doc).doc;
-  const bad = add(doc, 'get'); doc = bad.doc;
+  const bad = add(doc, 'var'); doc = setNodeData(bad.doc, bad.nodeId, { variableId: doc.variables[0].id }).doc;
   doc = deleteVariable(doc, doc.variables[0].id);
   assert.ok(codes(doc).includes('missing-variable'));
   const p = add(doc, 'print'); doc = p.doc;
@@ -232,7 +233,7 @@ test('changing a variable type keeps a now-mismatching wire and reports it', () 
   let doc = createGeometryDocument();
   const v = addVariable(doc); doc = v.doc;
   doc = updateVariable(doc, v.variableId, { type: 'bool' });
-  const get = add(doc, 'get'); doc = get.doc;
+  const get = add(doc, 'var'); doc = setNodeData(get.doc, get.nodeId, { variableId: v.variableId }).doc;
   const gate = add(doc, 'not'); doc = gate.doc;
   doc = wire(doc, get.nodeId, 'value', gate.nodeId, 'a');
   assert.ok(!codes(doc).includes('type-mismatch'));
@@ -451,7 +452,7 @@ test('state-level grab shape: live dup + cancelEdit reverts to original with zer
 test('copyFragment: Start excluded, dangling edges excluded, referenced variables captured', () => {
   let doc = createGeometryDocument();
   const v = addVariable(doc); doc = v.doc;
-  const a = add(doc, 'get', 10, 10); doc = a.doc;
+  const a = add(doc, 'var', 10, 10); doc = a.doc;
   doc = setNodeData(doc, a.nodeId, { variableId: v.variableId }).doc;
   const b = add(doc, 'print', 100, 10); doc = b.doc;
   doc = wire(doc, a.nodeId, 'value', b.nodeId, 'value');
@@ -559,9 +560,9 @@ test('pasteFragment: variable reconciliation (keep, remap, add with deduped name
   src = updateVariable(src, v3.variableId, { initialValue: 'hello' });
   const v3Id = v3.variableId;
 
-  const n1 = add(src, 'get', 0, 0); src = setNodeData(n1.doc, n1.nodeId, { variableId: v1Id }).doc;
-  const n2 = add(src, 'get', 50, 0); src = setNodeData(n2.doc, n2.nodeId, { variableId: v2Id }).doc;
-  const n3 = add(src, 'get', 100, 0); src = setNodeData(n3.doc, n3.nodeId, { variableId: v3Id }).doc;
+  const n1 = add(src, 'var', 0, 0); src = setNodeData(n1.doc, n1.nodeId, { variableId: v1Id }).doc;
+  const n2 = add(src, 'var', 50, 0); src = setNodeData(n2.doc, n2.nodeId, { variableId: v2Id }).doc;
+  const n3 = add(src, 'var', 100, 0); src = setNodeData(n3.doc, n3.nodeId, { variableId: v3Id }).doc;
 
   const clip = copyFragment(src, [n1.nodeId, n2.nodeId, n3.nodeId], src.variables);
 
@@ -616,9 +617,8 @@ test('pasteFragment: function body reading module variable remapped properly (sa
 
   // Inside function body, add a Get Variable node reading 'score'
   const fnNode = srcDoc.nodes.find((n) => n.id === fnId);
-  const childGet = addNode(fnNode.data.graph, 'get', { x: 100, y: 100 });
-  childGet.doc.nodes.find((n) => n.id === childGet.nodeId).data.variableId = scoreId;
-  fnNode.data.graph = childGet.doc;
+  const childGet = addNode(fnNode.data.graph, 'var', { x: 100, y: 100 });
+  fnNode.data.graph = setNodeData(childGet.doc, childGet.nodeId, { variableId: scoreId }).doc;
 
   const clip = copyFragment(srcDoc, [fnId], srcDoc.variables);
   assert.ok(clip);
@@ -666,9 +666,8 @@ test('pasteFragment: function body reading module variable remapped properly (sa
   const fnLocal = localDoc.nodes.find((n) => n.id === fnLocalRes.nodeId);
   // Add a local variable with ID scoreId inside the child graph
   fnLocal.data.graph.variables = [{ id: scoreId, name: 'local_score', type: 'int', initialValue: 5 }];
-  const localGet = addNode(fnLocal.data.graph, 'get', { x: 100, y: 100 });
-  localGet.doc.nodes.find((n) => n.id === localGet.nodeId).data.variableId = scoreId;
-  fnLocal.data.graph = localGet.doc;
+  const localGet = addNode(fnLocal.data.graph, 'var', { x: 100, y: 100 });
+  fnLocal.data.graph = setNodeData(localGet.doc, localGet.nodeId, { variableId: scoreId }).doc;
 
   const clipLocal = copyFragment(localDoc, [fnLocalRes.nodeId], localDoc.variables);
   const pasteLocal = pasteFragment(otherDoc, clipLocal, { x: 300, y: 300 }, otherDoc.variables);
@@ -826,5 +825,122 @@ test('Prompt F: gate check ensures 0 Thai characters in src/ and electron/', asy
     }
   }
   assert.deepEqual(violations, [], `Found Thai characters in: ${violations.join(', ')}`);
+});
+
+test('Prompt H: addNode var creates one variable + one linked getVariable node; second var gets value2', () => {
+  let doc = createGeometryDocument();
+  assert.equal(doc.variables.length, 0);
+
+  const res1 = add(doc, 'var');
+  doc = res1.doc;
+  assert.equal(doc.variables.length, 1);
+  assert.equal(doc.variables[0].name, 'value1');
+  const node1 = doc.nodes.find((n) => n.id === res1.nodeId);
+  assert.equal(node1.type, 'getVariable');
+  assert.equal(node1.data.variableId, doc.variables[0].id);
+
+  const res2 = add(doc, 'var');
+  doc = res2.doc;
+  assert.equal(doc.variables.length, 2);
+  assert.equal(doc.variables[1].name, 'value2');
+  const node2 = doc.nodes.find((n) => n.id === res2.nodeId);
+  assert.equal(node2.type, 'getVariable');
+  assert.equal(node2.data.variableId, doc.variables[1].id);
+});
+
+test('Prompt H: pruning orphan variables on node deletion and relinking', () => {
+  // 1. Last reference removed -> gone
+  let doc = createGeometryDocument();
+  const v1 = add(doc, 'var'); doc = v1.doc;
+  const vId = doc.variables[0].id;
+  assert.equal(doc.variables.length, 1);
+  doc = removeItems(doc, { nodeIds: [v1.nodeId] });
+  assert.equal(doc.variables.length, 0);
+
+  // 2. Another Var or Set remains -> kept
+  doc = createGeometryDocument();
+  const v2 = add(doc, 'var'); doc = v2.doc;
+  const v2Id = doc.variables[0].id;
+  const s2 = add(doc, 'set'); doc = s2.doc;
+  doc = setNodeData(doc, s2.nodeId, { variableId: v2Id }).doc;
+  assert.equal(doc.variables.length, 1);
+  doc = removeItems(doc, { nodeIds: [v2.nodeId] });
+  assert.equal(doc.variables.length, 1);
+  assert.equal(doc.variables[0].id, v2Id);
+
+  // 3. Child function graph reference -> kept
+  doc = createGeometryDocument();
+  const v3 = add(doc, 'var'); doc = v3.doc;
+  const v3Id = doc.variables[0].id;
+  const fn3 = add(doc, 'function'); doc = fn3.doc;
+  const fnNode3 = doc.nodes.find((n) => n.id === fn3.nodeId);
+  const childGet3 = add(fnNode3.data.graph, 'var');
+  fnNode3.data.graph = setNodeData(childGet3.doc, childGet3.nodeId, { variableId: v3Id }).doc;
+  // Remove root Var node; child function graph still refers to v3Id
+  doc = removeItems(doc, { nodeIds: [v3.nodeId] });
+  assert.equal(doc.variables.length, 1);
+  assert.equal(doc.variables[0].id, v3Id);
+
+  // 4. Never-used variable -> kept
+  doc = createGeometryDocument();
+  const rawVar = addVariable(doc); doc = rawVar.doc;
+  assert.equal(doc.variables.length, 1);
+  const pNode = add(doc, 'print'); doc = pNode.doc;
+  doc = removeItems(doc, { nodeIds: [pNode.nodeId] });
+  assert.equal(doc.variables.length, 1);
+  assert.equal(doc.variables[0].id, rawVar.variableId);
+
+  // 5. Deleting Function whose body was only user -> module variable gone
+  doc = createGeometryDocument();
+  const v5 = add(doc, 'var'); doc = v5.doc;
+  const v5Id = doc.variables[0].id;
+  const fn5 = add(doc, 'function'); doc = fn5.doc;
+  const fnNode5 = doc.nodes.find((n) => n.id === fn5.nodeId);
+  const childGet5 = add(fnNode5.data.graph, 'var');
+  fnNode5.data.graph = setNodeData(childGet5.doc, childGet5.nodeId, { variableId: v5Id }).doc;
+  doc = removeItems(doc, { nodeIds: [v5.nodeId] }); // now only fn body references v5Id
+  assert.equal(doc.variables.length, 1);
+  doc = removeItems(doc, { nodeIds: [fn5.nodeId] }); // delete function
+  assert.equal(doc.variables.length, 0); // module variable is pruned
+
+  // 6. Relinking Var prunes old variable
+  doc = createGeometryDocument();
+  const varA = add(doc, 'var'); doc = varA.doc;
+  const varB = add(doc, 'var'); doc = varB.doc;
+  assert.equal(doc.variables.length, 2);
+  const varAId = doc.variables[0].id;
+  // Relink varB node to varAId
+  doc = setNodeData(doc, varB.nodeId, { variableId: varAId }).doc;
+  assert.equal(doc.variables.length, 1);
+  assert.equal(doc.variables[0].id, varAId);
+});
+
+test('Prompt H: variableUsage counts nested graphs (functions and classes)', () => {
+  let doc = createGeometryDocument();
+  const v = addVariable(doc); doc = v.doc;
+  const vId = v.variableId;
+  assert.equal(variableUsage(doc, vId), 0);
+
+  // Root node reference
+  const rootGet = add(doc, 'var');
+  doc = setNodeData(rootGet.doc, rootGet.nodeId, { variableId: vId }).doc;
+  assert.equal(variableUsage(doc, vId), 1);
+
+  // Function with nested reference
+  const fn = add(doc, 'function'); doc = fn.doc;
+  const fnNode = doc.nodes.find((n) => n.id === fn.nodeId);
+  const childGet = add(fnNode.data.graph, 'var');
+  fnNode.data.graph = setNodeData(childGet.doc, childGet.nodeId, { variableId: vId }).doc;
+  assert.equal(variableUsage(doc, vId), 2);
+
+  // Class containing method with nested reference
+  const cls = add(doc, 'class'); doc = cls.doc;
+  const clsNode = doc.nodes.find((n) => n.id === cls.nodeId);
+  const method = add(clsNode.data.graph, 'function');
+  const methodNode = method.doc.nodes.find((n) => n.id === method.nodeId);
+  const methodGet = add(methodNode.data.graph, 'var');
+  methodNode.data.graph = setNodeData(methodGet.doc, methodGet.nodeId, { variableId: vId }).doc;
+  clsNode.data.graph = method.doc;
+  assert.equal(variableUsage(doc, vId), 3);
 });
 

@@ -97,7 +97,7 @@ export const nodeDefinitions = {
   start: { label: 'Start', category: 'Entry', defaults: {}, ports: [port('next', 'out', 'exec')] },
   literal: { label: 'Value', category: 'Value', defaults: { valueType: 'int', value: 0 }, valueTypes,
     ports: (node) => [output(node.data?.valueType ?? 'int')] },
-  getVariable: { label: 'Get Variable', category: 'Variable', defaults: { variableId: '' },
+  getVariable: { label: 'Var', category: 'Variable', defaults: { variableId: '' },
     ports: (node, variables) => [output(variables.find((v) => v.id === node.data?.variableId)?.type ?? 'unknown')] },
   setVariable: { label: 'Set Variable', category: 'Variable', defaults: { variableId: '' },
     ports: (node, variables) => [...execution('next'), input('value', variables.find((v) => v.id === node.data?.variableId)?.type ?? 'unknown')] },
@@ -666,9 +666,9 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
   const names = new Set();
   for (const variable of graph.variables) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name) || reservedNames.has(variable.name) || variable.name.startsWith('_gcn_')) {
-      error('invalid-variable-name', `Variable ${variable.id} has an invalid or reserved name: ${variable.name}.`);
+      error('invalid-variable-name', `Variable ${variable.id} has an invalid or reserved name: ${variable.name}.`, { variableId: variable.id });
     }
-    if (names.has(variable.name)) error('duplicate-variable-name', `Duplicate variable name: ${variable.name}.`);
+    if (names.has(variable.name)) error('duplicate-variable-name', `Duplicate variable name: ${variable.name}.`, { variableId: variable.id });
     names.add(variable.name);
   }
 
@@ -772,7 +772,9 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
 
   for (const node of graph.nodes) {
     if (!used.has(node.id)) {
-      diagnostics.push(diagnostic('unused-node', 'Node is not used by Start and will not be generated.', { nodeId: node.id, scopePath }, 'warning'));
+      if (node.type !== 'getVariable') {
+        diagnostics.push(diagnostic('unused-node', 'Node is not used by Start and will not be generated.', { nodeId: node.id, scopePath }, 'warning'));
+      }
       continue;
     }
     for (const p of portInMaps.get(node.id)?.values() || []) {
@@ -836,20 +838,33 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     }
     if (node.type === 'input') {
       if ((valueOut.get(node.id) || []).length > 1) {
-        error('input-reused', 'Input reads a new line each time it is used. Store it with Set Variable and read it with Get Variable.', { nodeId: node.id });
+        error('input-reused', 'Input reads a new line each time it is used. Store it with Set Variable and read it with a Var node.', { nodeId: node.id });
       }
     }
   }
 
   // Recursive validation of child graphs
   for (const node of graph.nodes) {
-    if (node.type === 'functionDef' && node.data?.graph) {
-      const childSymbols = new Map(accessibleVariables);
-      childSymbols.set('_current_function', { id: node.id, name: node.data.name, parameters: node.data.parameters || [] });
-      for (const p of node.data.parameters || []) {
-        childSymbols.set(p.id, { id: p.id, name: p.name, type: p.type || 'any' });
+    if (node.type === 'functionDef') {
+      const seenParams = new Set();
+      for (const p of node.data?.parameters || []) {
+        const pName = p?.name ?? '';
+        if (typeof pName !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(pName) || pName.startsWith('_gcn_')) {
+          error('invalid-parameter-name', `Function "${node.data?.name || 'func'}" parameter "${pName}" has an invalid name.`, { nodeId: node.id });
+        }
+        if (seenParams.has(pName)) {
+          error('duplicate-parameter-name', `Function "${node.data?.name || 'func'}" has duplicate parameter: "${pName}".`, { nodeId: node.id });
+        }
+        seenParams.add(pName);
       }
-      validateSingleGraph(node.data.graph, [...scopePath, node.id], childSymbols, diagnostics);
+      if (node.data?.graph) {
+        const childSymbols = new Map(accessibleVariables);
+        childSymbols.set('_current_function', { id: node.id, name: node.data.name, parameters: node.data.parameters || [] });
+        for (const p of node.data.parameters || []) {
+          childSymbols.set(p.id, { id: p.id, name: p.name, type: p.type || 'any' });
+        }
+        validateSingleGraph(node.data.graph, [...scopePath, node.id], childSymbols, diagnostics);
+      }
     }
     if (node.type === 'classDef' && node.data?.graph) {
       const childSymbols = new Map(accessibleVariables);

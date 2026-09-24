@@ -383,3 +383,70 @@ test('forEach validates variable, nesting, and missing variable', () => {
   assert.deepEqual(errors(doc), []);
 });
 
+test('Prompt H: variable name diagnostics carry variableId', () => {
+  const doc = createGeometryDocument();
+  doc.variables.push({ id: 'v1', name: '123invalid', type: 'int', initialValue: 0 });
+  doc.variables.push({ id: 'v2', name: 'dup', type: 'int', initialValue: 0 });
+  doc.variables.push({ id: 'v3', name: 'dup', type: 'int', initialValue: 0 });
+
+  const diags = validateGeometryDocument(doc);
+  const invalidNameDiag = diags.find((d) => d.code === 'invalid-variable-name');
+  assert.ok(invalidNameDiag);
+  assert.equal(invalidNameDiag.variableId, 'v1');
+
+  const dupNameDiag = diags.find((d) => d.code === 'duplicate-variable-name');
+  assert.ok(dupNameDiag);
+  assert.equal(dupNameDiag.variableId, 'v3');
+});
+
+test('Prompt H: unreachable getVariable gives no unused-node, bad id gives missing-variable', () => {
+  const doc = createGeometryDocument();
+  doc.variables.push({ id: 'v1', name: 'score', type: 'int', initialValue: 10 });
+  node(doc, 'get1', 'getVariable', { variableId: 'v1' });
+
+  const allDiags = validateGeometryDocument(doc);
+  assert.ok(!allDiags.some((d) => d.code === 'unused-node' && d.nodeId === 'get1'));
+
+  doc.nodes.find((n) => n.id === 'get1').data.variableId = 'does_not_exist';
+  const badDiags = validateGeometryDocument(doc);
+  assert.ok(badDiags.some((d) => d.code === 'missing-variable' && d.nodeId === 'get1'));
+});
+
+test('Prompt H: invalid-parameter-name and duplicate-parameter-name carry function nodeId', () => {
+  const doc = createGeometryDocument();
+  node(doc, 'my_fn', 'functionDef', {
+    name: 'test_func',
+    parameters: [
+      { id: 'p1', name: '123bad', type: 'int' },
+      { id: 'p2', name: 'dup', type: 'string' },
+      { id: 'p3', name: 'dup', type: 'string' }
+    ]
+  });
+
+  const diags = validateGeometryDocument(doc);
+  const invalidParam = diags.find((d) => d.code === 'invalid-parameter-name');
+  assert.ok(invalidParam);
+  assert.equal(invalidParam.nodeId, 'my_fn');
+  assert.equal(invalidParam.severity, 'error');
+
+  const dupParam = diags.find((d) => d.code === 'duplicate-parameter-name');
+  assert.ok(dupParam);
+  assert.equal(dupParam.nodeId, 'my_fn');
+  assert.equal(dupParam.severity, 'error');
+});
+
+test('Prompt H: self and len are accepted as function parameter names', () => {
+  const doc = createGeometryDocument();
+  node(doc, 'fn1', 'functionDef', {
+    name: 'calc',
+    parameters: [
+      { id: 'p1', name: 'self', type: 'any' },
+      { id: 'p2', name: 'len', type: 'int' },
+      { id: 'p3', name: 'type', type: 'string' }
+    ]
+  });
+
+  const diags = validateGeometryDocument(doc);
+  assert.ok(!diags.some((d) => d.code === 'invalid-parameter-name'));
+});
+

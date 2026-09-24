@@ -3,9 +3,10 @@
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
   import { nodeDefinitions, VARIABLE_NODE_TYPES } from '../core/geometry.js';
   import GeometryField from './GeometryField.svelte';
+  import GeometryVariableFields from './GeometryVariableFields.svelte';
   import CodeEditor from './CodeEditor.svelte';
 
-  let { id } = $props();
+  let { id, selected = false } = $props();
   const ctx = getContext('gcn');
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -16,10 +17,25 @@
   const inputs = $derived(ports.filter((p) => p.direction === 'in'));
   const outputs = $derived(ports.filter((p) => p.direction === 'out'));
   const diagnostics = $derived(view.diagnostics.get(id) ?? []);
+  const isVarNode = $derived(node?.type === 'getVariable');
   const isVariableNode = $derived(node && VARIABLE_NODE_TYPES.includes(node.type));
+  const otherVarNode = $derived(isVariableNode && !isVarNode);
   const variableChoices = $derived(node?.type === 'forRange' ? view.variables.filter((v) => v.type === 'int' || v.id === node.data?.variableId) : view.variables);
   const variableKnown = $derived(isVariableNode && view.variables.some((v) => v.id === node.data?.variableId));
+  const currentVariable = $derived(view.variables.find((v) => v.id === node.data?.variableId));
+  const isOuter = (v) => view.localVariableIds && !view.localVariableIds.has(v.id);
+  const varDiagnostics = $derived(isVarNode && node.data?.variableId ? (view.variableDiagnostics?.get(node.data.variableId) ?? []) : []);
+  const allDiagnostics = $derived([...diagnostics, ...varDiagnostics]);
+  const hasError = $derived(allDiagnostics.some((d) => d.severity === 'error'));
   const operatorLabels = { and: 'And', or: 'Or', not: 'Not' };
+
+  const PARAM_TYPES = ['any', 'int', 'float', 'string', 'bool', 'list', 'dict'];
+  function getTypeOptions(current) {
+    if (current && !PARAM_TYPES.includes(current)) {
+      return [current, ...PARAM_TYPES];
+    }
+    return PARAM_TYPES;
+  }
 
   const signature = $derived(ports.map((p) => `${p.id}:${p.direction}`).join('|'));
   $effect(() => {
@@ -62,7 +78,7 @@
 </script>
 
 {#if node && definition}
-  <div class="gcn-node" class:has-error={diagnostics.some((d) => d.severity === 'error')} data-node-type={node.type} {ondblclick} role="presentation">
+  <div class="gcn-node" class:has-error={hasError} data-node-type={node.type} data-id={id} {ondblclick} role="presentation">
     <header class="gcn-node-head">
       <div class="gcn-node-head-main">
         <strong>{node.type === 'functionDef' ? `def ${node.data?.name || 'func'}` : node.type === 'classDef' ? `class ${node.data?.name || 'Class'}` : node.type === 'codeNode' ? `</> ${node.data?.title || 'Code'}` : definition.label}</strong>
@@ -86,20 +102,48 @@
           <GeometryField kind={node.data.valueType} value={node.data.value} fieldKey={`${id}:value`} label="Literal value"
             oncommit={(value) => ctx.setData(id, { value }, true)} onblur={ctx.endEdit} ondraft={ctx.setDraft} />
         {:else if node.data?.valueType === 'string'}
-          <textarea aria-label="Literal text" rows="2" spellcheck="false" value={node.data.value}
+          {@const strVal = typeof node.data.value === 'string' ? node.data.value : String(node.data.value ?? '')}
+          <textarea aria-label="Literal text" rows="2" spellcheck="false" value={strVal}
             oninput={(event) => ctx.setData(id, { value: event.currentTarget.value }, true)} onblur={ctx.endEdit}></textarea>
+          <label class="gcn-check">
+            <input type="checkbox" aria-label="New line at end" checked={strVal.endsWith('\n')}
+              onchange={(e) => {
+                const next = e.currentTarget.checked ? strVal + '\n' : (strVal.endsWith('\n') ? strVal.slice(0, -1) : strVal);
+                ctx.setData(id, { value: next }, false);
+              }} /> ↵ New line
+          </label>
         {:else}
           <label class="gcn-check"><input type="checkbox" checked={node.data?.value}
             onchange={(event) => ctx.setData(id, { value: event.currentTarget.checked })} /> {node.data?.value ? 'true' : 'false'}</label>
         {/if}
 
-      {:else if isVariableNode}
+      {:else if isVarNode}
+        {#if currentVariable}
+          <GeometryVariableFields
+            variable={currentVariable}
+            onupdate={(patch, live) => ctx.updateVariable(currentVariable.id, patch, live)}
+            onendedit={ctx.endEdit}
+            ondraft={ctx.setDraft}
+          />
+        {/if}
+        {#if selected || !currentVariable || isOuter(currentVariable)}
+          <select aria-label="Variable" value={node.data?.variableId} onchange={onSelectData('variableId')}>
+            {#if !currentVariable}
+              <option value={node.data?.variableId}>{node.data?.variableId ? 'Missing variable' : 'Select variable…'}</option>
+            {/if}
+            {#each view.variables as variable (variable.id)}
+              <option value={variable.id}>{variable.name || '(unnamed)'} : {variable.type}{isOuter(variable) ? ' (outer)' : ''}</option>
+            {/each}
+          </select>
+        {/if}
+
+      {:else if otherVarNode}
         <select aria-label="Variable" value={node.data?.variableId} onchange={onSelectData('variableId')}>
           {#if !variableKnown}
             <option value={node.data?.variableId}>{node.data?.variableId ? 'Missing variable' : 'Select variable…'}</option>
           {/if}
           {#each variableChoices as variable (variable.id)}
-            <option value={variable.id}>{variable.name || '(unnamed)'} : {variable.type}</option>
+            <option value={variable.id}>{variable.name || '(unnamed)'} : {variable.type}{isOuter(variable) ? ' (outer)' : ''}</option>
           {/each}
         </select>
 
@@ -118,12 +162,38 @@
         <div class="gcn-subgraph-card">
           <input aria-label="Function name" value={node.data?.name || ''} placeholder="function_name"
             oninput={onInputData('name')} onblur={ctx.endEdit} spellcheck="false" />
-          <div class="gcn-subgraph-info">
-            <span>{(node.data?.parameters || []).length} params</span>
-            <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Open function body" aria-label="Open Subgraph">
-              Open Subgraph ⏎
-            </button>
+          
+          {#each (node.data?.parameters || []) as p (p.id)}
+            <div class="gcn-param-row">
+              <input aria-label="Parameter name" value={p.name} placeholder="param_name" spellcheck="false"
+                oninput={(e) => ctx.updateParam(id, ctx.scopePathIds, p.id, { name: e.currentTarget.value }, true)}
+                onblur={ctx.endEdit} />
+              <select aria-label="Parameter type" value={p.type || 'any'}
+                onchange={(e) => ctx.updateParam(id, ctx.scopePathIds, p.id, { type: e.currentTarget.value })}>
+                {#each getTypeOptions(p.type || 'any') as t}
+                  <option value={t}>{t}</option>
+                {/each}
+              </select>
+              <button type="button" aria-label={`Remove parameter ${p.name}`}
+                onclick={() => ctx.removeParam(id, ctx.scopePathIds, p.id)}>×</button>
+            </div>
+          {/each}
+
+          <button type="button" onclick={() => ctx.addParam(id, ctx.scopePathIds)}>+ Param</button>
+
+          <div class="gcn-returns-row">
+            <span>returns</span>
+            <select aria-label="Return type" value={node.data?.returnType || 'any'}
+              onchange={(e) => ctx.setData(id, { returnType: e.currentTarget.value })}>
+              {#each getTypeOptions(node.data?.returnType || 'any') as t}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
           </div>
+
+          <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Open function body" aria-label="Open Subgraph">
+            Open Subgraph ⏎
+          </button>
         </div>
 
       {:else if node.type === 'classDef'}
@@ -262,13 +332,21 @@
         </div>
 
       {:else if node.type === 'formatText'}
+        {@const tmpl = typeof node.data?.template === 'string' ? node.data.template : 'Value: {x}'}
         <select aria-label="Format style" value={node.data?.style ?? 'fstring'} onchange={onSelectData('style')}>
           <option value="fstring">f-string</option>
           <option value="format">.format()</option>
           <option value="concat">+ concat</option>
         </select>
-        <input aria-label="Format template" value={node.data?.template ?? 'Value: {x}'} spellcheck="false"
-          onchange={(e) => ctx.setData(id, { template: e.currentTarget.value })} />
+        <textarea aria-label="Format template" rows="1" spellcheck="false" value={tmpl}
+          onchange={(e) => ctx.setData(id, { template: e.currentTarget.value })}></textarea>
+        <label class="gcn-check">
+          <input type="checkbox" aria-label="New line at end" checked={tmpl.endsWith('\n')}
+            onchange={(e) => {
+              const next = e.currentTarget.checked ? tmpl + '\n' : (tmpl.endsWith('\n') ? tmpl.slice(0, -1) : tmpl);
+              ctx.setData(id, { template: next }, false);
+            }} /> ↵ New line
+        </label>
 
       {:else if node.type === 'list'}
         {@const count = node.data?.itemCount ?? 0}
@@ -354,9 +432,9 @@
       </div>
     </div>
 
-    {#if diagnostics.length}
+    {#if allDiagnostics.length}
       <ul class="gcn-node-diag" aria-label="Node problems">
-        {#each diagnostics as item}
+        {#each allDiagnostics as item}
           <li class={item.severity}><b>{item.severity === 'error' ? 'Error' : 'Warning'}:</b> {ctx.describe(item)}</li>
         {/each}
       </ul>

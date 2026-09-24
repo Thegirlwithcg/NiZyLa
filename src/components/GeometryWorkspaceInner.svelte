@@ -26,12 +26,13 @@
     addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, createEditorState,
     deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, positionsFromFlow, redo,
     removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
-    updateVariable, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter
+    updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter
   } from '../core/geometry-editor.js';
   import CodeEditor from './CodeEditor.svelte';
   import GeometryAddMenu from './GeometryAddMenu.svelte';
   import GeometryField from './GeometryField.svelte';
   import GeometryNode from './GeometryNode.svelte';
+  import GeometryVariableFields from './GeometryVariableFields.svelte';
 
   let {
     document: initialDocument,
@@ -284,16 +285,21 @@
     const currentGraph = getGraphAtScope(d, scopePathIds) || d;
     const diagnostics = new Map();
     const edgeDiagnostics = new Set();
+    const variableDiagnostics = new Map();
     for (const item of result.diagnostics) {
       if (item.nodeId) diagnostics.set(item.nodeId, [...(diagnostics.get(item.nodeId) ?? []), item]);
       if (item.edgeId) edgeDiagnostics.add(item.edgeId);
+      if (item.variableId) variableDiagnostics.set(item.variableId, [...(variableDiagnostics.get(item.variableId) ?? []), item]);
     }
+    const accessible = getAccessibleVariables(d, scopePathIds);
     view = {
       nodes: new Map(currentGraph.nodes.map((n) => [n.id, n])),
-      ports: computePorts(currentGraph),
+      ports: computePorts({ ...currentGraph, variables: accessible }),
       diagnostics,
       edgeDiagnostics,
-      variables: currentGraph.variables
+      variables: accessible,
+      variableDiagnostics,
+      localVariableIds: new Set((currentGraph.variables || []).map((v) => v.id))
     };
     syncFlow();
   }
@@ -379,11 +385,19 @@
   }
 
   function setData(id, patch, live = false) {
+    const prevVars = activeGraph.variables || [];
     const result = setNodeData(activeGraph, id, patch);
     if (!result) return;
     if (result.removedEdges.length) {
       const names = result.removedEdges.map((e) => e.target === id ? e.targetHandle : e.sourceHandle).join(', ');
       say(`Removed wire${result.removedEdges.length > 1 ? 's' : ''} on port ${names}: port no longer exists. Undo restores it.`);
+    }
+    const nextVars = result.doc.variables || [];
+    const lostVars = prevVars.filter((pv) => !nextVars.some((nv) => nv.id === pv.id));
+    if (lostVars.length > 0) {
+      for (const v of lostVars) {
+        say(`Removed unused variable "${v.name}". Undo restores it.`);
+      }
     }
     applyScoped(() => result.doc, live);
   }
@@ -436,6 +450,7 @@
     get parameters() { return functionParameters; },
     get availableFunctions() { return availableFunctions; },
     get isRoot() { return scopePathIds.length === 0; },
+    get scopePathIds() { return scopePathIds; },
     get target() { return doc.target; },
     get theme() { return theme; },
     get preferences() { return preferences; },
@@ -449,6 +464,10 @@
       const r = setLiteralType(activeGraph, id, type);
       if (r) applyScoped(() => r.doc);
     },
+    updateVariable,
+    addParam,
+    updateParam,
+    removeParam,
     endEdit: finishEdit,
     setDraft,
     enterScope
@@ -469,9 +488,17 @@
   function deleteSelection() {
     const nodeIds = nodes.filter((n) => n.selected).map((n) => n.id);
     const edgeIds = edges.filter((e) => e.selected).map((e) => e.id);
+    const prevVars = activeGraph.variables || [];
     const next = removeItems(activeGraph, { nodeIds, edgeIds });
     if (!next) { if (nodeIds.length) say('The Start node cannot be deleted.'); return; }
+    const nextVars = next.variables || [];
+    const lostVars = prevVars.filter((pv) => !nextVars.some((nv) => nv.id === pv.id));
     applyScoped(() => next);
+    if (lostVars.length > 0) {
+      for (const v of lostVars) {
+        say(`Removed unused variable "${v.name}". Undo restores it.`);
+      }
+    }
     canvasEl?.focus();
   }
 
@@ -546,10 +573,11 @@
     canvasEl?.focus();
   }
 
-  function getAccessibleVariables() {
-    const vars = [...(activeGraph.variables || [])];
-    for (let i = scopePathIds.length - 1; i >= 0; i--) {
-      const enclosing = getGraphAtScope(doc, scopePathIds.slice(0, i));
+  function getAccessibleVariables(targetDoc = doc, targetScope = scopePathIds) {
+    const cur = getGraphAtScope(targetDoc, targetScope) || targetDoc;
+    const vars = [...(cur.variables || [])];
+    for (let i = targetScope.length - 1; i >= 0; i--) {
+      const enclosing = getGraphAtScope(targetDoc, targetScope.slice(0, i)) || targetDoc;
       if (enclosing?.variables) {
         vars.push(...enclosing.variables);
       }
@@ -651,7 +679,16 @@
     applyScoped(() => result.doc);
     await tick();
     selectOnly([result.nodeId]);
-    canvasEl.focus();
+    if (presetId === 'var') {
+      await tick();
+      const input = document.querySelector(`.svelte-flow__node[data-id="${result.nodeId}"] input[aria-label="Variable name"]`);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    } else {
+      canvasEl.focus();
+    }
   }
 
   function closeMenu() {
@@ -720,10 +757,21 @@
 
   // ---- variables -------------------------------------------------------------------------------
 
-  const friendly = (message) => activeGraph.variables.reduce((text, v) => text.replaceAll(v.id, `"${v.name}"`), message);
+  const friendly = (message) => getAccessibleVariables().reduce((text, v) => text.replaceAll(v.id, `"${v.name}"`), message);
   const describe = (item) => item.code === 'missing-variable' ? 'Variable is missing. Choose an existing variable.' : friendly(item.message);
-  const variableProblems = (variable) => generated.diagnostics.filter((d) => (d.code === 'invalid-variable-name' && d.message.includes(variable.id))
-    || (d.code === 'duplicate-variable-name' && d.message === `Duplicate variable name: ${variable.name}.`));
+  const variableProblems = (variable) => generated.diagnostics.filter((d) => d.variableId === variable.id);
+
+  function updateVariable(variableId, patch, live = false) {
+    for (let i = scopePathIds.length; i >= 0; i--) {
+      const scope = scopePathIds.slice(0, i);
+      const g = getGraphAtScope(editor.present, scope) || editor.present;
+      if (g.variables?.some((v) => v.id === variableId)) {
+        const nextDoc = updateVariableAtScope(editor.present, scope, variableId, patch);
+        apply(nextDoc, live);
+        return;
+      }
+    }
+  }
 
   function requestDelete(variable) {
     const uses = variableUsage(activeGraph, variable.id);
@@ -738,31 +786,28 @@
 
   // ---- parameters manager ----------------------------------------------------------------------
 
-  function addParam() {
-    if (!currentFunction) return;
-    const { node: fNode, scope } = currentFunction;
+  function addParam(fnNodeId, scope) {
+    if (!fnNodeId || !scope) return;
     const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
-      const r = addFunctionParameter(g, fNode.id);
+      const r = addFunctionParameter(g, fnNodeId);
       return r ? r.doc : g;
     });
     apply(nextDoc);
   }
 
-  function updateParam(pId, patch) {
-    if (!currentFunction) return;
-    const { node: fNode, scope } = currentFunction;
+  function updateParam(fnNodeId, scope, pId, patch, live = false) {
+    if (!fnNodeId || !scope) return;
     const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
-      const r = updateFunctionParameter(g, fNode.id, pId, patch);
+      const r = updateFunctionParameter(g, fnNodeId, pId, patch);
       return r ? r.doc : g;
     });
-    apply(nextDoc);
+    apply(nextDoc, live);
   }
 
-  function removeParam(pId) {
-    if (!currentFunction) return;
-    const { node: fNode, scope } = currentFunction;
+  function removeParam(fnNodeId, scope, pId) {
+    if (!fnNodeId || !scope) return;
     const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
-      const r = removeFunctionParameter(g, fNode.id, pId);
+      const r = removeFunctionParameter(g, fnNodeId, pId);
       return r ? r.doc : g;
     });
     apply(nextDoc);
@@ -911,19 +956,19 @@
 
       <aside class="gcn-side" aria-label="Geometry Code panels">
         <div class="gcn-side-details">
-        {#if currentFunctionNode}
+        {#if currentFunctionNode && currentFunction}
           <section aria-labelledby={`gcn-params-${uid}`} class:collapsed={collapsed.parameters}>
             <div class="gcn-section-head">
               <button type="button" class="gcn-collapse" aria-expanded={!collapsed.parameters} onclick={() => togglePanel('parameters')}>{collapsed.parameters ? '▸' : '▾'}</button>
               <h3 id={`gcn-params-${uid}`}>Parameters ({currentFunctionNode.data?.name || 'func'})</h3>
-              <button onclick={addParam}>+ Parameter</button>
+              <button onclick={() => addParam(currentFunction.node.id, currentFunction.scope)}>+ Parameter</button>
             </div>
             {#if !collapsed.parameters}
             {#each (currentFunctionNode.data?.parameters || []) as p (p.id)}
               <div class="gcn-param-row">
                 <input value={p.name} placeholder="param_name" spellcheck="false"
-                  oninput={(e) => updateParam(p.id, { name: e.currentTarget.value })} />
-                <select value={p.type || 'any'} onchange={(e) => updateParam(p.id, { type: e.currentTarget.value })}>
+                  oninput={(e) => updateParam(currentFunction.node.id, currentFunction.scope, p.id, { name: e.currentTarget.value }, true)} onblur={finishEdit} />
+                <select value={p.type || 'any'} onchange={(e) => updateParam(currentFunction.node.id, currentFunction.scope, p.id, { type: e.currentTarget.value })}>
                   <option value="any">any</option>
                   <option value="int">int</option>
                   <option value="float">float</option>
@@ -932,7 +977,7 @@
                   <option value="list">list</option>
                   <option value="dict">dict</option>
                 </select>
-                <button onclick={() => removeParam(p.id)} aria-label={`Remove parameter ${p.name}`}>×</button>
+                <button onclick={() => removeParam(currentFunction.node.id, currentFunction.scope, p.id)} aria-label={`Remove parameter ${p.name}`}>×</button>
               </div>
             {:else}
               <p class="gcn-empty">No parameters.</p>
@@ -987,31 +1032,14 @@
           {#if !collapsed.variables}
           {#each activeGraph.variables as variable (variable.id)}
             <div class="gcn-var">
-              <div class="gcn-var-row">
-                <input aria-label="Variable name" value={variable.name} spellcheck="false"
-                  oninput={(e) => applyScoped((g) => updateVariable(g, variable.id, { name: e.currentTarget.value }), true)} onblur={finishEdit} />
-                <select aria-label="Variable type" value={variable.type} onchange={(e) => applyScoped((g) => updateVariable(g, variable.id, { type: e.currentTarget.value }))}>
-                  {#each ['int', 'float', 'string', 'bool', 'list', 'dict'] as type}<option value={type}>{type}</option>{/each}
-                </select>
+              <GeometryVariableFields
+                variable={variable}
+                onupdate={(patch, live) => updateVariable(variable.id, patch, live)}
+                onendedit={finishEdit}
+                ondraft={setDraft}
+              >
                 <button onclick={() => requestDelete(variable)} aria-label={`Delete variable ${variable.name}`}>Delete</button>
-              </div>
-              <div class="gcn-var-row">
-                <span class="gcn-label">initial</span>
-                {#if variable.type === 'int' || variable.type === 'float'}
-                  <GeometryField kind={variable.type} value={variable.initialValue} fieldKey={`var:${variable.id}`} label="Initial value"
-                    oncommit={(value) => applyScoped((g) => updateVariable(g, variable.id, { initialValue: value }), true)} onblur={finishEdit} ondraft={setDraft} />
-                {:else if variable.type === 'string'}
-                  <input aria-label="Initial value" value={variable.initialValue} spellcheck="false"
-                    oninput={(e) => applyScoped((g) => updateVariable(g, variable.id, { initialValue: e.currentTarget.value }), true)} onblur={finishEdit} />
-                {:else if variable.type === 'bool'}
-                  <label class="gcn-check"><input type="checkbox" checked={variable.initialValue}
-                    onchange={(e) => applyScoped((g) => updateVariable(g, variable.id, { initialValue: e.currentTarget.checked }))} /> {variable.initialValue ? 'true' : 'false'}</label>
-                {:else if variable.type === 'list'}
-                  <input aria-label="Initial value" value="[]" readonly disabled style="opacity: 0.7;" />
-                {:else if variable.type === 'dict'}
-                  <input aria-label="Initial value" value="{'{}'}" readonly disabled style="opacity: 0.7;" />
-                {/if}
-              </div>
+              </GeometryVariableFields>
               {#each variableProblems(variable) as problem}<div class="gcn-var-error" role="alert">{friendly(problem.message)}</div>{/each}
               {#if deleting?.id === variable.id}
                 <div class="gcn-confirm" role="alertdialog" aria-label="Confirm variable deletion">

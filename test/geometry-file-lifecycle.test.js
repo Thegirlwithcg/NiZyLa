@@ -18,6 +18,7 @@ import {
   addEdge,
   addVariable,
   updateVariable,
+  setNodeData,
   setViewport,
   sameContent,
   sameDocument,
@@ -49,9 +50,8 @@ test('New -> Save -> Close -> Open round-trip preserves all contract data', asyn
     const printId = nRes.nodeId;
 
     // 4. Wire start -> print, and getVariable -> print
-    const getRes = addNode(doc, 'get');
-    doc = getRes.doc;
-    doc.nodes.find((n) => n.id === getRes.nodeId).data.variableId = vId;
+    const getRes = addNode(doc, 'var');
+    doc = setNodeData(getRes.doc, getRes.nodeId, { variableId: vId }).doc;
 
     const eRes = addEdge(doc, { source: 'start', sourceHandle: 'next', target: printId, targetHandle: 'in' });
     doc = eRes.doc;
@@ -323,11 +323,11 @@ test('Export generates valid Python that executes correctly in Python 3 runtime'
   doc.nodes.find((n) => n.id === setTotal.nodeId).data.variableId = vTotal.variableId;
   doc = addEdge(doc, { source: forId, sourceHandle: 'body', target: setTotal.nodeId, targetHandle: 'in' }).doc;
 
-  const getTotal = addNode(doc, 'get'); doc = getTotal.doc;
-  doc.nodes.find((n) => n.id === getTotal.nodeId).data.variableId = vTotal.variableId;
+  const getTotal = addNode(doc, 'var');
+  doc = setNodeData(getTotal.doc, getTotal.nodeId, { variableId: vTotal.variableId }).doc;
 
-  const getI = addNode(doc, 'get'); doc = getI.doc;
-  doc.nodes.find((n) => n.id === getI.nodeId).data.variableId = vI.variableId;
+  const getI = addNode(doc, 'var');
+  doc = setNodeData(getI.doc, getI.nodeId, { variableId: vI.variableId }).doc;
 
   const addOp = addNode(doc, 'add'); doc = addOp.doc;
   doc = addEdge(doc, { source: getTotal.nodeId, sourceHandle: 'value', target: addOp.nodeId, targetHandle: 'a' }).doc;
@@ -338,8 +338,8 @@ test('Export generates valid Python that executes correctly in Python 3 runtime'
   const printNode = addNode(doc, 'print'); doc = printNode.doc;
   doc = addEdge(doc, { source: forId, sourceHandle: 'next', target: printNode.nodeId, targetHandle: 'in' }).doc;
 
-  const getTotalAfter = addNode(doc, 'get'); doc = getTotalAfter.doc;
-  doc.nodes.find((n) => n.id === getTotalAfter.nodeId).data.variableId = vTotal.variableId;
+  const getTotalAfter = addNode(doc, 'var');
+  doc = setNodeData(getTotalAfter.doc, getTotalAfter.nodeId, { variableId: vTotal.variableId }).doc;
   doc = addEdge(doc, { source: getTotalAfter.nodeId, sourceHandle: 'value', target: printNode.nodeId, targetHandle: 'value' }).doc;
 
   // Export to python code

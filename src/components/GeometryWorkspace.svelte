@@ -13,5 +13,7 @@
 </script>
 
 <SvelteFlowProvider>
-  <GeometryWorkspaceInner {...props} />
+  {#key props.documentKey}
+    <GeometryWorkspaceInner {...props} />
+  {/key}
 </SvelteFlowProvider>
