@@ -817,7 +817,7 @@ export function copyFragment(graph, nodeIds, accessibleVariables = []) {
   return serializeGeometryDocument(fragmentDoc);
 }
 
-export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVariables = []) {
+export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVariables = [], options = {}) {
   if (!graph || typeof text !== 'string') return null;
   if (text.length > 1000000) {
     return { error: 'Clipboard content exceeds 1,000,000 characters.' };
@@ -925,8 +925,11 @@ export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVa
       continue;
     }
 
-    // 2. Same name+type accessible -> remap
-    const remapMatch = accVars.find((v) => v.name === origVar.name && v.type === origVar.type);
+    // 2. Same-name accessible variable. Splicing deliberately permits type conflicts;
+    // validation reports the resulting mismatch without silently renaming the variable.
+    const remapMatch = options.matchVariablesByName
+      ? accVars.find((v) => v.name === origVar.name)
+      : accVars.find((v) => v.name === origVar.name && v.type === origVar.type);
     if (remapMatch) {
       varIdMap.set(origVarId, remapMatch.id);
       continue;
@@ -1031,7 +1034,7 @@ export function spliceConvertedFragment(graph, codeNodeId, convertedDoc, accessi
     fragment.edges.push({ id: uuid(), source: 'start', sourceHandle: 'next', target: expressionRootId, targetHandle: 'in' });
   }
 
-  const pasted = pasteFragment(graph, serializeGeometryDocument(fragment), codeNode.position, accessibleVariables);
+  const pasted = pasteFragment(graph, serializeGeometryDocument(fragment), codeNode.position, accessibleVariables, { matchVariablesByName: true });
   if (!pasted || pasted.error) return { error: pasted?.error || 'The converted fragment could not be inserted.' };
   const idMap = pasted.idMap || new Map();
   const mapped = (id) => id ? (idMap instanceof Map ? idMap.get(id) : idMap[id]) : null;

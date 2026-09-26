@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createGeometryDocument } from '../src/core/geometry.js';
+import { createGeometryDocument, serializeGeometryDocument } from '../src/core/geometry.js';
 import { convertPythonAstToGcn } from '../src/core/python-converter.js';
 import { generateGeometryPreview } from '../src/core/geometry-codegen.js';
-import { applyEdit, createEditorState, spliceConvertedFragment, undo } from '../src/core/geometry-editor.js';
+import { applyEdit, createEditorState, pasteFragment, spliceConvertedFragment, undo } from '../src/core/geometry-editor.js';
 
 const parse = (source) => JSON.parse(spawnSync('python', ['electron/python-parser.py'], { input: source, encoding: 'utf8' }).stdout);
 const converted = (source) => convertPythonAstToGcn(parse(source), source).document;
@@ -44,6 +44,26 @@ test('Expression Code node splice routes the math root into the consumer', () =>
   assert.ok(!result.error);
   assert.equal(result.doc.edges.some((e) => e.target === 'after' && e.targetHandle === 'value'), true);
   assert.equal(result.doc.nodes.some((n) => n.type === 'binary'), true);
+});
+
+test('Code splice reuses an accessible variable by name despite a type conflict', () => {
+  const doc = graphWithCode();
+  doc.variables.push({ id: 'x-float', name: 'x', type: 'float', initialValue: 0.5 });
+  const result = spliceConvertedFragment(doc, 'code', converted('x = 1\nprint(x)\n'), doc.variables, { isRootScope: true });
+  assert.ok(!result.error);
+  assert.equal(result.doc.variables.filter((v) => v.name === 'x').length, 1);
+  assert.match(generateGeometryPreview(result.doc, 'python').code, /x = (?:1|float\(1\))/);
+
+  const nested = spliceConvertedFragment(doc, 'code', converted('def f():\n    pass\n'), [], { isRootScope: false });
+  assert.match(nested.error, /nested scope/);
+});
+
+test('Normal paste keeps its existing same-name-and-type variable rule', () => {
+  const doc = graphWithCode();
+  doc.variables.push({ id: 'x-float', name: 'x', type: 'float', initialValue: 0.5 });
+  const result = pasteFragment(doc, serializeGeometryDocument(converted('x = 1\nprint(x)\n')), { x: 0, y: 0 }, doc.variables);
+  assert.ok(!result.error);
+  assert.ok(result.doc.variables.some((v) => v.name === 'x_2'));
 });
 
 test('Code splice reuses an accessible variable and refuses nested structural conversions', () => {
