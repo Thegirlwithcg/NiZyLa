@@ -167,21 +167,16 @@ var d: bool = a > 2
   assert.equal(varD.type, 'bool');
   assert.equal(varD.initialValue, false);
 
-  // In doc1 (no user _ready), a, c, d have Set Variable nodes in the root Start chain
+  // Non-literal member initializers remain verbatim class members; Start stays empty.
   const setNodes1 = doc1.nodes.filter((n) => n.type === 'setVariable');
-  assert.equal(setNodes1.length, 3);
-  assert.equal(setNodes1[0].data.variableId, varA.id);
-  assert.equal(setNodes1[1].data.variableId, varC.id);
-  assert.equal(setNodes1[2].data.variableId, varD.id);
-
-  // Codegen on doc1 generates func _ready(): with a, c, d assignments
+  assert.equal(setNodes1.length, 0);
   const code1 = generateGeometryCode(doc1, 'gdscript');
   assert.ok(code1.code);
-  assert.ok(code1.code.includes('var a: int = 0'));
+  assert.ok(code1.code.includes('var a: int = 5 + 3'));
   assert.ok(code1.code.includes('var b: String = "hi"'));
-  assert.ok(code1.code.includes('var c: int = 0'));
-  assert.ok(code1.code.includes('var d: bool = false'));
-  assert.ok(code1.code.includes('func _ready():\n    a = (5 + 3)\n    c = get_count()\n    d = (a > 2)'));
+  assert.ok(code1.code.includes('var c = get_count()'));
+  assert.ok(code1.code.includes('var d: bool = a > 2'));
+  assert.match(code1.code, /func _ready\(\):\n    pass/);
 
   // Test plain literals becoming initialValues
   const literalsGd = `extends Node
@@ -230,8 +225,9 @@ func _ready():
   const codeReady = generateGeometryCode(docReady, 'gdscript');
   assert.ok(codeReady.code);
   assert.ifError(codeReady.diagnostics.find((d) => d.severity === 'error'));
-  // c's assignment is the first line of _ready
-  assert.ok(codeReady.code.includes('func _ready():\n    c = get_count()\n    print("Ready!")'));
+  // Member initialization is not moved into _ready.
+  assert.ok(codeReady.code.includes('var c = get_count()'));
+  assert.ok(codeReady.code.includes('func _ready():\n    print("Ready!")'));
 });
 
 test('electron/python-parser.py and resource/python-parser.py are byte-identical', () => {

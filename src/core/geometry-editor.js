@@ -1034,6 +1034,24 @@ export function spliceConvertedFragment(graph, codeNodeId, convertedDoc, accessi
     fragment.edges.push({ id: uuid(), source: 'start', sourceHandle: 'next', target: expressionRootId, targetHandle: 'in' });
   }
 
+  // A folded declaration is a scope-level initializer. When splicing into an existing
+  // graph it cannot replace the host variable's initializer, so materialize it as a Set.
+  if (!isExpression) {
+    const initialized = (fragment.variables || []).filter((v) => v.initialValue !== undefined
+      && !(fragment.nodes || []).some((n) => n.type === 'setVariable' && n.data?.variableId === v.id));
+    for (const variable of initialized) {
+      const firstEdge = (fragment.edges || []).find((e) => e.source === 'start' && e.sourceHandle === 'next');
+      if (!firstEdge) continue;
+      const setId = uuid();
+      const litId = uuid();
+      fragment.nodes.push({ id: setId, type: 'setVariable', position: { x: codeNode.position.x, y: codeNode.position.y }, data: { variableId: variable.id } });
+      fragment.nodes.push({ id: litId, type: 'literal', position: { x: codeNode.position.x - 250, y: codeNode.position.y }, data: { valueType: variable.type, value: structuredClone(variable.initialValue) } });
+      fragment.edges = fragment.edges.filter((e) => e !== firstEdge);
+      fragment.edges.push({ id: uuid(), source: 'start', sourceHandle: 'next', target: setId, targetHandle: 'in' });
+      fragment.edges.push({ id: uuid(), source: litId, sourceHandle: 'value', target: setId, targetHandle: 'value' });
+      fragment.edges.push({ id: uuid(), source: setId, sourceHandle: 'next', target: firstEdge.target, targetHandle: firstEdge.targetHandle });
+    }
+  }
   const pasted = pasteFragment(graph, serializeGeometryDocument(fragment), codeNode.position, accessibleVariables, { matchVariablesByName: true });
   if (!pasted || pasted.error) return { error: pasted?.error || 'The converted fragment could not be inserted.' };
   const idMap = pasted.idMap || new Map();

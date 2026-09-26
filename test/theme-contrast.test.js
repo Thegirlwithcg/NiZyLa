@@ -101,3 +101,28 @@ for (const themeId of targetThemes) {
     assert.equal(tokens['--accent']?.toLowerCase(), preset.accent.toLowerCase(), `${themeId} --accent should match`);
   });
 }
+
+const allThemes = Object.keys(THEME_PRESETS);
+function parseColor(value) {
+  const hex = value.replace('#', '');
+  const six = hex.slice(0, 6);
+  return { r: parseInt(six.slice(0, 2), 16), g: parseInt(six.slice(2, 4), 16), b: parseInt(six.slice(4, 6), 16), a: hex.length >= 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1 };
+}
+function blend(foreground, background) {
+  const f = parseColor(foreground); const b = parseColor(background);
+  return `#${[f.r * f.a + b.r * (1 - f.a), f.g * f.a + b.g * (1 - f.a), f.b * f.a + b.b * (1 - f.a)].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+}
+
+test('all themes keep selection tokens synchronized and visible over the active line', () => {
+  for (const themeId of allThemes) {
+    const preset = THEME_PRESETS[themeId];
+    const tokens = extractThemeTokens(stylesCss, themeId);
+    assert.equal(tokens['--selection']?.toLowerCase(), preset.selection.toLowerCase(), `${themeId} selection token should match`);
+    assert.equal(tokens['--gcn-selected']?.toLowerCase(), preset.gcnSelected.toLowerCase(), `${themeId} selected token should match`);
+    assert.ok(contrastRatio(preset.gcnSelected, preset.editorBg) >= 3, `${themeId} selected ring must contrast with canvas`);
+    const selectedOnEditor = blend(preset.selection, preset.editorBg);
+    const selectedOnActive = blend(preset.selection, preset.activeLine);
+    assert.ok(contrastRatio(selectedOnEditor, preset.editorBg) >= 1.35, `${themeId} selection vs editor background is too weak`);
+    assert.ok(contrastRatio(selectedOnActive, preset.activeLine) >= 1.35, `${themeId} selection vs active line is too weak`);
+  }
+});

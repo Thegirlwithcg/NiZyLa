@@ -80,10 +80,10 @@ if __name__ == "__main__":
   const parsedRawNoGuard = JSON.parse(serializedNoGuard);
   assert.deepEqual(parsedRawNoGuard.nodes.find((n) => n.type === 'start').data, {});
 
-  // 5. x = 5\nprint(x)\n -> code is exactly 'x = 5\nx = 5\nprint(x)\n' (declaration + setVariable)
+  // 5. A literal first assignment is the declaration initializer (no duplicate Set).
   const docVar = convert('x = 5\nprint(x)\n');
   const exportedVar = generateGeometryCode(docVar, 'python');
-  assert.equal(exportedVar.code, 'x = 5\nx = 5\nprint(x)\n');
+  assert.equal(exportedVar.code, 'x = 5\nprint(x)\n');
 });
 
 test('converter uses full statement support inside if else while and for bodies', () => {

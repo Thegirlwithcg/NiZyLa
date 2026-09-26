@@ -1,8 +1,11 @@
 import { createGeometryDocument, createChildGraph } from './geometry.js';
+import { inferExpressionType } from './expression-type.js';
+import { layoutGraph } from './geometry-layout.js';
 
 const uuid = () => globalThis.crypto.randomUUID();
 
-export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile = null) {
+export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile = null, options = {}) {
+  const foldLiteralInitializers = options.foldLiteralInitializers !== false;
   if (!astResult || astResult.error) {
     return {
       document: null,
@@ -92,7 +95,24 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       if (commentLines.has(line)) consumedComments.add(line);
     }
   }
+  function markVerbatimSegment(segment, startLine) {
+    const first = Number(startLine);
+    if (!Number.isInteger(first) || !segment) return;
+    const last = first + String(segment).split(/\r?\n/).length - 1;
+    for (let line = first; line <= last; line++) if (commentLines.has(line)) consumedComments.add(line);
+  }
   function withComment(data, stmt) { return attachComment(data, stmt); }
+  function statementHasComment(stmt) {
+    const start = Number(stmt?.loc?.startLine);
+    if (!Number.isInteger(start)) return false;
+    if (commentLines.has(start)) return true;
+    for (let line = start - 1; line >= 1; line--) {
+      const c = commentLines.get(line);
+      if (!c?.full || consumedComments.has(line)) break;
+      return true;
+    }
+    return false;
+  }
   function statementNode(graph, node, stmt) {
     if (!Object.hasOwn(node.data || {}, 'comment')) node.data = attachComment(node.data || {}, stmt);
     if (node.type === 'codeNode') markCodeComments(stmt);
@@ -201,6 +221,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     const t = expr.type;
 
     const makeCodeExpression = () => {
+      markVerbatimSegment(expr.segment, expr.lineno || 1);
       const node = {
         id: `expr_${uuid().slice(0, 8)}`,
         type: 'codeNode',
@@ -273,6 +294,13 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     }
 
     if (t === 'Name') {
+      // A Python global binds to the module variable, never to a local declaration.
+      const globalVar = graph._globalNames?.has(expr.id) ? doc.variables.find((v) => v.name === expr.id) : null;
+      if (globalVar) {
+        const node = { id: `get_${uuid().slice(0, 8)}`, type: 'getVariable', position: { x: posX, y: posY }, data: { variableId: globalVar.id } };
+        graph.nodes.push(node);
+        return { node, outputHandle: 'value' };
+      }
       // Check if it's a known variable in graph, or symbol
       const isVar = (graph.variables || []).some((v) => v.name === expr.id);
       if (isVar) {
@@ -624,6 +652,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     }
 
     // Fallback Code Node for expression
+    markVerbatimSegment(expr.segment, expr.lineno || 1);
     const codeNode = {
       id: `expr_${uuid().slice(0, 8)}`,
       type: 'codeNode',
@@ -687,8 +716,14 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           return { id: pid, name: p.name, type: p.type || 'any', defaultValue: p.default };
         });
 
+        child._globalNames = new Set((stmt.body || []).filter((s) => s?.kind === 'Global').flatMap((s) => s.names || []));
+        for (const name of child._globalNames) {
+          const sourceVar = doc.variables.find((v) => v.name === name);
+          if (sourceVar && !child.variables.some((v) => v.name === name)) child._globalNames.add(name);
+        }
         convertStatements(stmt.body || [], child, 200, 150);
         delete child._currentParams;
+        delete child._globalNames;
 
         const fnNode = {
           id: `fn_${uuid().slice(0, 8)}`,
@@ -748,14 +783,41 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
         continue;
       }
 
+      if (k === 'Global' || k === 'Nonlocal') {
+        const globalComment = attachComment({}, stmt).comment;
+        if (globalComment) targetGraph._pendingComment = globalComment;
+        if (k === 'Global') {
+          for (const name of stmt.names || []) {
+            if (!doc.variables.some((v) => v.name === name)) ensureVariable(doc, name, null);
+            targetGraph._globalNames ||= new Set(); targetGraph._globalNames.add(name);
+          }
+        }
+        continue;
+      }
+
       if (k === 'AssignVar') {
-        let v = ensureVariable(targetGraph, stmt.name, stmt.value);
+        const bindingGraph = targetGraph._globalNames?.has(stmt.name) ? doc : targetGraph;
+        const inferred = inferExpressionType(stmt.value);
+        let v = ensureVariable(bindingGraph, stmt.name, stmt.value);
+        const hasStatementComment = statementHasComment(stmt);
+        if (hasStatementComment && !bindingGraph._assignedNames?.has(stmt.name)) {
+          v.initialValue = v.type === 'string' ? '' : v.type === 'bool' ? false : v.type === 'list' ? [] : v.type === 'dict' ? {} : 0;
+        }
+        const literalInitializer = stmt.value?.type === 'Constant' || (stmt.value?.type === 'List' && !(stmt.value.elements || []).length) || (stmt.value?.type === 'Dict' && !(stmt.value.keys || []).length);
+        if (foldLiteralInitializers && inferred && literalInitializer && !hasStatementComment && !bindingGraph._assignedNames?.has(stmt.name) && !bindingGraph._usedNames?.has(stmt.name)) {
+          v.type = inferred;
+          v.initialValue = stmt.value.value ?? (inferred === 'string' ? String(stmt.value.value ?? '') : inferred === 'bool' ? Boolean(stmt.value.value) : inferred === 'list' ? [] : inferred === 'dict' ? {} : Number(stmt.value.value ?? 0));
+          bindingGraph._assignedNames ||= new Set(); bindingGraph._assignedNames.add(stmt.name);
+          continue;
+        }
+        bindingGraph._assignedNames ||= new Set(); bindingGraph._assignedNames.add(stmt.name);
         const setNode = {
           id: `set_${uuid().slice(0, 8)}`,
           type: 'setVariable',
           position: { x: curX, y: curY },
-          data: { variableId: v.id }
+          data: { variableId: v.id, ...(targetGraph._pendingComment ? { comment: [targetGraph._pendingComment, attachComment({}, stmt).comment].filter(Boolean).join('\n') } : {}) }
         };
+        delete targetGraph._pendingComment;
         statementNode(targetGraph, setNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
@@ -1141,6 +1203,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     }
   }
 
-  const unattachedComments = [...commentLines.keys()].filter((line) => !consumedComments.has(line)).length;
+  const cleanMeta = (graph) => { delete graph._currentParams; delete graph._globalNames; delete graph._assignedNames; delete graph._usedNames; delete graph._pendingComment; for (const n of graph.nodes || []) if (n.data?.graph) cleanMeta(n.data.graph); };
+  cleanMeta(doc);
+  layoutGraph(doc);
+  const unattachedComments = [...commentLines.keys()].filter((line) => commentLines.get(line)?.text && !consumedComments.has(line)).length;
   return { document: doc, error: null, unattachedComments };
 }

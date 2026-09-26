@@ -13,6 +13,7 @@
   import { sameDocument } from './core/geometry-editor.js';
   import { loadPreferences, applyPreferences, savePreferences, THEME_PRESETS, applyThemePreset } from './core/preferences.js';
   import { repathTab } from './core/session-config.js';
+  import { isShortcut } from './core/shortcuts.js';
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -309,8 +310,8 @@
     const wrapped = codeKind === 'expression' ? `_gcn_expr = (${code})\n` : code;
     try {
       const res = target === 'python'
-        ? await api.convertPython({ source: wrapped, sourceFile: null, preferredInterpreter: preferences?.pythonInterpreter, projectRoot: project?.rootPath })
-        : await api.convertGdscript({ source: wrapped, sourceFile: null });
+        ? await api.convertPython({ source: wrapped, sourceFile: null, preferredInterpreter: preferences?.pythonInterpreter, projectRoot: project?.rootPath, foldLiteralInitializers: false })
+        : await api.convertGdscript({ source: wrapped, sourceFile: null, foldLiteralInitializers: false });
       if (!res?.ok || !res.document) return { ok: false, reason: 'Conversion failed.', error: res?.error || 'The code could not be converted.' };
       return { ok: true, document: res.document };
     } catch (error) {
@@ -396,7 +397,8 @@
           baseline: null,
           documentKey: crypto.randomUUID(),
           hasDrafts: false,
-          dirty: true
+          dirty: true,
+          freshConversion: true
         };
 
         panes = panes.map((p) => {
@@ -429,7 +431,8 @@
           baseline: null,
           documentKey: crypto.randomUUID(),
           hasDrafts: false,
-          dirty: true
+          dirty: true,
+          freshConversion: true
         };
         const targetPane = panes.find((p) => p.id === activePaneId && !p.detached) ?? panes[0];
         panes = panes.map((p) => p.id === targetPane.id ? {
@@ -549,6 +552,13 @@
         doc: nextDoc,
         dirty: t.hasDrafts || t.baseline === null || !sameDocument(nextDoc, t.baseline)
       } : t)
+    } : p);
+  }
+
+  function handleGeometryBaselineChange(paneId, tabId, nextDoc) {
+    panes = panes.map((p) => p.id === paneId ? {
+      ...p,
+      tabs: p.tabs.map((t) => t.id === tabId ? { ...t, doc: nextDoc, baseline: nextDoc, dirty: false, freshConversion: false } : t)
     } : p);
   }
 
@@ -723,13 +733,12 @@
       if (tabMenu && !event.target.closest('.context-menu')) tabMenu = null;
     };
     const keydown = async (event) => {
-      const mod = event.metaKey || event.ctrlKey;
-      if (mod && event.key.toLowerCase() === 'p') { event.preventDefault(); openPalette(); query = ''; }
-      if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); await handleSave(); }
-      if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGraph(); }
-      if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
-      if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
-      if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
+      if (isShortcut(event, 'KeyP', { mod: true })) { event.preventDefault(); openPalette(); query = ''; }
+      if (isShortcut(event, 'KeyS', { mod: true })) { event.preventDefault(); await handleSave(); }
+      if (isShortcut(event, 'KeyG', { mod: true })) { event.preventDefault(); toggleGraph(); }
+      if (isShortcut(event, 'Backslash', { mod: true })) { event.preventDefault(); toggleSplit(); }
+      if (isShortcut(event, 'Backquote', { mod: true })) { event.preventDefault(); toggleTerminal(); }
+      if (isShortcut(event, 'Comma', { mod: true })) { event.preventDefault(); showPreferences = !showPreferences; }
       if (event.key === 'F2' && focusedTreeEntry && focusedTreeEntry.path !== project?.rootPath) { event.preventDefault(); beginRename(focusedTreeEntry); }
       if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; contextMenu = null; tabMenu = null; cancelRename(); }
     };
@@ -2517,6 +2526,8 @@
                   {preferences}
                   {showLineNumbers}
                   onchange={(next) => handleGeometryChange(pane.id, tab.id, next)}
+                  onbaselinechange={(next) => handleGeometryBaselineChange(pane.id, tab.id, next)}
+                  freshConversion={tab.freshConversion === true}
                   onconvertcode={convertCodeSnippet}
                   onfatal={(error) => handleGeometryFatal(pane.id, tab.id, error)}
                   ondraftchange={(hasDrafts) => handleGeometryDraftChange(pane.id, tab.id, hasDrafts)}
@@ -2653,6 +2664,8 @@
               {preferences}
               {showLineNumbers}
               onchange={(next) => handleGeometryChange(pane.id, tab.id, next)}
+              onbaselinechange={(next) => handleGeometryBaselineChange(pane.id, tab.id, next)}
+              freshConversion={tab.freshConversion === true}
               onconvertcode={convertCodeSnippet}
               onfatal={(error) => handleGeometryFatal(pane.id, tab.id, error)}
               ondraftchange={(hasDrafts) => handleGeometryDraftChange(pane.id, tab.id, hasDrafts)}

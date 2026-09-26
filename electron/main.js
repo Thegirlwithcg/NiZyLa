@@ -956,7 +956,7 @@ async function convertSource(event, kind, options) {
     return { ok: false, reason: 'too-large', error: `${name} is too large to convert. The limit is 1 MB or 20,000 lines.` };
   }
   const wasmDir = isDev ? path.join(__dirname, '..', 'resource', 'wasm') : path.join(process.resourcesPath, 'resource', 'wasm');
-  if (kind === 'gdscript') return runConversionWorker({ kind, source, sourceFile, wasmDir });
+  if (kind === 'gdscript') return runConversionWorker({ kind, source, sourceFile, wasmDir, options: { foldLiteralInitializers: options?.foldLiteralInitializers } });
   const interpreter = resolvePythonInterpreter(options.projectRoot, options.preferredInterpreter);
   if (!interpreter) return { ok: false, reason: 'no-interpreter', error: 'Python interpreter was not found; Python 3.10+ is required to parse Python files.' };
   const candidates = [path.join(__dirname, '..', 'resource', 'python-parser.py'), path.join(process.resourcesPath || '', 'resource', 'python-parser.py'), path.join(__dirname, 'python-parser.py')];
@@ -964,7 +964,7 @@ async function convertSource(event, kind, options) {
   const parsed = await runParser(interpreter, scriptPath, source);
   if (!parsed.ok) return parsed;
   if (parsed.json.error) return { ok: false, reason: 'syntax', error: parsed.json.message || `${name} contains a syntax error.` };
-  return runConversionWorker({ kind, ast: parsed.json, source, sourceFile });
+  return runConversionWorker({ kind, ast: parsed.json, source, sourceFile, options: { foldLiteralInitializers: options?.foldLiteralInitializers } });
 }
 
 ipcMain.handle('convert:python', async (event, options) => {

@@ -249,6 +249,14 @@ def serialize_stmt(node, source):
             "loc": loc
         }
 
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return {
+            "kind": "Global" if isinstance(node, ast.Global) else "Nonlocal",
+            "names": list(node.names),
+            "segment": segment,
+            "loc": loc
+        }
+
     if isinstance(node, ast.Assign):
         # target = value
         if len(node.targets) == 1:

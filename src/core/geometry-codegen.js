@@ -615,8 +615,9 @@ function generateClass(node, baseDepth, context, scopePath = []) {
     // Generate class-level variables
     for (const variable of graph.variables || []) {
       const value = literal(variable.type, variable.initialValue, target, {});
-      const line = python
-        ? `${variable.name} = ${value}`
+      const line = (!python && variable.declaration)
+        ? variable.declaration
+        : python ? `${variable.name} = ${value}`
         : `var ${variable.name}: ${typeName(variable.type, 'gdscript') || 'Variant'} = ${value}`;
       emitLine(baseDepth + 1, line, null, childScope);
       itemsEmitted++;
@@ -864,8 +865,9 @@ function generate(doc, target, options = {}) {
     }
     context.emitComment({ id: `variable:${variable.id}`, data: variable }, 0, []);
     const value = literal(variable.type, variable.initialValue, target, {});
-    const line = python
-      ? `${variable.name} = ${value}`
+    const line = (!python && variable.declaration)
+      ? variable.declaration
+      : python ? `${variable.name} = ${value}`
       : `var ${variable.name}: ${typeName(variable.type, 'gdscript') || 'Variant'} = ${value}`;
     emitLine(0, line);
   }

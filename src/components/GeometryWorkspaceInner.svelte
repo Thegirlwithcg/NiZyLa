@@ -1,6 +1,7 @@
 <script module>
   import { sameContent } from '../core/geometry-editor.js';
   const historyStore = new Map();
+  const selectionStore = new Map();
   const MAX_HISTORY_ENTRIES = 20;
   export function forgetGeometryHistory(key) {
     if (key) historyStore.delete(key);
@@ -22,7 +23,11 @@
   import { Background, MarkerType, SvelteFlow, useSvelteFlow, useUpdateNodeInternals } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
   import { nodeDefinitions } from '../core/geometry.js';
+  import { isShortcut } from '../core/shortcuts.js';
+  import { geometryContextMenuItems } from '../core/geometry-context-menu.js';
+  import { layoutGraph } from '../core/geometry-layout.js';
   import { generateGeometryCode, generateGeometryPreview } from '../core/geometry-codegen.js';
+  import { getPreviewStatus } from '../core/geometry-preview-status.js';
   import { nodeHelp } from '../core/node-help.js';
   import { THEME_PRESETS } from '../core/preferences.js';
   import {
@@ -53,7 +58,9 @@
     onrun = null,
     onstop = null,
     isRunning = false,
-    onfatal = null
+    onfatal = null,
+    freshConversion = false,
+    onbaselinechange = null
   } = $props();
 
   const uid = $props.id();
@@ -85,9 +92,11 @@
   let generated = $state.raw({ code: '', diagnostics: [], sourceMap: [], skippedNodeIds: [] });
   let strictGenerated = $state.raw({ code: null, diagnostics: [] });
   let lastGoodPreview = $state.raw({ code: '', sourceMap: [] });
+  let usingLastGood = $state(false);
   let drafts = $state.raw({});
   let notice = $state.raw({ text: '', error: false });
   let menu = $state.raw(null);
+  let contextMenu = $state.raw(null);
   let deleting = $state.raw(null);
   let copyResult = $state.raw('');
   let grab = $state.raw(null);
@@ -108,6 +117,7 @@
   let collapsed = $state({ help: false, variables: false, parameters: false, diagnostics: false, ...(savedLayout.collapsed || {}) });
   let codeLineNumbers = $state(savedLayout.codeLineNumbers ?? true);
   let resizing = null;
+  let measuredFreshLayoutDone = false;
 
   let helpSectionEl = $state();
   let codeModalNodeId = $state(null);
@@ -147,8 +157,9 @@
   const canRedo = $derived(editor.future.length > 0);
   const canCopy = $derived(!!strictGenerated.code && strictGenerated.diagnostics.every((d) => d.severity !== 'error') && !hasDrafts);
   const canRun = $derived(!isRunning && !hasDrafts && errors.length === 0 && doc.target === 'python');
-  const showingLastGood = $derived(hasDrafts || (errors.length > 0 && !(generated.skippedNodeIds?.length)));
+  const previewStatus = $derived(getPreviewStatus(hasDrafts, usingLastGood && !hasDrafts, !!lastGoodPreview.code));
   const previewFile = $derived(doc.target === 'python' ? { name: 'generated.py', path: 'generated.py' } : { name: 'generated.gd', path: 'generated.gd' });
+  const previewBaseFontSize = $derived(Number(preferences?.fontSize) || 14);
 
   const selectedNode = $derived(nodes.find((n) => n.selected));
   const selectedNodes = $derived(nodes.filter((n) => n.selected));
@@ -208,6 +219,7 @@
   }
 
   function onwindowpointerdowncapture(e) {
+    if (contextMenu && !e.target.closest?.('.context-menu')) contextMenu = null;
     if (grab && canvasEl && !canvasEl.contains(e.target)) {
       placeGrab();
     }
@@ -238,6 +250,9 @@
   onDestroy(() => {
     const finalEditor = endEdit(editor);
     persistHistory(documentKey, finalEditor, scopeStack);
+    const selectionScopes = selectionStore.get(documentKey) || new Map();
+    selectionScopes.set(scopeStack.map((s) => s.id).join('/'), nodes.filter((n) => n.selected).map((n) => n.id));
+    selectionStore.set(documentKey, selectionScopes);
     clearTimeout(noticeTimer);
     window.removeEventListener('pointermove', resizePanels);
     window.removeEventListener('pointerup', stopResizePanels);
@@ -335,7 +350,30 @@
     saveGcnLayout();
   }
 
+  function measuredSizes() {
+    return new Map(nodes.filter((n) => n.measured?.width && n.measured?.height).map((n) => [n.id, n.measured]));
+  }
+  function autoLayout() {
+    const graph = structuredClone(activeGraph);
+    layoutGraph(graph, measuredSizes());
+    setEditor(updateGraphAtScope(editor.present, scopePathIds, () => graph));
+  }
+
+  $effect(() => {
+    if (!freshConversion || measuredFreshLayoutDone || !nodes.length) return;
+    const measured = nodes.filter((n) => n.measured?.width && n.measured?.height);
+    if (measured.length !== nodes.length) return;
+    const graph = structuredClone(activeGraph);
+    layoutGraph(graph, new Map(measured.map((n) => [n.id, n.measured])));
+    measuredFreshLayoutDone = true;
+    const nextDoc = updateGraphAtScope(editor.present, scopePathIds, () => graph);
+    editor = { ...editor, present: nextDoc };
+    refresh();
+    onbaselinechange?.(nextDoc);
+  });
+
   function refresh() {
+    usingLastGood = false;
     try {
     const d = editor.present;
     let result;
@@ -346,6 +384,7 @@
       if (previewResult && (previewResult.code !== '' || !result.diagnostics.some((item) => item.severity === 'error'))) {
         generated = previewResult;
       } else {
+        usingLastGood = true;
         generated = { ...lastGoodPreview, diagnostics: result.diagnostics, skippedNodeIds: [] };
       }
       if (!result.diagnostics.some((item) => item.severity === 'error') && result.code) lastGoodPreview = { code: result.code, sourceMap: result.sourceMap };
@@ -386,10 +425,11 @@
   function syncFlow() {
     const currentGraph = activeGraph;
     const previousNodes = new Map(nodes.map((n) => [n.id, n]));
+    const rememberedSelection = selectionStore.get(documentKey)?.get(scopePathIds.join('/')) || [];
     nodes = (currentGraph.nodes || []).map((g) => {
       const old = previousNodes.get(g.id);
       if (old && old.position.x === g.position.x && old.position.y === g.position.y) return old;
-      return { ...(old ?? { id: g.id, type: 'geometry', data: {}, selected: false }), position: { x: g.position.x, y: g.position.y } };
+      return { ...(old ?? { id: g.id, type: 'geometry', data: {}, selected: rememberedSelection.includes(g.id) }), position: { x: g.position.x, y: g.position.y }, selected: old?.selected ?? rememberedSelection.includes(g.id) };
     });
     const previousEdges = new Map(edges.map((e) => [e.id, e]));
     edges = (currentGraph.edges || []).map((e) => {
@@ -426,8 +466,10 @@
         scopeStack = [];
       }
       drafts = {};
+      measuredFreshLayoutDone = false;
       ondraftchange?.(false, {});
       menu = null;
+      contextMenu = null;
       deleting = null;
       nodes = [];
       edges = [];
@@ -440,6 +482,7 @@
     if (!active) {
       if (grab) cancelGrab();
       menu = null;
+      contextMenu = null;
       return;
     }
     tick().then(() => requestAnimationFrame(() => untrack(() => updateNodeInternals([...view.nodes.keys()]))));
@@ -806,11 +849,10 @@
     if (event.key === 'Escape' && gcnLayout.previewMode === 'full') { event.preventDefault(); setPreviewMode(gcnLayout.previewBeforeFull || 'docked'); return; }
     if (!active || event.defaultPrevented || typing(event.target)) return;
     const mod = event.ctrlKey || event.metaKey;
-    const key = event.key.toLowerCase();
     const inCanvas = canvasEl.contains(event.target);
 
     if (grab) {
-      if (event.key === 'Escape' || (mod && (key === 'z' || key === 'y'))) {
+      if (event.key === 'Escape' || isShortcut(event, 'KeyZ', { mod: true }) || isShortcut(event, 'KeyY', { mod: true })) {
         event.preventDefault();
         cancelGrab();
         return;
@@ -824,26 +866,26 @@
       return;
     }
 
-    if (mod && !event.altKey && key === 'z') {
+    if (isShortcut(event, 'KeyZ', { mod: true })) {
       event.preventDefault();
       setEditor(event.shiftKey ? redo(editor) : undo(editor));
-    } else if (mod && !event.altKey && !event.shiftKey && key === 'y') {
+    } else if (isShortcut(event, 'KeyY', { mod: true })) {
       event.preventDefault();
       setEditor(redo(editor));
-    } else if (inCanvas && mod && !event.altKey && !event.shiftKey && key === 'c') {
+    } else if (inCanvas && isShortcut(event, 'KeyC', { mod: true })) {
       const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
       const nonStartIds = selectedIds.filter((id) => activeGraph.nodes.find((n) => n.id === id)?.type !== 'start');
       if (nonStartIds.length > 0) {
         event.preventDefault();
         copySelection();
       }
-    } else if (inCanvas && mod && !event.altKey && !event.shiftKey && key === 'v') {
+    } else if (inCanvas && isShortcut(event, 'KeyV', { mod: true })) {
       event.preventDefault();
       pasteSelection();
-    } else if (inCanvas && !mod && !event.altKey && event.shiftKey && key === 'a') {
+    } else if (inCanvas && isShortcut(event, 'KeyA', { shift: true })) {
       event.preventDefault();
       openMenu(false);
-    } else if (inCanvas && !mod && !event.altKey && event.shiftKey && key === 'd') {
+    } else if (inCanvas && isShortcut(event, 'KeyD', { shift: true })) {
       event.preventDefault();
       duplicateSelection();
     } else if (inCanvas && !mod && (event.key === 'Delete' || event.key === 'Backspace')) {
@@ -985,11 +1027,37 @@
     });
   }
 
+  function openContextMenu(event, kind, nodeId = null) {
+    if (grab) return;
+    event.preventDefault();
+    event.stopPropagation();
+    pointer = { x: event.clientX, y: event.clientY };
+    if (nodeId && !nodes.find((n) => n.id === nodeId)?.selected) selectOnly([nodeId]);
+    contextMenu = { x: event.clientX, y: event.clientY, kind, nodeId };
+    tick().then(() => document.querySelector('.gcn-geometry-context-menu button:not(:disabled)')?.focus());
+  }
+  function onnodecontextmenu({ event, node }) { openContextMenu(event, 'node', node.id); }
   function oncanvascontextmenu(e) {
-    if (grab || suppressNextContextMenu) {
-      e.preventDefault();
-      suppressNextContextMenu = false;
-    }
+    if (grab || suppressNextContextMenu) { e.preventDefault(); suppressNextContextMenu = false; return; }
+    if (e.target.closest?.('.svelte-flow__node')) return;
+    openContextMenu(e, 'empty');
+  }
+  function contextAction(id) {
+    contextMenu = null;
+    if (id === 'copy') copySelection();
+    else if (id === 'paste') pasteSelection();
+    else if (id === 'duplicate') duplicateSelection();
+    else if (id === 'delete') deleteSelection();
+    else if (id === 'add') openMenu(false);
+  }
+  function contextKeydown(event) {
+    if (event.key === 'Escape') { event.preventDefault(); contextMenu = null; return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const buttons = [...event.currentTarget.querySelectorAll('button:not(:disabled)')];
+      const index = buttons.indexOf(document.activeElement);
+      buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    } else if (event.key === 'Enter' && document.activeElement?.tagName === 'BUTTON') document.activeElement.click();
   }
 </script>
 
@@ -999,6 +1067,7 @@
     <button bind:this={addButton} onclick={() => openMenu(true)} aria-haspopup="dialog">+ Add Node</button>
     <button onclick={() => setEditor(undo(editor))} disabled={!canUndo} title="Undo (Ctrl+Z)">Undo</button>
     <button onclick={() => setEditor(redo(editor))} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)">Redo</button>
+    <button onclick={autoLayout} title="Arrange nodes in the current scope">Auto Layout</button>
     <button onclick={() => flow.fitView({ padding: 0.2, maxZoom: 1.25, duration: 200 })}>Fit View</button>
 
     {#if canEnterSelected}
@@ -1049,13 +1118,23 @@
       onpointerleave={() => { if (!grab) pointer = null; }}
       oncontextmenu={oncanvascontextmenu}>
       <SvelteFlow bind:nodes bind:edges {nodeTypes} colorMode={THEME_PRESETS[theme]?.scheme === 'light' ? 'light' : 'dark'}
-        deleteKey={[]} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}
+        multiSelectionKey={['Shift', 'Control', 'Meta']} selectionKey="Shift" deleteKey={[]} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}
         isValidConnection={(c) => checkConnection(activeGraph, c).ok} onbeforeconnect={connect} onconnectend={connectEnd}
+        onnodecontextmenu={onnodecontextmenu}
         onnodedragstop={({ nodes: dragged }) => commitPositions(dragged)}
         onselectiondragstop={(_e, dragged) => commitPositions(dragged)}
         onmoveend={(_e, viewport) => applyScoped((g) => ({ ...g, viewport }))}>
         <Background />
       </SvelteFlow>
+      <div class="gcn-footer-hint">{selectedNodes.length > 0 ? `${selectedNodes.length} selected · ` : ''}Shift + drag: box select · Shift + click: add to selection · Right-click: Copy / Paste · Ctrl+C / Ctrl+V works between Geometry tabs</div>
+      {#if contextMenu}
+        {@const items = geometryContextMenuItems({ kind: contextMenu.kind, selectedTypes: selectedNodes.map((n) => activeGraph.nodes.find((item) => item.id === n.id)?.type).filter(Boolean) })}
+        <div class="context-menu gcn-geometry-context-menu" style={`left:${contextMenu.x}px;top:${contextMenu.y}px`} role="menu" tabindex="-1" onkeydown={contextKeydown}>
+          {#each items as item}
+            <button type="button" role="menuitem" class:danger={item.danger} disabled={!item.enabled} onclick={() => contextAction(item.id)}>{item.label}{#if item.shortcut}<span class="gcn-menu-shortcut">{item.shortcut}</span>{/if}</button>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     {#if gcnLayout.panelVisible}
@@ -1205,6 +1284,7 @@
         <section bind:this={previewEl} aria-labelledby={`gcn-code-${uid}`} class={`gcn-preview mode-${gcnLayout.previewMode}`} style={gcnLayout.previewMode === 'float' ? `left:${gcnLayout.previewRect.x}px;top:${gcnLayout.previewRect.y}px;width:${gcnLayout.previewRect.width}px;height:${gcnLayout.previewRect.height}px;` : undefined} onwheel={previewWheel}>
           <div class="gcn-section-head gcn-preview-head" role="toolbar" tabindex="0" aria-label="Code preview controls" onpointerdown={startPreviewDrag}>
             <h3 id={`gcn-code-${uid}`}>Code Preview {#if generated.skippedNodeIds?.length}<span class="gcn-preview-partial">Partial — {generated.skippedNodeIds.length} nodes skipped</span>{/if}</h3>
+            {#if usingLastGood && lastGoodPreview.code}<span class="gcn-preview-banner" role="status">Showing last valid preview</span>{/if}
             <span class="gcn-preview-zoom">{gcnLayout.previewZoom}%</span>
             <button onclick={() => setPreviewZoom(gcnLayout.previewZoom - 10)} aria-label="Zoom out">−</button>
             <button onclick={() => setPreviewZoom(gcnLayout.previewZoom + 10)} aria-label="Zoom in">+</button>
@@ -1214,9 +1294,9 @@
             {#if onexport}<button onclick={() => onexport?.()} disabled={!canCopy}>Export</button>{/if}
             <button onclick={copyCode} disabled={!canCopy}>Copy Code</button>
           </div>
-          <div class="gcn-preview-box" style={`font-size:${gcnLayout.previewZoom}%`}>
+          <div class="gcn-preview-box" style={`--editor-font-size:${previewBaseFontSize * gcnLayout.previewZoom / 100}px`}>
             <CodeEditor file={previewFile} content={generated.code || ''} readOnly={true} {showLineNumbers} {theme} {preferences} />
-            {#if showingLastGood}<div class="gcn-preview-blocked" role="status">Showing last valid preview</div>{/if}
+            {#if usingLastGood && !lastGoodPreview.code}<div class="gcn-preview-blocked" role="status">{previewStatus.message}</div>{/if}
           </div>
           {#if copyResult}<p class="gcn-copy" role="status">{copyResult}</p>{/if}
         </section>

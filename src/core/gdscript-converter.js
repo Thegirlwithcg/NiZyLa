@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Parser, Language } from 'web-tree-sitter';
 import { createGeometryDocument, createChildGraph } from './geometry.js';
+import { inferExpressionType } from './expression-type.js';
+import { layoutGraph } from './geometry-layout.js';
 
 const uuid = () => globalThis.crypto.randomUUID();
 
@@ -34,7 +36,8 @@ export async function getGdscriptParser(wasmDir = null) {
   return parserInstance;
 }
 
-export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = null) {
+export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = null, options = {}) {
+  const foldLiteralInitializers = options.foldLiteralInitializers !== false;
   if (typeof source !== 'string') {
     return { document: null, error: 'Source must be a string.', unattachedComments: 0 };
   }
@@ -172,6 +175,12 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
     }
 
     if (node.type === 'identifier') {
+      const member = doc.variables.find((v) => v.name === text && v.declaration);
+      if (member) {
+        const symNode = { id: `sym_${uuid().slice(0, 8)}`, type: 'symbolRef', position: { x: posX, y: posY }, data: { symbol: text } };
+        graph.nodes.push(symNode);
+        return { node: symNode, outputHandle: 'value' };
+      }
       const isVar = (graph.variables || []).some((v) => v.name === text);
       if (isVar) {
         const v = graph.variables.find((v) => v.name === text);
@@ -402,9 +411,10 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
   }
 
   function parseRootVarInitializer(mappedType, raw) {
+    const nonLiteral = (type, declaration) => ({ type, initialValue: defaultInitialValue(type), isLiteral: false, declaration });
     if (!raw) {
       const type = mappedType || 'int';
-      return { type, initialValue: defaultInitialValue(type), isLiteral: false };
+      return nonLiteral(type, null);
     }
 
     if (!mappedType) {
@@ -427,38 +437,40 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
       if (raw === '{}') {
         return { type: 'dict', initialValue: {}, isLiteral: true };
       }
-      return { type: 'int', initialValue: 0, isLiteral: false };
+      const inferred = inferExpressionType(raw);
+      return nonLiteral(inferred || mappedType || 'int', raw);
     }
 
     // Declared type: literal kind must fit the variable type (int literal into float is OK)
     if (mappedType === 'int') {
       if (INT_REGEX.test(raw)) return { type: 'int', initialValue: parseInt(raw, 10), isLiteral: true };
-      return { type: 'int', initialValue: 0, isLiteral: false };
+      return nonLiteral('int', raw);
     }
     if (mappedType === 'float') {
       if (FLOAT_REGEX.test(raw) || INT_REGEX.test(raw)) {
         return { type: 'float', initialValue: parseFloat(raw), isLiteral: true };
       }
-      return { type: 'float', initialValue: 0.0, isLiteral: false };
+      return nonLiteral('float', raw);
     }
     if (mappedType === 'string') {
       if (STRING_REGEX.test(raw)) return { type: 'string', initialValue: raw.slice(1, -1), isLiteral: true };
-      return { type: 'string', initialValue: '', isLiteral: false };
+      return nonLiteral('string', raw);
     }
     if (mappedType === 'bool') {
       if (BOOL_REGEX.test(raw)) return { type: 'bool', initialValue: raw === 'true', isLiteral: true };
-      return { type: 'bool', initialValue: false, isLiteral: false };
+      return nonLiteral('bool', raw);
     }
     if (mappedType === 'list') {
       if (raw === '[]') return { type: 'list', initialValue: [], isLiteral: true };
-      return { type: 'list', initialValue: [], isLiteral: false };
+      return nonLiteral('list', raw);
     }
     if (mappedType === 'dict') {
       if (raw === '{}') return { type: 'dict', initialValue: {}, isLiteral: true };
-      return { type: 'dict', initialValue: {}, isLiteral: false };
+      return nonLiteral('dict', raw);
     }
 
-    return { type: 'int', initialValue: 0, isLiteral: false };
+    const inferred = inferExpressionType(raw);
+    return nonLiteral(inferred || mappedType || 'int', raw);
   }
 
   const topLevelChildren = [];
@@ -484,11 +496,12 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
       const mappedDeclared = mapDeclaredType(rawType);
       const rawVal = valNode ? source.slice(valNode.startIndex, valNode.endIndex).trim() : null;
 
-      const { type: varType, initialValue, isLiteral } = parseRootVarInitializer(mappedDeclared, rawVal);
+      const { type: varType, initialValue, isLiteral, declaration } = parseRootVarInitializer(mappedDeclared, rawVal);
+      const declarationLine = !isLiteral ? source.slice(node.startIndex, node.endIndex).trim() : null;
 
       let v = doc.variables.find((v) => v.name === varName);
       if (!v) {
-        v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: varType, initialValue };
+        v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: varType, initialValue, ...(declarationLine ? { declaration: declarationLine } : {}) };
         doc.variables.push(v);
       }
 
@@ -597,26 +610,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           const declaredName = declaredNode ? source.slice(declaredNode.startIndex, declaredNode.endIndex).trim() : '';
           const declared = doc.variables.find((v) => v.name === declaredName);
           if (declared && variableComment !== undefined) declared.comment = variableComment;
-          if (!hasRootReady) {
-            const init = rootVarInits.find((item) => item.node === node);
-            if (init) {
-              const setNode = {
-                id: `set_${uuid().slice(0, 8)}`,
-                type: 'setVariable',
-                position: { x: curX, y: curY },
-                data: { variableId: init.variable.id }
-              };
-              statementNode(targetGraph, setNode, node);
-              targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: setNode.id, targetHandle: 'in' });
-              const valRes = buildExpression(init.valNode, targetGraph, curX - 180, curY + 40);
-              if (valRes) {
-                targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: valRes.node.id, sourceHandle: valRes.outputHandle, target: setNode.id, targetHandle: 'value' });
-              }
-              prevId = setNode.id;
-              prevHandle = 'next';
-              curX += X_STEP;
-            }
-          }
+          // Module variables are class members; never lower their initializers into Start.
           continue;
         }
 
@@ -700,7 +694,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
         let childCurX = 200;
         let childCurY = 150;
 
-        if (isRoot && fnName === '_ready' && !readyInjected && rootVarInits.length > 0) {
+        if (false && isRoot && fnName === '_ready' && !readyInjected && rootVarInits.length > 0) {
           readyInjected = true;
           for (const init of rootVarInits) {
             const setNode = {
@@ -869,6 +863,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
 
   convertCstStatements(topLevelChildren, doc, 200, 150);
 
+  layoutGraph(doc);
   const unattachedComments = [...commentLines.keys()].filter((line) => !consumedComments.has(line)).length;
   return { document: doc, error: null, unattachedComments };
 }

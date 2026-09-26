@@ -18,7 +18,8 @@ export const THEME_PRESETS = {
     accent: '#47d8d8',
     accent2: '#9d72ff',
     activeLine: '#182f3b',
-    selection: '#47d8d833',
+    selection: '#47d8d8aa',
+    gcnSelected: '#9dffff',
     folderIcon: '#47d8d8',
     fileIcon: '#6aa4b0',
     graphClass: '#38bdf8',
@@ -55,7 +56,8 @@ export const THEME_PRESETS = {
     accent: '#7f6df2',
     accent2: '#a7c7ff',
     activeLine: '#2a2a2a',
-    selection: '#5d55a766',
+    selection: '#7f6df2aa',
+    gcnSelected: '#c7bfff',
     folderIcon: '#caa6ff',
     fileIcon: '#8f9bad',
     graphClass: '#38bdf8',
@@ -92,7 +94,8 @@ export const THEME_PRESETS = {
     accent: '#7c5424',
     accent2: '#0f766e',
     activeLine: '#f2e7d1',
-    selection: '#d8b56f66',
+    selection: '#7c5424aa',
+    gcnSelected: '#5a3d1d',
     folderIcon: '#b7791f',
     fileIcon: '#8a7d69',
     graphClass: '#0284c7',
@@ -129,7 +132,8 @@ export const THEME_PRESETS = {
     accent: '#ff0055',
     accent2: '#ffe600',
     activeLine: '#191b32',
-    selection: '#ff005533',
+    selection: '#ff0055aa',
+    gcnSelected: '#ffcc00',
     folderIcon: '#ffe600',
     fileIcon: '#7f86b6',
     graphClass: '#00f0ff',
@@ -166,7 +170,8 @@ export const THEME_PRESETS = {
     accent: '#5F7A32',
     accent2: '#1F2D26',
     activeLine: '#D2DCB2',
-    selection: '#5F7A3240',
+    selection: '#5F7A3299',
+    gcnSelected: '#1B2620',
     folderIcon: '#5F7A32',
     fileIcon: '#56664A',
     graphClass: '#2F5D7C',
@@ -204,7 +209,8 @@ export const THEME_PRESETS = {
     accent: '#0A0A0A',
     accent2: '#0D1B22',
     activeLine: '#F0F09A',
-    selection: '#0A0A0A2E',
+    selection: '#0A0A0A99',
+    gcnSelected: '#0A0A0A',
     folderIcon: '#0A0A0A',
     fileIcon: '#55550F',
     graphClass: '#0D3B66',
@@ -242,7 +248,8 @@ export const THEME_PRESETS = {
     accent: '#111111',
     accent2: '#7A7A7A',
     activeLine: '#E8E8E8',
-    selection: '#11111124',
+    selection: '#11111199',
+    gcnSelected: '#111111',
     folderIcon: '#111111',
     fileIcon: '#5E5E5E',
     graphClass: '#111111',
@@ -516,6 +523,7 @@ export function applyPreferences(prefs) {
     if (c.accent) root.style.setProperty('--accent', c.accent);
     if (c.accent2) root.style.setProperty('--accent-2', c.accent2);
     if (c.activeLine) root.style.setProperty('--active-line', c.activeLine);
+    if (c.gcnSelected) root.style.setProperty('--gcn-selected', c.gcnSelected);
     const fallback = THEME_PRESETS.structs;
     root.style.setProperty('--folder-icon', c.folderIcon || fallback.folderIcon);
     root.style.setProperty('--file-icon', c.fileIcon || fallback.fileIcon);

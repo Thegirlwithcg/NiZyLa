@@ -15,8 +15,8 @@ export async function convertInWorker(input) {
   // Test-only hook; production input cannot activate it.
   if (process.env.NIZYLA_TEST === '1' && input.testInfiniteLoop) { while (true) {} }
   const result = input.kind === 'python'
-    ? convertPythonAstToGcn(input.ast, input.source, input.sourceFile)
-    : await convertGdscriptToGcn(input.source, input.sourceFile, input.wasmDir);
+    ? convertPythonAstToGcn(input.ast, input.source, input.sourceFile, input.options)
+    : await convertGdscriptToGcn(input.source, input.sourceFile, input.wasmDir, input.options);
   if (result.error) return { ok: false, reason: 'invalid-output', error: result.error };
   const check = preflightConversion(result.document, schemaDiagnostics);
   if (!check.ok) {
