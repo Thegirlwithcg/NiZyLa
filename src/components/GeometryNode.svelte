@@ -28,6 +28,7 @@
   const allDiagnostics = $derived([...diagnostics, ...varDiagnostics]);
   const hasError = $derived(allDiagnostics.some((d) => d.severity === 'error'));
   const operatorLabels = { and: 'And', or: 'Or', not: 'Not' };
+  const commentText = $derived(typeof node?.data?.comment === 'string' ? node.data.comment : '');
 
   const PARAM_TYPES = ['any', 'int', 'float', 'string', 'bool', 'list', 'dict'];
   function getTypeOptions(current) {
@@ -41,27 +42,6 @@
   $effect(() => {
     void signature;
     updateNodeInternals(id);
-  });
-
-  $effect(() => {
-    if (node?.type === 'functionCall' && !node.data?.isCustom) {
-      const funcs = ctx.availableFunctions || [];
-      const match = funcs.find((f) => f.id === node.data?.targetId || (!node.data?.targetId && f.data?.name && f.data.name === node.data?.name));
-      if (match) {
-        const expectedArgs = (match.data?.parameters || []).map((p) => p.name || 'arg');
-        const currentArgs = node.data?.argumentNames || [];
-        const needsSync = node.data?.targetId !== match.id ||
-          expectedArgs.length !== currentArgs.length ||
-          expectedArgs.some((arg, i) => arg !== currentArgs[i]);
-        if (needsSync) {
-          ctx.setData(id, {
-            targetId: match.id,
-            name: match.data?.name || node.data?.name || 'call',
-            argumentNames: expectedArgs
-          });
-        }
-      }
-    }
   });
 
   const typeLabel = (port) => port.kind === 'exec' ? 'exec' : port.valueType;
@@ -79,9 +59,10 @@
 
 {#if node && definition}
   <div class="gcn-node" class:has-error={hasError} data-node-type={node.type} data-id={id} {ondblclick} role="presentation">
-    <header class="gcn-node-head">
+    <header class="gcn-node-head" title={commentText || undefined}>
       <div class="gcn-node-head-main">
         <strong>{node.type === 'functionDef' ? `def ${node.data?.name || 'func'}` : node.type === 'classDef' ? `class ${node.data?.name || 'Class'}` : node.type === 'codeNode' ? `</> ${node.data?.title || 'Code'}` : definition.label}</strong>
+        {#if commentText}<span class="gcn-comment-badge" aria-label="Has comment">#</span>{/if}
         <span class="gcn-category">{definition.category}</span>
       </div>
       <button type="button" class="gcn-node-help-btn nodrag" aria-label={`Help for ${definition.label}`} onclick={(e) => { e.stopPropagation(); ctx.showHelp(id); }}>?</button>
@@ -306,6 +287,7 @@
           <button type="button" class="gcn-btn-lines" class:active={ctx.codeLineNumbers} aria-pressed={ctx.codeLineNumbers}
             onclick={ctx.toggleCodeLineNumbers} title="Toggle line numbers">#</button>
           <button type="button" class="gcn-btn-expand" onclick={() => ctx.openCode(id)} title="Expand code editor">⤢ Expand</button>
+          <button type="button" class="gcn-btn-expand" onclick={() => ctx.convertCode(id)} title="Convert this Code node into Geometry nodes">⇄ To Nodes</button>
         </div>
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div class="gcn-code-host" onfocusout={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) ctx.endEdit(); }}>

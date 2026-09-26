@@ -6,7 +6,7 @@ import {
   HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
   createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
   pruneOrphanVariables, redo,
-  removeItems, sameContent, setLiteralType, setNodeData, setTarget, setViewport, undo, updateVariable, variableUsage
+  removeItems, sameContent, setLiteralType, setNodeData, setTarget, setViewport, syncFunctionCalls, undo, updateVariable, variableUsage, removeFunctionParameter
 } from '../src/core/geometry-editor.js';
 
 const freeze = (value) => {
@@ -942,5 +942,42 @@ test('Prompt H: variableUsage counts nested graphs (functions and classes)', () 
   methodNode.data.graph = setNodeData(methodGet.doc, methodGet.nodeId, { variableId: vId }).doc;
   clsNode.data.graph = method.doc;
   assert.equal(variableUsage(doc, vId), 3);
+});
+
+test('syncFunctionCalls removes the first positional parameter and shifts the remaining wire', () => {
+  const doc = createGeometryDocument('python', 2);
+  const fn = { id: 'fn', type: 'functionDef', position: { x: 0, y: 0 }, data: { name: 'f', parameters: [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }] } };
+  const call = { id: 'call', type: 'functionCall', position: { x: 0, y: 0 }, data: { targetId: 'fn', name: 'f', argumentNames: ['arg_0', 'arg_1'] } };
+  doc.nodes.push(fn, call, { id: 'v', type: 'literal', position: { x: 0, y: 0 }, data: { valueType: 'int', value: 2 } });
+  doc.edges.push({ id: 'e1', source: 'v', sourceHandle: 'value', target: 'call', targetHandle: 'arg_1' });
+  const next = { ...doc, nodes: [{ ...fn, data: { ...fn.data, parameters: [fn.data.parameters[1]] } }, call] };
+  const changed = syncFunctionCalls(next, 'fn', { removedIndex: 0 });
+  assert.equal(changed.edges[0].targetHandle, 'arg_0');
+  assert.deepEqual(changed.nodes.find((n) => n.id === 'call').data.argumentNames, ['b']);
+});
+
+test('syncFunctionCalls removes a middle positional parameter without matching labels', () => {
+  const doc = createGeometryDocument('python', 2);
+  const fn = { id: 'fn3', type: 'functionDef', position: { x: 0, y: 0 }, data: { name: 'f', parameters: [{ id: 'a', name: 'first' }, { id: 'b', name: 'middle' }, { id: 'c', name: 'last' }] } };
+  const call = { id: 'call3', type: 'functionCall', position: { x: 0, y: 0 }, data: { targetId: 'fn3', argumentNames: ['arg_0', 'arg_1', 'arg_2'] } };
+  doc.nodes.push(fn, call);
+  doc.edges.push({ id: 'e0', source: 'call3', sourceHandle: 'value', target: 'call3', targetHandle: 'arg_2' });
+  const next = { ...doc, nodes: [{ ...fn, data: { ...fn.data, parameters: [fn.data.parameters[0], fn.data.parameters[2]] } }, call] };
+  const changed = syncFunctionCalls(next, 'fn3', { removedIndex: 1 });
+  assert.equal(changed.edges[0].targetHandle, 'arg_1');
+});
+
+test('syncFunctionCalls shifts class constructor call wires when __init__ loses a parameter', () => {
+  const doc = createGeometryDocument('python', 2);
+  const init = { id: 'init', type: 'functionDef', position: { x: 0, y: 0 }, data: { name: '__init__', parameters: [{ id: 'self', name: 'self' }, { id: 'hp', name: 'hp' }, { id: 'damage', name: 'damage' }], graph: { nodes: [], edges: [], variables: [], viewport: { x: 0, y: 0, zoom: 1 } } } };
+  const cls = { id: 'player', type: 'classDef', position: { x: 0, y: 0 }, data: { name: 'Player', graph: { nodes: [init], edges: [], variables: [], viewport: { x: 0, y: 0, zoom: 1 } } } };
+  const call = { id: 'new', type: 'functionCall', position: { x: 0, y: 0 }, data: { targetId: 'player', name: 'Player', argumentNames: ['hp', 'damage'] } };
+  doc.nodes.push(cls, call);
+  doc.edges.push({ id: 'e', source: 'new', sourceHandle: 'arg_1', target: 'new', targetHandle: 'arg_1' });
+  const nextInit = { ...init, data: { ...init.data, parameters: [init.data.parameters[0], init.data.parameters[2]] } };
+  const next = { ...doc, nodes: [{ ...cls, data: { ...cls.data, graph: { ...cls.data.graph, nodes: [nextInit] } } }, call] };
+  const changed = syncFunctionCalls(next, 'init', { removedIndex: 0 });
+  assert.equal(changed.edges[0].targetHandle, 'arg_0');
+  assert.deepEqual(changed.nodes.find((n) => n.id === 'new').data.argumentNames, ['damage']);
 });
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import ast
 import json
+import math
 import sys
+import io
+import tokenize
 
 if hasattr(sys.stdin, 'reconfigure'):
     try:
@@ -26,14 +29,24 @@ def serialize_expr(node, source):
     t = type(node).__name__
 
     if isinstance(node, ast.Constant):
+        value = node.value
+        # Keep JSON strictly portable. These values are represented by a Code
+        # expression node in the converter, preserving the original source.
+        unsupported = (
+            isinstance(value, (bytes, complex)) or value is Ellipsis or
+            (isinstance(value, float) and not math.isfinite(value)) or
+            (isinstance(value, int) and not isinstance(value, bool) and abs(value) > 9007199254740991)
+        )
+        if unsupported:
+            return {"type": "CodeExpression", "segment": segment, "lineno": getattr(node, 'lineno', 1)}
         return {
             "type": "Constant",
-            "value": node.value,
+            "value": value,
             "value_type": (
-                "int" if isinstance(node.value, int) and not isinstance(node.value, bool)
-                else "float" if isinstance(node.value, float)
-                else "string" if isinstance(node.value, str)
-                else "bool" if isinstance(node.value, bool)
+                "int" if isinstance(value, int) and not isinstance(value, bool)
+                else "float" if isinstance(value, float)
+                else "string" if isinstance(value, str)
+                else "bool" if isinstance(value, bool)
                 else "other"
             ),
             "segment": segment,
@@ -102,11 +115,19 @@ def serialize_expr(node, source):
     if isinstance(node, ast.Call):
         func_expr = serialize_expr(node.func, source)
         args_expr = [serialize_expr(a, source) for a in node.args]
+        keywords = []
+        for keyword in node.keywords:
+            keywords.append({
+                "name": keyword.arg,
+                "value": serialize_expr(keyword.value, source),
+                "segment": ast.get_source_segment(source, keyword) or ""
+            })
         return {
             "type": "Call",
             "func": func_expr,
             "args": args_expr,
-            "has_keywords": bool(node.keywords),
+            "keywords": keywords,
+            "has_keywords": bool(keywords),
             "has_starred_args": any(isinstance(a, ast.Starred) for a in node.args),
             "segment": segment,
             "lineno": getattr(node, 'lineno', 1)
@@ -172,6 +193,9 @@ def serialize_stmt(node, source):
                 params[-(i + 1)]["default"] = default_val
 
         decorators = [ast.get_source_segment(source, d) for d in node.decorator_list]
+        if node.decorator_list:
+            loc["startLine"] = min(getattr(d, 'lineno', loc["startLine"]) for d in node.decorator_list)
+            loc["startCol"] = min(getattr(d, 'col_offset', loc["startCol"]) for d in node.decorator_list)
         ret_type = ast.get_source_segment(source, node.returns) if node.returns else "any"
 
         return {
@@ -189,6 +213,9 @@ def serialize_stmt(node, source):
     if isinstance(node, ast.ClassDef):
         bases = [ast.get_source_segment(source, b) for b in node.bases]
         decorators = [ast.get_source_segment(source, d) for d in node.decorator_list]
+        if node.decorator_list:
+            loc["startLine"] = min(getattr(d, 'lineno', loc["startLine"]) for d in node.decorator_list)
+            loc["startCol"] = min(getattr(d, 'col_offset', loc["startCol"]) for d in node.decorator_list)
         return {
             "kind": "ClassDef",
             "name": node.name,
@@ -377,6 +404,40 @@ def serialize_stmt(node, source):
         "loc": loc
     }
 
+def attach_comments(statements, source):
+    lines = source.splitlines()
+    full = {}
+    inline = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type != tokenize.COMMENT:
+                continue
+            line, col = tok.start
+            text = tok.string[1:].strip()
+            before = lines[line - 1][:col].strip() if 0 < line <= len(lines) else ''
+            (full if not before else inline).setdefault(line, []).append(text)
+    except (tokenize.TokenError, IndentationError):
+        return
+
+    def walk(items):
+        for item in items:
+            loc = item.get('loc') or {}
+            start = loc.get('startLine')
+            if not isinstance(start, int):
+                continue
+            attached = []
+            line = start - 1
+            while line in full:
+                attached[0:0] = full[line]
+                line -= 1
+            attached.extend(inline.get(start, []))
+            if attached and item.get('codeKind') not in ('statement', 'block'):
+                item['comment'] = '\n'.join(attached)[:2000]
+            for key in ('body', 'orelse'):
+                if isinstance(item.get(key), list): walk(item[key])
+
+    walk(statements)
+
 def main():
     try:
         if hasattr(sys.stdin, 'buffer'):
@@ -409,6 +470,7 @@ def main():
         sys.exit(1)
 
     statements = [serialize_stmt(s, source) for s in tree.body]
+    attach_comments(statements, source)
     print(json.dumps({"error": False, "statements": statements}))
 
 if __name__ == "__main__":

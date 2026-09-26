@@ -401,6 +401,69 @@ export function moveNodesAtScope(doc, scopePath, positions) {
 }
 
 /** Applies a data patch. Wires attached to ports that no longer exist are removed in the same step. */
+/** Purely follows an edited function signature through explicitly bound calls. */
+export function syncFunctionCalls(doc, changedFunctionId, options = {}) {
+  if (!doc || !changedFunctionId) return doc;
+  const changedInfo = findNodeInfo(doc, changedFunctionId);
+  const constructorClassId = changedInfo?.node?.type === 'functionDef' && changedInfo.node.data?.name === '__init__' ? findEnclosingClassId(doc, changedFunctionId) : null;
+  const visit = (graph, inClass = false) => {
+    if (!graph?.nodes) return graph;
+    let changed = false;
+    let edges = graph.edges || [];
+    const nodes = graph.nodes.map((node) => {
+      if (node.type === 'functionCall' && (node.data?.targetId === changedFunctionId || node.data?.targetId === constructorClassId)) {
+        const info = findNodeInfo(doc, changedFunctionId);
+        const fn = info?.node;
+        const params = fn?.type === 'functionDef'
+          ? (fn.data?.parameters || []).filter((p) => !info.inClass || p.name !== 'self')
+          : fn?.type === 'classDef'
+            ? ((fn.data?.graph?.nodes || []).find((n) => n.type === 'functionDef' && n.data?.name === '__init__')?.data?.parameters || []).filter((p) => p.name !== 'self')
+            : [];
+        const oldNames = node.data?.argumentNames || [];
+        const names = params.map((p) => p.name || 'arg');
+        if (Number.isInteger(options.removedIndex)) {
+          const removed = options.removedIndex;
+          edges = edges.flatMap((edge) => {
+            if (edge.target !== node.id || !/^arg_\d+$/.test(edge.targetHandle)) return [edge];
+            const index = Number(edge.targetHandle.slice(4));
+            if (index === removed) return [];
+            return [{ ...edge, targetHandle: `arg_${index > removed ? index - 1 : index}` }];
+          });
+        }
+        if (names.length !== oldNames.length || names.some((name, i) => name !== oldNames[i])) {
+          changed = true;
+          return { ...node, data: { ...node.data, argumentNames: names } };
+        }
+      }
+      if (node.data?.graph) {
+        const nextGraph = visit(node.data.graph, inClass || node.type === 'classDef');
+        if (nextGraph !== node.data.graph) { changed = true; return { ...node, data: { ...node.data, graph: nextGraph } }; }
+      }
+      return node;
+    });
+    return changed ? { ...graph, nodes, edges } : graph;
+  };
+  return visit(doc);
+}
+
+function findEnclosingClassId(graph, id, parentClassId = null) {
+  for (const node of graph?.nodes || []) {
+    if (node.id === id) return parentClassId;
+    const found = node.data?.graph && findEnclosingClassId(node.data.graph, id, node.type === 'classDef' ? node.id : parentClassId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findNodeInfo(graph, id, inClass = false) {
+  for (const node of graph?.nodes || []) {
+    if (node.id === id) return { node, inClass };
+    const found = node.data?.graph && findNodeInfo(node.data.graph, id, inClass || node.type === 'classDef');
+    if (found) return found;
+  }
+  return null;
+}
+
 export function setNodeData(doc, nodeId, patch) {
   const node = doc.nodes.find((n) => n.id === nodeId);
   if (!node) return null;
@@ -486,7 +549,11 @@ export function updateFunctionParameter(doc, funcNodeId, paramId, patch) {
 export function removeFunctionParameter(doc, funcNodeId, paramId) {
   const node = doc.nodes.find((n) => n.id === funcNodeId);
   if (!node || node.type !== 'functionDef') return null;
-  const nextParams = (node.data.parameters || []).filter((p) => p.id !== paramId);
+  const parameters = node.data.parameters || [];
+  const rawIndex = parameters.findIndex((p) => p.id === paramId);
+  if (rawIndex < 0) return null;
+  const removedIndex = parameters[0]?.name === 'self' ? rawIndex - 1 : rawIndex;
+  const nextParams = parameters.filter((p) => p.id !== paramId);
 
   // In child graph, remove any parameter nodes referencing this paramId and their connected edges
   let childGraph = node.data.graph;
@@ -498,7 +565,7 @@ export function removeFunctionParameter(doc, funcNodeId, paramId) {
   }
 
   const nextNode = { ...node, data: { ...node.data, parameters: nextParams, graph: childGraph } };
-  return { doc: { ...doc, nodes: doc.nodes.map((n) => (n.id === funcNodeId ? nextNode : n)) }, removedEdges: [] };
+  return { doc: { ...doc, nodes: doc.nodes.map((n) => (n.id === funcNodeId ? nextNode : n)) }, removedEdges: [], removedIndex: Math.max(0, removedIndex) };
 }
 
 export function reorderFunctionParameters(doc, funcNodeId, newOrderIds) {
@@ -929,6 +996,82 @@ export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVa
   return {
     doc: nextDoc,
     nodeIds: newNodes.map((n) => n.id),
-    addedVariableIds
+    addedVariableIds,
+    idMap: nodeIdMap
   };
+}
+
+/** Replace a Code node with the converted graph fragment while preserving execution/value wires. */
+export function spliceConvertedFragment(graph, codeNodeId, convertedDoc, accessibleVariables = [], options = {}) {
+  const codeNode = (graph?.nodes || []).find((n) => n.id === codeNodeId && n.type === 'codeNode');
+  if (!codeNode || !convertedDoc) return { error: 'Code node or converted document was not found.' };
+  const rootScope = options.isRootScope === true;
+  const structuralTypes = new Set(['functionDef', 'classDef', 'import']);
+  const convertedNodes = (convertedDoc.nodes || []).filter((n) => n.type !== 'start');
+  if (!rootScope && convertedNodes.some((n) => structuralTypes.has(n.type))) {
+    return { error: 'Cannot convert code containing a function, class, or import inside a nested scope.' };
+  }
+  if (convertedNodes.length === 1 && convertedNodes[0].type === 'codeNode') {
+    return { error: 'This code has no node equivalent yet; kept as Code node.' };
+  }
+
+  const isExpression = codeNode.data?.codeKind === 'expression';
+  let fragment = structuredClone(convertedDoc);
+  let expressionRootId = null;
+  if (isExpression) {
+    const setNode = (fragment.nodes || []).find((n) => n.type === 'setVariable');
+    if (!setNode) return { error: 'This expression did not produce a value node.' };
+    const valueEdge = (fragment.edges || []).find((e) => e.target === setNode.id && e.targetHandle === 'value');
+    expressionRootId = valueEdge?.source || null;
+    if (!expressionRootId) return { error: 'This expression did not produce a value node.' };
+    fragment.nodes = fragment.nodes.filter((n) => n.id !== setNode.id);
+    fragment.edges = fragment.edges.filter((e) => e.source !== setNode.id && e.target !== setNode.id);
+    fragment.variables = (fragment.variables || []).filter((v) => v.id !== setNode.data?.variableId);
+    fragment.edges = fragment.edges.filter((e) => e.source !== setNode.data?.variableId && e.target !== setNode.data?.variableId);
+    fragment.edges.push({ id: uuid(), source: 'start', sourceHandle: 'next', target: expressionRootId, targetHandle: 'in' });
+  }
+
+  const pasted = pasteFragment(graph, serializeGeometryDocument(fragment), codeNode.position, accessibleVariables);
+  if (!pasted || pasted.error) return { error: pasted?.error || 'The converted fragment could not be inserted.' };
+  const idMap = pasted.idMap || new Map();
+  const mapped = (id) => id ? (idMap instanceof Map ? idMap.get(id) : idMap[id]) : null;
+  const idEntries = idMap instanceof Map ? [...idMap.entries()] : Object.entries(idMap);
+  const fragmentStart = fragment.nodes.find((n) => n.type === 'start');
+  const startEdge = fragment.edges.find((e) => e.source === 'start' && e.sourceHandle === 'next');
+  let firstId = mapped(startEdge?.target);
+  let lastId = firstId;
+  const fragmentNodeMap = new Map(fragment.nodes.map((n) => [n.id, n]));
+  const nextById = new Map(fragment.edges.filter((e) => e.sourceHandle === 'next').map((e) => [e.source, e.target]));
+  const seen = new Set();
+  while (lastId && !seen.has(lastId)) {
+    seen.add(lastId);
+    const original = idEntries.find(([, value]) => value === lastId)?.[0];
+    const next = original ? nextById.get(original) : null;
+    if (!next) break;
+    lastId = mapped(next);
+  }
+
+  let nextDoc = pasted.doc;
+  const incoming = nextDoc.edges.filter((e) => e.target === codeNodeId && e.targetHandle === 'in');
+  const outgoing = nextDoc.edges.filter((e) => e.source === codeNodeId && e.sourceHandle === 'next');
+  let notice;
+  const replacementEdges = nextDoc.edges.filter((e) => e.target !== codeNodeId && !(e.source === codeNodeId));
+  if (!isExpression && firstId) {
+    for (const e of incoming) replacementEdges.push({ ...e, id: uuid(), target: firstId, targetHandle: 'in' });
+    for (const e of outgoing) {
+      if (lastId) replacementEdges.push({ ...e, id: uuid(), source: lastId, sourceHandle: 'next' });
+      else notice = 'Converted fragment has no executable end; the outgoing wire was dropped.';
+    }
+  } else if (isExpression && expressionRootId) {
+    const rootId = mapped(expressionRootId);
+    for (const e of incoming) replacementEdges.push({ ...e, id: uuid(), target: rootId, targetHandle: 'in' });
+    for (const e of nextDoc.edges.filter((e) => e.source === codeNodeId && e.sourceHandle === 'value')) {
+      replacementEdges.push({ ...e, id: uuid(), source: rootId, sourceHandle: 'value' });
+    }
+  }
+  const retainedNodes = nextDoc.nodes.filter((n) => n.id !== codeNodeId);
+  const firstNode = firstId && retainedNodes.find((n) => n.id === firstId);
+  if (firstNode && codeNode.data?.comment) firstNode.data = { ...firstNode.data, comment: codeNode.data.comment };
+  nextDoc = { ...nextDoc, nodes: retainedNodes, edges: replacementEdges };
+  return { doc: nextDoc, nodeIds: pasted.nodeIds, notice };
 }

@@ -48,6 +48,10 @@ contextBridge.exposeInMainWorld('nizyla', {
     return () => ipcRenderer.removeListener('main:open-file', handler);
   },
   syncFolderToMainWindow: (folderPath) => ipcRenderer.send('detached:sync-folder-to-main', folderPath),
+  renamePath: (sourcePath, newName) => ipcRenderer.invoke('path:rename', sourcePath, newName),
+  loadSession: () => ipcRenderer.invoke('session:load'),
+  saveSession: (state) => ipcRenderer.invoke('session:save', state),
+  saveSessionSync: (state) => ipcRenderer.sendSync('session:save-sync', state),
   onMainSyncFolder: (callback) => {
     const handler = (_event, folderPath) => callback(folderPath);
     ipcRenderer.on('main:sync-folder', handler);

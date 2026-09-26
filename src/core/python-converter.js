@@ -6,7 +6,8 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
   if (!astResult || astResult.error) {
     return {
       document: null,
-      error: astResult?.message || 'Syntax error or failed to parse Python code.'
+      error: astResult?.message || 'Syntax error or failed to parse Python code.',
+      unattachedComments: 0
     };
   }
 
@@ -43,8 +44,124 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     return v;
   }
 
+  // Comments are attached by statement source range, never by converter branch.
+  const sourceLines = String(originalSource || '').split(/\r?\n/);
+  const commentLines = new Map();
+  const consumedComments = new Set();
+  const commentAt = (line) => {
+    const text = sourceLines[line - 1] || '';
+    let quote = null;
+    let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\\\') { escaped = true; continue; }
+      if (quote) { if (ch === quote) quote = null; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '#') {
+        const prefix = text.slice(0, i);
+        const full = prefix.trim() === '';
+        return { text: text.slice(i + 1).trim(), full };
+      }
+    }
+    return null;
+  };
+  sourceLines.forEach((_, i) => { const c = commentAt(i + 1); if (c) commentLines.set(i + 1, c); });
+  function attachComment(data, stmt) {
+    const loc = stmt?.loc || {};
+    const start = Number(loc.startLine);
+    if (!Number.isInteger(start)) return data;
+    const found = [];
+    for (let line = start - 1; line >= 1; line--) {
+      const c = commentLines.get(line);
+      if (!c?.full || consumedComments.has(line)) break;
+      found.unshift(c.text); consumedComments.add(line);
+    }
+    const inline = commentLines.get(start);
+    if (inline && !inline.full && !consumedComments.has(start)) {
+      found.push(inline.text); consumedComments.add(start);
+    }
+    const result = { ...data };
+    if (found.length) result.comment = found.join('\n').slice(0, 2000);
+    else delete result.comment;
+    return result;
+  }
+  function markCodeComments(stmt) {
+    const loc = stmt?.loc || {};
+    for (let line = Number(loc.startLine); line <= Number(loc.endLine); line++) {
+      if (commentLines.has(line)) consumedComments.add(line);
+    }
+  }
+  function withComment(data, stmt) { return attachComment(data, stmt); }
+  function statementNode(graph, node, stmt) {
+    if (!Object.hasOwn(node.data || {}, 'comment')) node.data = attachComment(node.data || {}, stmt);
+    if (node.type === 'codeNode') markCodeComments(stmt);
+    graph.nodes.push(node);
+    return node;
+  }
+
   function resolveCallableId(name) {
     return symbolDefinitions.get(name) || '';
+  }
+
+  function findNodeById(graph, id) {
+    for (const node of graph?.nodes || []) {
+      if (node.id === id) return node;
+      const nested = node.data?.graph && findNodeById(node.data.graph, id);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  // Returns ordered ports for a call, or null when preserving the source is safer.
+  function callArgumentPlan(call, funcName, isMethod) {
+    const keywords = call.keywords || [];
+    const named = [];
+    const collectNamed = (graph) => (graph?.nodes || []).forEach((n) => {
+      if (n.type === 'functionDef' && n.data?.name === funcName) named.push(n);
+      if (n.data?.graph) collectNamed(n.data.graph);
+    });
+    collectNamed(doc);
+    let targetId = resolveCallableId(funcName);
+    if (isMethod && named.length === 1) targetId = named[0].id;
+    if (!keywords.length && !call.has_starred_args) {
+      const knownTarget = isMethod && named.length === 1 ? named[0]
+        : findNodeById(doc, targetId);
+      const known = knownTarget?.type === 'classDef'
+        ? (knownTarget.data?.graph?.nodes || []).find((n) => n.type === 'functionDef' && n.data?.name === '__init__')?.data?.parameters
+        : knownTarget?.type === 'functionDef' ? knownTarget.data?.parameters : null;
+      return known ? known.filter((p) => p.name !== 'self').map((p) => p.name || 'arg') : (call.args || []).map((_, i) => `arg_${i}`);
+    }
+    if (call.has_starred_args) return null;
+    const target = findNodeById(doc, targetId);
+    let params = target?.type === 'classDef'
+      ? (target.data?.graph?.nodes || []).find((n) => n.type === 'functionDef' && n.data?.name === '__init__')?.data?.parameters
+      : target?.type === 'functionDef' ? target.data?.parameters : null;
+    if (!params) return null;
+    if (target?.type === 'classDef' || isMethod) params = params.filter((p) => p.name !== 'self');
+    else params = params.map((p) => p);
+    const names = params.map((p) => p.name || 'arg');
+    const used = new Set();
+    const result = [];
+    for (let i = 0; i < (call.args || []).length; i++) {
+      if (i >= names.length) return null;
+      used.add(names[i]); result.push(names[i]);
+    }
+    for (const keyword of keywords) {
+      if (!keyword.name || !names.includes(keyword.name) || used.has(keyword.name)) return null;
+      used.add(keyword.name); result.push(keyword.name);
+    }
+    // Keep argument ports in parameter order; values are reordered by the caller below.
+    return names.filter((name) => used.has(name));
+  }
+
+  function callArgumentValues(call, funcName, isMethod) {
+    const ports = callArgumentPlan(call, funcName, isMethod);
+    if (!ports) return null;
+    const values = new Map();
+    (call.args || []).forEach((value, i) => values.set(ports[i], value));
+    for (const keyword of call.keywords || []) values.set(keyword.name, keyword.value);
+    return ports.map((name) => ({ name, value: values.get(name) }));
   }
 
   function flattenPythonAdd(expr) {
@@ -82,6 +199,22 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
   function buildExpression(expr, graph, posX, posY) {
     if (!expr) return null;
     const t = expr.type;
+
+    const makeCodeExpression = () => {
+      const node = {
+        id: `expr_${uuid().slice(0, 8)}`,
+        type: 'codeNode',
+        position: { x: posX, y: posY },
+        data: {
+          codeKind: 'expression',
+          code: expr.segment || 'None',
+          language: 'python',
+          sourceLocation: { startLine: expr.lineno || 1, startCol: 0, endLine: expr.lineno || 1, endCol: (expr.segment || '').length }
+        }
+      };
+      graph.nodes.push(node);
+      return { node, outputHandle: 'value' };
+    };
 
     if (t === 'JoinedStr') {
       let template = '';
@@ -122,12 +255,18 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
       return { node: fmtNode, outputHandle: 'value' };
     }
 
+    if (t === 'CodeExpression') return makeCodeExpression();
+
+    if (t === 'Constant' && !['int', 'float', 'string', 'bool'].includes(expr.value_type)) {
+      return makeCodeExpression();
+    }
+
     if (t === 'Constant') {
       const node = {
         id: `lit_${uuid().slice(0, 8)}`,
         type: 'literal',
         position: { x: posX, y: posY },
-        data: { valueType: expr.value_type === 'other' ? 'string' : expr.value_type, value: expr.value }
+        data: { valueType: expr.value_type, value: expr.value }
       };
       graph.nodes.push(node);
       return { node, outputHandle: 'value' };
@@ -452,7 +591,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
 
       const funcName = expr.func?.id || expr.func?.attr || expr.segment || 'call';
       const isMethod = expr.func?.type === 'Attribute';
-      const argNames = (expr.args || []).map((_, i) => `arg_${i}`);
+      const callValues = callArgumentValues(expr, funcName, isMethod);
+      if (!callValues) return makeCodeExpression();
+      const argNames = callValues.map((arg) => arg.name);
       const callNode = {
         id: `call_${uuid().slice(0, 8)}`,
         type: 'functionCall',
@@ -474,17 +615,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
         }
       }
 
-      (expr.args || []).forEach((arg, i) => {
-        const argRes = buildExpression(arg, graph, posX - 180, posY + (i + 1) * 40);
-        if (argRes) {
-          graph.edges.push({
-            id: `e_${uuid().slice(0, 8)}`,
-            source: argRes.node.id,
-            sourceHandle: argRes.outputHandle,
-            target: callNode.id,
-            targetHandle: argNames[i]
-          });
-        }
+      callValues.forEach(({ name, value }, i) => {
+        const argRes = buildExpression(value, graph, posX - 180, posY + (i + 1) * 40);
+        if (argRes) graph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: argRes.node.id, sourceHandle: argRes.outputHandle, target: callNode.id, targetHandle: `arg_${i}` });
       });
 
       return { node: callNode, outputHandle: 'value' };
@@ -531,7 +664,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
             names: (stmt.names || []).map((n) => ({ id: uuid(), name: n.name, alias: n.alias || '' }))
           }
         };
-        targetGraph.nodes.push(impNode);
+        statementNode(targetGraph, impNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -561,16 +694,16 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           id: `fn_${uuid().slice(0, 8)}`,
           type: 'functionDef',
           position: { x: curX, y: curY },
-          data: {
+          data: withComment({
             name: stmt.name,
             parameters: params,
             returnType: stmt.return_type || 'any',
             isAsync: Boolean(stmt.is_async),
             decorators: stmt.decorators || [],
             graph: child
-          }
+          }, stmt)
         };
-        targetGraph.nodes.push(fnNode);
+        statementNode(targetGraph, fnNode, stmt);
         symbolDefinitions.set(stmt.name, fnNode.id);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
@@ -593,14 +726,14 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           id: `cls_${uuid().slice(0, 8)}`,
           type: 'classDef',
           position: { x: curX, y: curY },
-          data: {
+          data: withComment({
             name: stmt.name,
             baseClass: stmt.base || '',
             decorators: stmt.decorators || [],
             graph: child
-          }
+          }, stmt)
         };
-        targetGraph.nodes.push(clsNode);
+        statementNode(targetGraph, clsNode, stmt);
         symbolDefinitions.set(stmt.name, clsNode.id);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
@@ -623,7 +756,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           position: { x: curX, y: curY },
           data: { variableId: v.id }
         };
-        targetGraph.nodes.push(setNode);
+        statementNode(targetGraph, setNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -656,7 +789,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           position: { x: curX, y: curY },
           data: { memberName: stmt.member }
         };
-        targetGraph.nodes.push(setMemNode);
+        statementNode(targetGraph, setMemNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -699,9 +832,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           id: `print_${uuid().slice(0, 8)}`,
           type: 'print',
           position: { x: curX, y: curY },
-          data: { argCount: count }
-        };
-        targetGraph.nodes.push(pNode);
+          data: withComment({ argCount: count }, stmt)
+        }; 
+        statementNode(targetGraph, pNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -734,14 +867,21 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
         const c = stmt.call;
         const funcName = c?.func?.id || c?.func?.attr || c?.segment || 'call';
         const isMethod = c?.func?.type === 'Attribute';
-        const argNames = (c?.args || []).map((_, i) => `arg_${i}`);
+        const callValues = callArgumentValues(c || {}, funcName, isMethod);
+        if (!callValues) {
+          const codeNode = { id: `code_${uuid().slice(0, 8)}`, type: 'codeNode', position: { x: curX, y: curY }, data: { codeKind: 'statement', code: stmt.segment || c?.segment || '', language: 'python' } };
+          statementNode(targetGraph, codeNode, stmt);
+          targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: codeNode.id, targetHandle: 'in' });
+          prevId = codeNode.id; prevHandle = 'next'; curX += X_STEP; continue;
+        }
+        const argNames = callValues.map((arg) => arg.name);
         const callNode = {
           id: `call_${uuid().slice(0, 8)}`,
           type: 'functionCall',
           position: { x: curX, y: curY },
-          data: { targetId: isMethod ? '' : resolveCallableId(funcName), name: funcName, argumentNames: argNames, isMethod }
-        };
-        targetGraph.nodes.push(callNode);
+          data: withComment({ targetId: isMethod ? '' : resolveCallableId(funcName), name: funcName, argumentNames: argNames, isMethod }, stmt)
+        }; 
+        statementNode(targetGraph, callNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -763,17 +903,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           }
         }
 
-        (c?.args || []).forEach((arg, i) => {
-          const argRes = buildExpression(arg, targetGraph, curX - 180, curY + (i + 1) * 40);
-          if (argRes) {
-            targetGraph.edges.push({
-              id: `e_${uuid().slice(0, 8)}`,
-              source: argRes.node.id,
-              sourceHandle: argRes.outputHandle,
-              target: callNode.id,
-              targetHandle: argNames[i]
-            });
-          }
+        callValues.forEach(({ name, value }, i) => {
+          const argRes = buildExpression(value, targetGraph, curX - 180, curY + (i + 1) * 40);
+          if (argRes) targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: argRes.node.id, sourceHandle: argRes.outputHandle, target: callNode.id, targetHandle: `arg_${i}` });
         });
 
         prevId = callNode.id;
@@ -803,9 +935,9 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           id: `if_${uuid().slice(0, 8)}`,
           type: 'if',
           position: { x: curX, y: curY },
-          data: {}
+          data: withComment({}, stmt)
         };
-        targetGraph.nodes.push(ifNode);
+        statementNode(targetGraph, ifNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -848,7 +980,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           position: { x: curX, y: curY },
           data: {}
         };
-        targetGraph.nodes.push(wNode);
+        statementNode(targetGraph, wNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -886,7 +1018,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           position: { x: curX, y: curY },
           data: { variableId: v.id }
         };
-        targetGraph.nodes.push(forNode);
+        statementNode(targetGraph, forNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -943,7 +1075,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           position: { x: curX, y: curY },
           data: { hasValue: Boolean(stmt.value) }
         };
-        targetGraph.nodes.push(retNode);
+        statementNode(targetGraph, retNode, stmt);
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
           source: prevId,
@@ -982,7 +1114,7 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
           sourceLocation: stmt.loc || null
         }
       };
-      targetGraph.nodes.push(cNode);
+      statementNode(targetGraph, cNode, stmt);
       if (prevId) {
         targetGraph.edges.push({
           id: `e_${uuid().slice(0, 8)}`,
@@ -1009,5 +1141,6 @@ export function convertPythonAstToGcn(astResult, originalSource = '', sourceFile
     }
   }
 
-  return { document: doc, error: null };
+  const unattachedComments = [...commentLines.keys()].filter((line) => !consumedComments.has(line)).length;
+  return { document: doc, error: null, unattachedComments };
 }

@@ -1,14 +1,18 @@
 <script>
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, tick } from 'svelte';
 
   export let entry;
   export let activeFile = null;
   export let activeFolderPath = null;
   export let depth = 0;
+  export let renamePath = null;
 
   const dispatch = createEventDispatcher();
   let expanded = depth < 2;
   let dragOver = false;
+  let editing = false;
+  let renameValue = '';
+  let renameInput;
 
   function normalizePath(p) {
     return p ? p.replace(/\\/g, '/').toLowerCase() : '';
@@ -28,6 +32,20 @@
     } else {
       dispatch('select', entry);
     }
+  }
+
+  $: if (renamePath === entry.path && !editing) {
+    editing = true;
+    renameValue = entry.type === 'file' ? entry.name.replace(/\.[^.]+$/, '') : entry.name;
+    tick().then(() => { renameInput?.focus(); renameInput?.select(); });
+  }
+
+  function finishRename(commit) {
+    if (!editing) return;
+    const value = renameValue.trim();
+    editing = false;
+    if (commit && value) dispatch('rename', { entry, newName: value });
+    else dispatch('rename-cancel');
   }
 
   function onContextMenu(event) {
@@ -81,6 +99,7 @@
   on:click={select}
   on:contextmenu={onContextMenu}
   on:keydown={onKeydown}
+  on:focus={() => dispatch('focus', entry)}
   on:dragstart={startDrag}
   on:dragover={dragOverFolder}
   on:dragleave={() => (dragOver = false)}
@@ -88,7 +107,11 @@
 >
   <span class="twisty">{entry.type === 'folder' ? (expanded ? '▾' : '▸') : '·'}</span>
   <span class="icon" class:folder-icon={entry.type === 'folder'} class:file-icon={entry.type !== 'folder'} aria-hidden="true"></span>
-  <span class="name">{entry.name}</span>
+  {#if editing}
+    <input class="name rename-input" bind:this={renameInput} bind:value={renameValue} on:click|stopPropagation on:keydown={(event) => { if (event.key === 'Enter') { event.preventDefault(); finishRename(true); } else if (event.key === 'Escape') { event.preventDefault(); finishRename(false); } }} on:blur={() => finishRename(Boolean(renameValue.trim()))} />
+  {:else}
+    <span class="name">{entry.name}</span>
+  {/if}
 </div>
 
 {#if entry.type === 'folder' && expanded}
@@ -98,10 +121,14 @@
       {activeFile}
       {activeFolderPath}
       depth={depth + 1}
+      {renamePath}
       on:select={(event) => dispatch('select', event.detail)}
       on:folder={(event) => dispatch('folder', event.detail)}
       on:context={(event) => dispatch('context', event.detail)}
       on:move={(event) => dispatch('move', event.detail)}
+      on:rename={(event) => dispatch('rename', event.detail)}
+      on:rename-cancel={() => dispatch('rename-cancel')}
+      on:focus={(event) => dispatch('focus', event.detail)}
     />
   {/each}
 {/if}

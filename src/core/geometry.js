@@ -237,7 +237,7 @@ export const nodeDefinitions = {
     label: 'Call Function', category: 'Function',
     defaults: { targetId: '', name: 'call', argumentNames: [], isMethod: false },
     ports: (node) => {
-      const args = (node.data?.argumentNames || []).map((name, i) => input(name || `arg_${i}`, 'any'));
+      const args = (node.data?.argumentNames || []).map((name, i) => input(`arg_${i}`, 'any', name || `arg_${i}`));
       const targetInput = node.data?.isMethod ? [input('target', 'any')] : [];
       return [...execution('next'), ...targetInput, ...args, output('any')];
     }
@@ -246,7 +246,7 @@ export const nodeDefinitions = {
     label: 'New Instance', category: 'Class',
     defaults: { targetId: '', className: 'MyClass', argumentNames: [] },
     ports: (node) => {
-      const args = (node.data?.argumentNames || []).map((name, i) => input(name || `arg_${i}`, 'any'));
+      const args = (node.data?.argumentNames || []).map((name, i) => input(`arg_${i}`, 'any', name || `arg_${i}`));
       return [...execution('next'), ...args, output('any')];
     }
   },
@@ -353,6 +353,7 @@ function validateGraphShape(graph, path = '', isV1 = false) {
       }
     }
     const data = node.data;
+    if (data.comment !== undefined) check(typeof data.comment === 'string' && data.comment.length <= 2000, 'Node comment must be a string of at most 2000 characters.', location);
     if (node.type === 'literal') {
       check(valueTypes.includes(data.valueType) && literalMatches(data.valueType, data.value), 'Literal value must match valueType.', location);
     }
@@ -561,15 +562,36 @@ export function parseGeometryDocument(text) {
   } catch {
     return { document: null, diagnostics: [diagnostic('invalid-json', 'Could not parse Geometry Code JSON.')] };
   }
+  migrateArgumentHandles(document);
   const errors = schemaDiagnostics(document);
   if (errors.length) return { document: null, diagnostics: errors };
 
   if (document.version === 1) {
     const migrated = migrateV1ToV2(document);
+    migrateArgumentHandles(migrated);
     return { document: migrated, diagnostics: validateGeometryDocument(migrated) };
   }
 
   return { document, diagnostics: validateGeometryDocument(document) };
+}
+
+function migrateArgumentHandles(document) {
+  const visit = (graph) => {
+    if (!graph?.nodes) return;
+    for (const node of graph.nodes) {
+      const names = node.data?.argumentNames;
+      if (['functionCall', 'instantiate'].includes(node.type) && Array.isArray(names)) {
+        const byName = new Map(names.map((name, i) => [name, `arg_${i}`]));
+        for (const edge of graph.edges || []) {
+          if (edge.target === node.id && byName.has(edge.targetHandle) && edge.targetHandle !== byName.get(edge.targetHandle)) {
+            edge.targetHandle = byName.get(edge.targetHandle);
+          }
+        }
+      }
+      if (node.data?.graph) visit(node.data.graph);
+    }
+  };
+  visit(document);
 }
 
 function serializeNode(node) {
@@ -593,6 +615,8 @@ function serializeNode(node) {
       data[key] = defaults[key];
     }
   }
+  const comment = typeof node.data?.comment === 'string' ? node.data.comment.replace(/\r/g, '').trim() : '';
+  if (comment) data.comment = comment;
   // Extra properties for specific nodes like functionDef parameters
   if (node.type === 'dict') {
     data.entries = (node.data?.entries || []).map(({ id, key }) => ({ id: String(id), key: String(key ?? '') }));

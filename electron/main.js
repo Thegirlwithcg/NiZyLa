@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'ele
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, spawn, spawnSync } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promisify, TextDecoder } from 'node:util';
@@ -11,8 +12,8 @@ import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './sca
 import { discoverPlugins } from './plugins.js';
 import { parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
-import { convertPythonAstToGcn } from '../src/core/python-converter.js';
-import { convertGdscriptToGcn } from '../src/core/gdscript-converter.js';
+import { CONVERT_LIMITS } from './convert-guard.js';
+import { serializeSessionState, validateRenameName, validateSessionState } from '../src/core/session-config.js';
 
 const execAsync = promisify(exec);
 let ptyModule;
@@ -31,6 +32,7 @@ const detachedWindows = new Map();
 const detachedStates = new Map();
 const knownProjectRoots = new Set();
 let pendingGeometryUnloadState = null;
+let sessionConfigLogged = false;
 
 function isPathInsideProject(targetPath, knownRoots) {
   if (typeof targetPath !== 'string' || !targetPath.trim()) return false;
@@ -474,6 +476,89 @@ ipcMain.handle('project:scan', async (_event, rootPath) => {
   knownProjectRoots.add(root);
   return scanProject(root);
 });
+
+ipcMain.handle('path:rename', async (event, sourcePath, newName) => {
+  validateSender(event);
+  const source = path.resolve(String(sourcePath || ''));
+  if (!isPathInsideProject(source, knownProjectRoots)) throw new Error('The path must be inside an open project.');
+  if ([...knownProjectRoots].some((root) => path.resolve(root).toLowerCase() === source.toLowerCase())) throw new Error('A project root cannot be renamed here.');
+  const nameCheck = validateRenameName(newName);
+  if (!nameCheck.ok) throw new Error(nameCheck.error);
+  const destination = path.join(path.dirname(source), newName);
+  const sameCaseInsensitive = destination.toLowerCase() === source.toLowerCase();
+  if (!sameCaseInsensitive) {
+    try { await fs.access(destination); throw new Error('A file or folder with that name already exists.'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  try {
+    if (sameCaseInsensitive && destination !== source) {
+      const temp = path.join(path.dirname(source), `.nizyla-rename-${randomUUID()}`);
+      await fs.rename(source, temp);
+      try { await fs.rename(temp, destination); } catch (error) { try { await fs.rename(temp, source); } catch (_) {} throw error; }
+    } else {
+      await fs.rename(source, destination);
+    }
+  } catch (error) {
+    throw new Error(`Could not rename ${path.basename(source)}: ${error.message}`);
+  }
+  return { ok: true, path: destination };
+});
+
+ipcMain.handle('session:load', async (event) => {
+  validateSender(event);
+  if (event.sender !== mainWindow?.webContents) return null;
+  const configPath = path.join(app.getPath('userData'), 'nizyla.config');
+  try {
+    const raw = await fs.readFile(configPath, 'utf8');
+    if (Buffer.byteLength(raw, 'utf8') > 256 * 1024) throw new Error('session file is too large');
+    const state = JSON.parse(raw);
+    const result = validateSessionState(state);
+    if (!result.ok) throw new Error(result.error);
+    return state;
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !sessionConfigLogged) { console.warn(`Ignoring nizyla.config: ${error.message}`); sessionConfigLogged = true; }
+    return null;
+  }
+});
+
+function writeSessionAtomic(target, content, synchronous = false) {
+  const dir = path.dirname(target);
+  const temp = path.join(dir, `.nizyla-config-${randomUUID()}.tmp`);
+  if (synchronous) {
+    try { fsSync.mkdirSync(dir, { recursive: true }); fsSync.writeFileSync(temp, content, { flag: 'wx', encoding: 'utf8' }); fsSync.renameSync(temp, target); }
+    catch (error) { try { fsSync.unlinkSync(temp); } catch (_) {} throw error; }
+    return;
+  }
+  return (async () => {
+    await fs.mkdir(dir, { recursive: true });
+    try { await fs.writeFile(temp, content, { flag: 'wx', encoding: 'utf8' }); await fs.rename(temp, target); }
+    catch (error) { try { await fs.unlink(temp); } catch (_) {} throw error; }
+  })();
+}
+
+function saveSessionPayload(state, synchronous = false) {
+  const content = serializeSessionState(state);
+  const target = path.join(app.getPath('userData'), 'nizyla.config');
+  return writeSessionAtomic(target, content, synchronous);
+}
+
+ipcMain.handle('session:save', async (event, state) => {
+  validateSender(event);
+  if (event.sender !== mainWindow?.webContents) return { ok: false, error: 'Only the main window can save the session.' };
+  await saveSessionPayload(state);
+  return { ok: true };
+});
+
+ipcMain.on('session:save-sync', (event, state) => {
+  try {
+    validateSender(event);
+    if (event.sender !== mainWindow?.webContents) throw new Error('Only the main window can save the session.');
+    saveSessionPayload(state, true);
+    event.returnValue = { ok: true };
+  } catch (error) {
+    event.returnValue = { ok: false, error: error.message };
+  }
+});
 ipcMain.handle('file:read', async (_event, filePath) => readTextFile(filePath));
 ipcMain.handle('file:read-data-url', async (_event, filePath) => readFileDataUrl(filePath));
 ipcMain.handle('file:write', async (_event, filePath, content) => writeTextFile(filePath, content));
@@ -820,73 +905,79 @@ ipcMain.handle('run:stop', async (event, { runId }) => {
   return { ok: true };
 });
 
-ipcMain.handle('convert:python', async (event, { source, sourceFile, preferredInterpreter, projectRoot }) => {
-  validateSender(event);
-  if (typeof source !== 'string') throw new TypeError('Source must be a string');
+const conversionBusy = new Set();
 
-  const interpreter = resolvePythonInterpreter(projectRoot, preferredInterpreter);
-  if (!interpreter) {
-    return { ok: false, error: 'Python interpreter not found. Python 3.10+ is required to parse Python files.' };
-  }
+function trimDetails(text) {
+  return String(text || '').replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '').trim().slice(0, 2048);
+}
 
-  const parserScriptCandidates = [
-    path.join(__dirname, '..', 'resource', 'python-parser.py'),
-    path.join(process.resourcesPath || '', 'resource', 'python-parser.py'),
-    path.join(__dirname, 'python-parser.py')
-  ];
-  let scriptPath = parserScriptCandidates.find((p) => fsSync.existsSync(p));
-  if (!scriptPath) {
-    const tempParser = path.join(os.tmpdir(), 'nizyla-python-parser.py');
-    fsSync.writeFileSync(tempParser, fsSync.readFileSync(path.join(__dirname, 'python-parser.py')));
-    scriptPath = tempParser;
-  }
-
-  const proc = spawnSync(interpreter.bin, [...interpreter.args, scriptPath], {
-    input: source,
-    encoding: 'utf8',
-    shell: false,
-    timeout: 15000,
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: '1',
-      PYTHONIOENCODING: 'utf-8',
-      PYTHONUTF8: '1'
-    }
+function runParser(interpreter, scriptPath, source) {
+  return new Promise((resolve) => {
+    const proc = spawn(interpreter.bin, [...interpreter.args, scriptPath], {
+      shell: false,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
+    });
+    let stdout = ''; let stderr = ''; let settled = false;
+    const finish = (result) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const timer = setTimeout(() => {
+      if (process.platform === 'win32') spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f']); else proc.kill('SIGKILL');
+      finish({ ok: false, reason: 'timeout', error: 'Python parsing timed out after 15 seconds.' });
+    }, CONVERT_LIMITS.parseTimeoutMs);
+    proc.stdout.on('data', (chunk) => { stdout += chunk; if (stdout.length > 64 * 1024 * 1024) { proc.kill(); finish({ ok: false, reason: 'parser-crash', error: 'Python parser output exceeded the 64 MB limit.' }); } });
+    proc.stderr.on('data', (chunk) => { stderr += chunk; if (stderr.length > 64 * 1024 * 1024) { proc.kill(); finish({ ok: false, reason: 'parser-crash', error: 'Python parser error output exceeded the 64 MB limit.' }); } });
+    proc.on('error', (error) => finish({ ok: false, reason: 'parser-crash', error: `Could not start the Python parser: ${error.message}`, details: trimDetails(stderr) }));
+    proc.on('close', () => {
+      if (settled) return;
+      try { finish({ ok: true, json: JSON.parse(stdout || stderr || '{}'), stderr }); }
+      catch { finish({ ok: false, reason: 'parser-crash', error: 'The Python parser returned invalid output.', details: trimDetails(stderr) }); }
+    });
+    proc.stdin.end(source);
   });
+}
 
-  let parsedJson;
-  try {
-    parsedJson = JSON.parse(proc.stdout || proc.stderr || '{}');
-  } catch (err) {
-    return { ok: false, error: `Failed to parse Python AST: ${proc.stderr || err.message}` };
-  }
+function runConversionWorker(input) {
+  return new Promise((resolve) => {
+    const worker = new Worker(new URL('./convert-worker.js', import.meta.url), { workerData: input });
+    let settled = false;
+    const finish = (result) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const timer = setTimeout(() => { worker.terminate(); finish({ ok: false, reason: 'timeout', error: 'Conversion timed out after 10 seconds.' }); }, CONVERT_LIMITS.convertTimeoutMs);
+    worker.once('message', finish);
+    worker.once('error', (error) => finish({ ok: false, reason: 'internal', error: `Conversion worker failed: ${error.message}` }));
+    worker.once('exit', (code) => { if (code && !settled) finish({ ok: false, reason: 'internal', error: 'Conversion worker exited unexpectedly.' }); });
+  });
+}
 
-  if (parsedJson.error) {
-    return {
-      ok: false,
-      error: parsedJson.message || 'SyntaxError in Python file.',
-      line: parsedJson.line,
-      col: parsedJson.col
-    };
-  }
-
-  const { document, error } = convertPythonAstToGcn(parsedJson, source, sourceFile);
-  if (error) return { ok: false, error };
-
-  return { ok: true, document };
-});
-
-ipcMain.handle('convert:gdscript', async (event, { source, sourceFile }) => {
+async function convertSource(event, kind, options) {
   validateSender(event);
+  const { source, sourceFile } = options || {};
   if (typeof source !== 'string') throw new TypeError('Source must be a string');
+  const name = sourceFile?.split(/[\\/]/).pop() || 'Source';
+  if (Buffer.byteLength(source, 'utf8') > CONVERT_LIMITS.maxSourceBytes || source.split(/\r?\n/).length > CONVERT_LIMITS.maxSourceLines) {
+    return { ok: false, reason: 'too-large', error: `${name} is too large to convert. The limit is 1 MB or 20,000 lines.` };
+  }
+  const wasmDir = isDev ? path.join(__dirname, '..', 'resource', 'wasm') : path.join(process.resourcesPath, 'resource', 'wasm');
+  if (kind === 'gdscript') return runConversionWorker({ kind, source, sourceFile, wasmDir });
+  const interpreter = resolvePythonInterpreter(options.projectRoot, options.preferredInterpreter);
+  if (!interpreter) return { ok: false, reason: 'no-interpreter', error: 'Python interpreter was not found; Python 3.10+ is required to parse Python files.' };
+  const candidates = [path.join(__dirname, '..', 'resource', 'python-parser.py'), path.join(process.resourcesPath || '', 'resource', 'python-parser.py'), path.join(__dirname, 'python-parser.py')];
+  const scriptPath = candidates.find((p) => fsSync.existsSync(p));
+  const parsed = await runParser(interpreter, scriptPath, source);
+  if (!parsed.ok) return parsed;
+  if (parsed.json.error) return { ok: false, reason: 'syntax', error: parsed.json.message || `${name} contains a syntax error.` };
+  return runConversionWorker({ kind, ast: parsed.json, source, sourceFile });
+}
 
-  const wasmDir = isDev
-    ? path.join(__dirname, '..', 'resource', 'wasm')
-    : path.join(process.resourcesPath, 'resource', 'wasm');
-
-  const { document, error } = await convertGdscriptToGcn(source, sourceFile, wasmDir);
-  if (error) return { ok: false, error };
-  return { ok: true, document };
+ipcMain.handle('convert:python', async (event, options) => {
+  const key = event.sender.id;
+  if (conversionBusy.has(key)) return { ok: false, reason: 'internal', error: 'A conversion is already running in this window.' };
+  conversionBusy.add(key);
+  try { return await convertSource(event, 'python', options); } finally { conversionBusy.delete(key); }
+});
+ipcMain.handle('convert:gdscript', async (event, options) => {
+  const key = event.sender.id;
+  if (conversionBusy.has(key)) return { ok: false, reason: 'internal', error: 'A conversion is already running in this window.' };
+  conversionBusy.add(key);
+  try { return await convertSource(event, 'gdscript', options); } finally { conversionBusy.delete(key); }
 });
 
 ipcMain.handle('terminal:run', async (_event, command, cwd) => {

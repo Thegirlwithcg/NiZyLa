@@ -8,9 +8,11 @@
   import MarkdownPreview from './components/MarkdownPreview.svelte';
   import PreferencesModal from './components/PreferencesModal.svelte';
   import GeometryWorkspace from './components/GeometryWorkspace.svelte';
+  import { forgetGeometryHistory } from './components/GeometryWorkspaceInner.svelte';
   import { createGeometryDocument, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from './core/geometry.js';
   import { sameDocument } from './core/geometry-editor.js';
   import { loadPreferences, applyPreferences, savePreferences, THEME_PRESETS, applyThemePreset } from './core/preferences.js';
+  import { repathTab } from './core/session-config.js';
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -39,7 +41,7 @@
   let activePaneId = 1;
 
   let status = 'Open a project folder to begin.';
-  let graphVisible = true;
+  let graphVisible = false;
   let graphAutoHidden = false;
   let graphFloating = false;
   let graphDetached = false;
@@ -72,9 +74,15 @@
   let createParent = null;
   let createInput;
   let createBusy = false;
+  let conversionBusy = false;
+  let conversionDialog = null;
   let resolveGeometrySave = null;
   let contextMenu = null;
   let tabMenu = null;
+  let renamePath = null;
+  let focusedTreeEntry = null;
+  let sessionReady = false;
+  let sessionSaveTimer;
   let deleteTarget = null;
   let workspaceEl;
   let layoutDrag = null;
@@ -297,6 +305,19 @@
     openCreateDialog('geometry');
   }
 
+  async function convertCodeSnippet({ code, target, codeKind }) {
+    const wrapped = codeKind === 'expression' ? `_gcn_expr = (${code})\n` : code;
+    try {
+      const res = target === 'python'
+        ? await api.convertPython({ source: wrapped, sourceFile: null, preferredInterpreter: preferences?.pythonInterpreter, projectRoot: project?.rootPath })
+        : await api.convertGdscript({ source: wrapped, sourceFile: null });
+      if (!res?.ok || !res.document) return { ok: false, reason: 'Conversion failed.', error: res?.error || 'The code could not be converted.' };
+      return { ok: true, document: res.document };
+    } catch (error) {
+      return { ok: false, reason: 'Conversion failed.', error: error.message };
+    }
+  }
+
   async function handleConvertSourceToGeometry(file) {
     if (!file || !file.path) return;
     const isPy = /\.py$/i.test(file.name);
@@ -311,7 +332,9 @@
       source = await api.readFile(file.path);
     }
 
-    status = `Converting ${file.name} to Geometry Code...`;
+    if (conversionBusy) return;
+    conversionBusy = true;
+    status = 'Converting…';
     try {
       let res;
       if (isPy) {
@@ -329,10 +352,13 @@
       }
 
       if (!res || !res.ok || !res.document) {
-        status = `Conversion failed: ${res?.error || 'Unknown error'}`;
+        const error = res?.error || 'The conversion failed for an unknown reason.';
+        conversionDialog = { title: `Cannot convert ${file.name}`, error, details: res?.details };
+        status = 'Conversion failed.';
         return;
       }
 
+      const unattachedNotice = Number(res.unattachedComments) > 0 ? ` ${res.unattachedComments} comments could not be attached.` : '';
       const targetPath = file.path.replace(/\.(py|gd)$/i, '.gcn');
       const normTarget = targetPath.replace(/\\/g, '/').toLowerCase();
 
@@ -391,7 +417,7 @@
           panes = panes.map((p) => p.id === targetPane.id ? { ...p, zIndex: topZIndex } : p);
           activeFloatingWindow = `editor-${targetPane.id}`;
         }
-        status = `Converted ${file.name} successfully! Replaced unsaved .gcn`;
+        status = `Converted ${file.name} successfully! Replaced unsaved .gcn${unattachedNotice}`;
       } else {
         const fileName = targetPath.split(/[/\\]/).pop();
         const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
@@ -412,10 +438,13 @@
           tabs: [...p.tabs.filter((t) => t.id !== targetPath), newTab]
         } : p);
         activePaneId = targetPane.id;
-        status = `Converted ${file.name} successfully! Opened as unsaved .gcn`;
+        status = `Converted ${file.name} successfully! Opened as unsaved .gcn${unattachedNotice}`;
       }
     } catch (err) {
-      status = `Conversion error: ${err.message}`;
+      conversionDialog = { title: `Cannot convert ${file.name}`, error: `The conversion failed: ${err.message}.` };
+      status = 'Conversion failed.';
+    } finally {
+      conversionBusy = false;
     }
   }
 
@@ -584,6 +613,74 @@
   $: filteredFiles = query ? files.filter((file) => file.relativePath.toLowerCase().includes(query.toLowerCase())).slice(0, 40) : files.slice(0, 40);
   $: searchScopeLabel = searchScopeFolder ? (searchScopeFolder.relativePath || searchScopeFolder.name) : 'Entire workspace';
 
+  function sessionSnapshot() {
+    return {
+      version: 1,
+      projects: projects.map((item) => item.rootPath),
+      activeProjectIndex,
+      panes: panes.map((pane) => ({ id: pane.id, floating: !!pane.floating || !!pane.detached, floatRect: pane.floatRect, tabs: pane.tabs.map((tab) => ({ path: tab.file?.path })).filter((tab) => tab.path), active: pane.active })),
+      activePaneId,
+      graph: { visible: graphDetached ? true : graphVisible, floating: graphDetached ? true : graphFloating, floatRect: graphFloat, viewMode: graphViewMode, folderId: graphFolderId },
+      terminal: { visible: terminalDetached ? true : terminalVisible, floating: terminalDetached ? true : terminalFloating, floatRect: terminalFloat },
+      layoutSize
+    };
+  }
+
+  function saveSessionNow() {
+    if (!detachedMode && sessionReady) api?.saveSession?.(sessionSnapshot())?.catch((error) => console.warn('Session save failed:', error.message));
+  }
+
+  function scheduleSessionSave() {
+    if (detachedMode || !sessionReady || !api?.saveSession) return;
+    clearTimeout(sessionSaveTimer);
+    sessionSaveTimer = setTimeout(() => saveSessionNow(), 1000);
+  }
+
+  $: if (sessionReady && !detachedMode) {
+    projects; activeProjectIndex; panes; activePaneId; graphVisible; graphFloating; graphFloat; graphViewMode; graphFolderId; terminalVisible; terminalFloating; terminalFloat; layoutSize;
+    scheduleSessionSave();
+  }
+
+  async function restoreSession() {
+    if (detachedMode || !api?.loadSession) return;
+    let skipped = 0;
+    try {
+      const saved = await api.loadSession();
+      if (!saved) return;
+      const restoredProjects = [];
+      for (const rootPath of saved.projects) {
+        try { restoredProjects.push(await api.scanProject(rootPath)); } catch { /* deleted/unavailable project */ }
+      }
+      projects = restoredProjects;
+      activeProjectIndex = Math.max(0, Math.min(saved.activeProjectIndex, Math.max(0, projects.length - 1)));
+      panes = saved.panes.map((pane) => ({ ...pane, detached: false, tabs: [], active: null }));
+      if (!panes.length) panes = [{ id: 1, tabs: [], active: null, floating: false, detached: false, floatRect: { x: 300, y: 90, width: 740, height: 540, maximized: false }, zIndex: 10 }];
+      nextPaneId = Math.max(...panes.map((pane) => pane.id), 1) + 1;
+      activePaneId = panes.some((pane) => pane.id === saved.activePaneId) ? saved.activePaneId : panes[0].id;
+      graphVisible = saved.graph.visible === true;
+      graphFloating = saved.graph.floating;
+      graphFloat = saved.graph.floatRect;
+      graphViewMode = saved.graph.viewMode;
+      graphFolderId = saved.graph.folderId;
+      terminalVisible = saved.terminal.visible;
+      terminalFloating = saved.terminal.floating;
+      terminalFloat = saved.terminal.floatRect;
+      layoutSize = saved.layoutSize;
+      for (const savedPane of saved.panes) {
+        for (const tab of savedPane.tabs) {
+          const entry = projects.flatMap((item) => flattenFiles(item.tree)).find((file) => file.path === tab.path);
+          if (!entry) { skipped++; continue; }
+          try { await selectFile(entry, savedPane.id); } catch { skipped++; }
+        }
+      }
+      status = skipped ? `Restored session; skipped ${skipped} missing or unreadable file${skipped === 1 ? '' : 's'}.` : 'Restored previous session.';
+    } catch (error) {
+      status = `Could not restore session: ${error.message}`;
+    } finally {
+      sessionReady = true;
+    }
+  }
+
   onMount(async () => {
     applyPreferences(preferences);
     document.documentElement.style.setProperty('--explorer-font-size', `${explorerFontSize}px`);
@@ -605,6 +702,8 @@
         }
       }
       rebuildDocumentSearchIndex();
+    } else {
+      await restoreSession();
     }
 
     const unlistenDock = api?.onDetachedDockBack?.((data) => handleDetachedDockBack(data));
@@ -631,9 +730,11 @@
       if (mod && event.key.toLowerCase() === '\\') { event.preventDefault(); toggleSplit(); }
       if (mod && event.key === '`') { event.preventDefault(); toggleTerminal(); }
       if (mod && (event.key === ',' || event.key === '<')) { event.preventDefault(); showPreferences = !showPreferences; }
-      if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; contextMenu = null; tabMenu = null; }
+      if (event.key === 'F2' && focusedTreeEntry && focusedTreeEntry.path !== project?.rootPath) { event.preventDefault(); beginRename(focusedTreeEntry); }
+      if (event.key === 'Escape') { paletteOpen = false; showPreferences = false; contextMenu = null; tabMenu = null; cancelRename(); }
     };
     const beforeUnload = (event) => {
+      if (!detachedMode && sessionReady) api?.saveSessionSync?.(sessionSnapshot());
       const dirtyTabs = [];
       const seenKeys = new Set();
       for (const pane of panes) {
@@ -662,6 +763,7 @@
       window.removeEventListener('resize', handleWindowResize);
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('beforeunload', beforeUnload);
+      clearTimeout(sessionSaveTimer);
       window.removeEventListener('pointerdown', closeContextMenuOnOutsideClick);
       sidebarEl?.removeEventListener('wheel', handleExplorerWheel);
       unlistenDock?.();
@@ -1067,7 +1169,7 @@
   async function selectFile(entry, targetPaneId = activePaneId) {
     if (entry.type !== 'file' && entry.type !== 'symbol') return;
     if (entry.path?.toLowerCase().endsWith('.gcn')) {
-      await openGeometryFile(entry.path);
+      await openGeometryFile(entry.path, targetPaneId);
       return;
     }
     const owningProject = projects.findIndex((p) => entry.path.startsWith(p.rootPath));
@@ -1119,26 +1221,8 @@
     if (!api?.movePath || (source.type !== 'file' && source.type !== 'folder')) return;
     try {
       const result = await api.movePath(source.path, target.path);
-      if (graphFolderId && isSameOrDescendant(graphFolderId, source.path)) {
-        graphFolderId = `${result.path}${graphFolderId.slice(source.path.length)}`;
-      }
       const targetRelativePath = target.path === project?.rootPath ? '' : target.relativePath;
-      panes = panes.map((pane) => ({
-        ...pane,
-        tabs: pane.tabs.map((tab) => {
-          if (!tab.file?.path || !isSameOrDescendant(tab.file.path, source.path)) return tab;
-          const suffix = tab.file.path.slice(source.path.length);
-          const relativeSuffix = (tab.file.relativePath || tab.file.name).slice(source.relativePath.length).replace(/^[/\\]/, '');
-          const relativePath = [targetRelativePath, source.name, relativeSuffix].filter(Boolean).join('/');
-          const nextPath = `${result.path}${suffix}`;
-          return {
-            ...tab,
-            id: nextPath,
-            file: { ...tab.file, path: nextPath, relativePath }
-          };
-        }),
-        active: (pane.active && isSameOrDescendant(pane.active, source.path)) ? `${result.path}${pane.active.slice(source.path.length)}` : pane.active
-      }));
+      repathOpenTabs(source.path, result.path, [targetRelativePath, source.name].filter(Boolean).join('/'));
       status = `Moved ${source.name} to ${target.relativePath}`;
       await refreshProject();
     } catch (error) {
@@ -1170,6 +1254,21 @@
   function activateTab(paneId, tabId) {
     activePaneId = paneId;
     panes = panes.map((pane) => pane.id === paneId ? { ...pane, active: tabId } : pane);
+  }
+
+  function handleGeometryFatal(paneId, tabId, error) {
+    const pane = panes.find((p) => p.id === paneId);
+    const tab = pane?.tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    forgetGeometryHistory(tab.documentKey);
+    panes = panes.map((p) => {
+      if (p.id !== paneId) return p;
+      const tabs = p.tabs.filter((t) => t.id !== tabId);
+      return { ...p, tabs, active: p.active === tabId ? tabs.at(-1)?.id ?? null : p.active };
+    });
+    const details = String(error?.message || error || 'Unknown workspace error').trim().slice(0, 2048);
+    conversionDialog = { title: `Cannot open ${tab.file?.name || 'Geometry Code'}`, error: 'The document could not be opened; its in-memory state was cleared.', details };
+    status = 'Geometry document closed after an internal error.';
   }
 
   async function closeTab(paneId, tabId) {
@@ -1595,6 +1694,61 @@
     if (event.target !== event.currentTarget || !project) return;
     event.preventDefault();
     contextMenu = { entry: project.tree, x: event.clientX, y: event.clientY };
+  }
+
+  function beginRename(entry) {
+    if (!entry || entry.path === project?.rootPath) return;
+    contextMenu = null;
+    renamePath = entry.path;
+  }
+
+  function cancelRename() {
+    renamePath = null;
+  }
+
+  function tabKindForPath(filePath) {
+    return /\.gcn$/i.test(filePath) ? 'geometry' : 'file';
+  }
+
+  function repathOpenTabs(oldPath, newPath, newRelativePath) {
+    if (graphFolderId && isSameOrDescendant(graphFolderId, oldPath)) {
+      graphFolderId = `${newPath}${graphFolderId.slice(oldPath.length)}`;
+    }
+    panes = panes.map((pane) => ({
+      ...pane,
+      tabs: pane.tabs.map((tab) => {
+        if (!tab.file?.path || !isSameOrDescendant(tab.file.path, oldPath)) return tab;
+        return repathTab(tab, oldPath, newPath, newRelativePath);
+      }),
+      active: pane.active && isSameOrDescendant(pane.active, oldPath) ? `${newPath}${pane.active.slice(oldPath.length)}` : pane.active
+    }));
+  }
+
+  async function renameEntry(event) {
+    const { entry, newName } = event.detail;
+    renamePath = null;
+    if (!entry || entry.path === project?.rootPath || !api?.renamePath) return;
+    const openTab = entry.type === 'file' && panes.flatMap((pane) => pane.tabs).find((tab) => tab.file?.path === entry.path);
+    const nextPath = `${entry.path.slice(0, entry.path.length - entry.name.length)}${newName}`;
+    if (openTab && tabKindForPath(entry.path) !== tabKindForPath(nextPath) && isTabDirty(openTab)) {
+      status = `Save or close ${entry.name} before changing its type.`;
+      return;
+    }
+    try {
+      await api.renamePath(entry.path, newName);
+      if (openTab && tabKindForPath(entry.path) !== tabKindForPath(nextPath)) {
+        panes = panes.map((pane) => ({ ...pane, tabs: pane.tabs.filter((tab) => tab !== openTab), active: pane.active === openTab.id ? pane.tabs.find((tab) => tab !== openTab)?.id ?? null : pane.active }));
+      } else {
+        const parentRelative = entry.relativePath?.slice(0, Math.max(0, entry.relativePath.length - entry.name.length)).replace(/[/\\]$/, '') || '';
+        repathOpenTabs(entry.path, nextPath, [parentRelative, newName].filter(Boolean).join('/'));
+      }
+      await refreshProject(project?.rootPath);
+      const renamed = files.find((file) => file.path === nextPath) || { type: 'file', path: nextPath, name: newName, relativePath: nextPath };
+      if (openTab && tabKindForPath(entry.path) !== tabKindForPath(nextPath)) await selectFile(renamed);
+      status = `Renamed ${entry.name} to ${newName}`;
+    } catch (error) {
+      status = `Could not rename ${entry.name}: ${error.message}`;
+    }
   }
 
   function openCreateFromContext(type) {
@@ -2174,7 +2328,7 @@
           <button on:click={() => handleExportGeometry(activeTab)} disabled={!canExportTab(activeTab)} title="Export Python / GDScript">Export</button>
           <button on:click={closeGeometryGraph} title="Close the current Geometry Code Node">Close Node</button>
         {:else if activeFile && /\.(py|gd)$/i.test(activeFile.name)}
-          <button class="primary" on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code (.gcn)">⇄ Convert to .gcn</button>
+          <button class="primary" disabled={conversionBusy} on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code (.gcn)">⇄ Convert to .gcn</button>
         {/if}
         <button class="primary" on:click={handleSave} disabled={!canSave}>Save</button>
       </div>
@@ -2309,7 +2463,7 @@
             <span>Explorer</span>
           </div>
           <div class="explorer-tree" role="presentation" on:contextmenu={openExplorerContextMenu}>
-            <FileTree entry={project.tree} {activeFile} activeFolderPath={graphFolderId} on:select={(event) => selectFile(event.detail)} on:folder={(event) => activateExplorerFolder(event.detail)} on:context={openContextMenu} on:move={moveEntry} />
+            <FileTree entry={project.tree} {activeFile} activeFolderPath={graphFolderId} {renamePath} on:select={(event) => selectFile(event.detail)} on:folder={(event) => activateExplorerFolder(event.detail)} on:context={openContextMenu} on:move={moveEntry} on:rename={renameEntry} on:rename-cancel={cancelRename} on:focus={(event) => (focusedTreeEntry = event.detail)} />
           </div>
         {:else}
           <div class="empty">No folder open.</div>
@@ -2363,6 +2517,8 @@
                   {preferences}
                   {showLineNumbers}
                   onchange={(next) => handleGeometryChange(pane.id, tab.id, next)}
+                  onconvertcode={convertCodeSnippet}
+                  onfatal={(error) => handleGeometryFatal(pane.id, tab.id, error)}
                   ondraftchange={(hasDrafts) => handleGeometryDraftChange(pane.id, tab.id, hasDrafts)}
                   onexport={() => handleExportGeometry(tab)}
                   onrun={() => handleRunPython(tab)}
@@ -2497,6 +2653,8 @@
               {preferences}
               {showLineNumbers}
               onchange={(next) => handleGeometryChange(pane.id, tab.id, next)}
+              onconvertcode={convertCodeSnippet}
+              onfatal={(error) => handleGeometryFatal(pane.id, tab.id, error)}
               ondraftchange={(hasDrafts) => handleGeometryDraftChange(pane.id, tab.id, hasDrafts)}
               onexport={() => handleExportGeometry(tab)}
               onrun={() => handleRunPython(tab)}
@@ -2575,13 +2733,16 @@
     {#if contextMenu}
       <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
         <div class="context-title">{contextMenu.entry.name}</div>
+        {#if contextMenu.entry.path !== project?.rootPath}
+          <button on:click={() => beginRename(contextMenu.entry)}>Rename</button>
+        {/if}
         {#if contextMenu.entry.type === 'folder'}
           <button on:click={() => searchFolderFromContext(contextMenu.entry)}>Search in this Folder</button>
           <button on:click={() => openCreateFromContext('file')}>New File</button>
           <button on:click={() => openCreateFromContext('geometry')}>New Geometry Code</button>
           <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
         {:else if contextMenu.entry.type === 'file' && /\.(py|gd)$/i.test(contextMenu.entry.name)}
-          <button on:click={() => handleConvertSourceToGeometry(contextMenu.entry)}>Convert to Geometry Code (.gcn)</button>
+          <button disabled={conversionBusy} on:click={() => handleConvertSourceToGeometry(contextMenu.entry)}>Convert to Geometry Code (.gcn)</button>
         {/if}
         {#if contextMenu.entry.path !== project?.rootPath}
           <button class="danger" on:click={() => askDelete(contextMenu.entry)}>Delete {contextMenu.entry.type}</button>
@@ -2632,6 +2793,19 @@
             <button class="primary" type="submit" disabled={createBusy}>{createDialog === 'geometry-save' ? 'Save' : 'Create'}</button>
           </div>
         </form>
+      </div>
+    {/if}
+
+    {#if conversionDialog}
+      <div class="modal-backdrop" role="presentation">
+        <div class="modal" role="dialog" aria-label={conversionDialog.title}>
+          <h2>{conversionDialog.title}</h2>
+          <p>{conversionDialog.error}</p>
+          {#if conversionDialog.details}
+            <details><summary>Details</summary><pre>{typeof conversionDialog.details === 'string' ? conversionDialog.details : JSON.stringify(conversionDialog.details, null, 2)}</pre></details>
+          {/if}
+          <div class="modal-actions"><button class="primary" on:click={() => (conversionDialog = null)}>OK</button></div>
+        </div>
       </div>
     {/if}
 

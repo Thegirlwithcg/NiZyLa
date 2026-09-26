@@ -69,6 +69,7 @@ function literal(type, value, target, location) {
 /** Renders a value node after its inputs are cached; iterative so deep graphs cannot overflow the stack. */
 function render(node, sources, context) {
   const { cache, variables, target } = context;
+  context.emitComment?.(node, context.commentDepth || 0, context.commentScope || []);
   const location = { nodeId: node.id };
   const inputs = Object.fromEntries([...sources].map(([handle, id]) => [handle, cache.get(id)]));
   const types = Object.fromEntries(Object.entries(inputs).map(([handle, item]) => [handle, item?.type]));
@@ -108,7 +109,7 @@ function render(node, sources, context) {
     const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
     const funcName = targetNode?.data?.name || node.data?.name || 'call';
     const argNames = node.data?.argumentNames || [];
-    const argTexts = argNames.map((name, i) => inputs[name || `arg_${i}`]?.text ?? 'None');
+    const argTexts = argNames.map((_, i) => inputs[`arg_${i}`]?.text ?? 'None');
     if (node.data?.isMethod) {
       const targetObj = inputs.target?.text ?? 'self';
       text = `${targetObj}.${funcName}(${argTexts.join(', ')})`;
@@ -118,7 +119,7 @@ function render(node, sources, context) {
   } else if (node.type === 'instantiate') {
     const className = node.data?.className || 'Object';
     const argNames = node.data?.argumentNames || [];
-    const argTexts = argNames.map((name, i) => inputs[name || `arg_${i}`]?.text ?? 'None');
+    const argTexts = argNames.map((_, i) => inputs[`arg_${i}`]?.text ?? 'None');
     if (target === 'gdscript') {
       text = `${className}.new(${argTexts.join(', ')})`;
     } else {
@@ -277,6 +278,9 @@ function expression(id, context) {
     if (pending.length) { stack.push(...pending); continue; }
     stack.pop();
     const node = nodes.get(current);
+    if (context.lenient && context.errorNodeIds?.has(current)) {
+      throw new GenerationError('preview-error-node', context.nodeMessages?.get(current) || 'Node has an error.', { nodeId: current });
+    }
     if (!node) {
       cache.set(current, { text: 'None', type: 'any', depth: 0 });
     } else {
@@ -295,6 +299,7 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
   const values = new Map(graph.nodes.map((n) => [n.id, new Map()]));
 
   for (const edge of graph.edges) {
+    if (context.lenient && context.errorEdgeIds?.has(edge.id)) continue;
     const srcNode = nodes.get(edge.source);
     if (!srcNode) continue;
     const sourcePort = getNodePorts(srcNode, [...variables.values()]).find((p) => p.id === edge.sourceHandle);
@@ -319,6 +324,12 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
   // Emit variable declarations (for child scopes like function/class bodies; root variables are emitted in step 2)
   if (scopePath.length > 0) {
     for (const variable of graph.variables) {
+      if (context.lenient && context.errorVariableIds.has(variable.id)) {
+        emitLine(baseDepth, `# ⚠ skipped variable ${variable.name}: ${context.variableMessages.get(variable.id) || 'Variable has an error.'}`, null, scopePath);
+        context.skippedNodeIds.add(variable.id);
+        continue;
+      }
+      context.emitComment({ id: `variable:${variable.id}`, data: variable }, baseDepth, scopePath);
       const value = literal(variable.type, variable.initialValue, target, {});
       const line = python
         ? (isClass ? `${variable.name} = ${value}` : `${variable.name} = ${value}`)
@@ -353,7 +364,23 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
     if (!node) continue;
     const exit = (handle) => exits.get(id)?.get(handle);
     const inputVal = (handle) => expression(values.get(id)?.get(handle), localContext);
+    const lineStart = context.lines.length;
+    const mapStart = context.sourceMap.length;
+    context.commentDepth = depth;
+    context.commentScope = scopePath;
+    context.emitComment?.(node, depth, scopePath);
+    if (context.lenient && context.errorNodeIds?.has(id)) {
+      context.lines.splice(lineStart);
+      context.sourceMap.splice(mapStart);
+      if (!['functionDef', 'classDef'].includes(node.type)) {
+        context.emitLine(depth, `# ⚠ skipped ${context.nodeLabels?.get(id) || node.type}: ${context.nodeMessages?.get(id) || 'Node has an error.'}`, id, scopePath);
+        context.skippedNodeIds.add(id);
+      }
+      schedule(chain(exit('next'), depth));
+      continue;
+    }
 
+    try {
     if (node.type === 'setVariable') {
       const variable = localContext.variables.get(node.data?.variableId);
       const varName = variable ? variable.name : (node.data?.variableId || 'v');
@@ -442,7 +469,7 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
       const funcName = targetNode?.data?.name || node.data?.name || 'call';
       const argNames = node.data?.argumentNames || [];
-      const argTexts = argNames.map((name, i) => inputVal(name || `arg_${i}`).text);
+      const argTexts = argNames.map((_, i) => inputVal(`arg_${i}`).text);
       if (node.data?.isMethod) {
         const targetObj = inputVal('target').text;
         emitLine(depth, `${targetObj}.${funcName}(${argTexts.join(', ')})`, id, scopePath);
@@ -460,13 +487,19 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       schedule(chain(exit('next'), depth));
     } else if (node.type === 'codeNode') {
       const codeLines = (node.data?.code || 'pass').split('\n');
-      for (const cl of codeLines) {
-        emitLine(depth, cl, id, scopePath);
-      }
-      statementsEmitted++;
+      for (const cl of codeLines) emitLine(depth, cl, id, scopePath);
+      if (codeLines.some((line) => line.trim() && !line.trim().startsWith('#'))) statementsEmitted++;
       schedule(chain(exit('next'), depth));
     } else if (['functionDef', 'classDef', 'import'].includes(node.type)) {
       // Definitions in execution chain
+      schedule(chain(exit('next'), depth));
+    }
+    } catch (error) {
+      if (!context.lenient || !(error instanceof GenerationError)) throw error;
+      context.lines.splice(lineStart);
+      context.sourceMap.splice(mapStart);
+      context.emitLine(depth, `# ⚠ skipped ${context.nodeLabels?.get(id) || node.type}: ${context.nodeMessages?.get(id) || error.message}`, id, scopePath);
+      context.skippedNodeIds.add(id);
       schedule(chain(exit('next'), depth));
     }
   }
@@ -500,6 +533,7 @@ function generateFunction(node, baseDepth, context, scopePath = [], isClassMetho
     return s;
   }).join(', ');
 
+  context.emitComment(node, baseDepth, scopePath);
   // Decorators
   for (const dec of node.data?.decorators || []) {
     emitLine(baseDepth, dec.startsWith('@') ? dec : `@${dec}`, node.id, scopePath);
@@ -560,6 +594,7 @@ function generateClass(node, baseDepth, context, scopePath = []) {
   const name = node.data?.name || 'MyClass';
   const baseClass = node.data?.baseClass;
 
+  context.emitComment(node, baseDepth, scopePath);
   for (const dec of node.data?.decorators || []) {
     emitLine(baseDepth, dec.startsWith('@') ? dec : `@${dec}`, node.id, scopePath);
   }
@@ -662,7 +697,7 @@ function hasExecutableStatements(graph) {
   return false;
 }
 
-function generate(doc, target) {
+function generate(doc, target, options = {}) {
   // If v1, migrate first
   const workingDoc = doc.version === 1 ? migrateV1ToV2({ ...doc, target }) : doc;
   const python = target === 'python';
@@ -697,11 +732,27 @@ function generate(doc, target) {
   const context = {
     target,
     sourceMap,
+    lines,
+    lenient: options.lenient === true,
+    errorNodeIds: options.errorNodeIds || new Set(),
+    errorEdgeIds: options.errorEdgeIds || new Set(),
+    skippedNodeIds: options.skippedNodeIds || new Set(),
+    nodeMessages: options.nodeMessages || new Map(),
+    nodeLabels: options.nodeLabels || new Map(),
+    errorVariableIds: options.errorVariableIds || new Set(),
+    variableMessages: options.variableMessages || new Map(),
+    commentSeen: new Set(),
     emitLine,
     emptyLine,
     variables: rootVariables,
     rootVariablesList: workingDoc.variables || [],
     definitions
+  };
+  context.emitComment = (node, depth, scopePath = []) => {
+    const comment = typeof node?.data?.comment === 'string' ? node.data.comment.replace(/\r/g, '').trim() : '';
+    if (!comment || context.commentSeen.has(node.id)) return;
+    context.commentSeen.add(node.id);
+    for (const line of comment.split('\n')) emitLine(depth, line ? `# ${line}` : '#', node.id, scopePath);
   };
 
   // If this is a migrated v1 document:
@@ -758,6 +809,7 @@ function generate(doc, target) {
   for (const node of workingDoc.nodes) {
     if (node.type === 'import') {
       const d = node.data || {};
+      context.emitComment(node, 0, []);
       if (python) {
         if (d.importType === 'from') {
           const dots = '.'.repeat(d.level || 0);
@@ -805,6 +857,12 @@ function generate(doc, target) {
   }
 
   for (const variable of workingDoc.variables) {
+    if (context.lenient && context.errorVariableIds.has(variable.id)) {
+      emitLine(0, `# ⚠ skipped variable ${variable.name}: ${context.variableMessages.get(variable.id) || 'Variable has an error.'}`);
+      context.skippedNodeIds.add(variable.id);
+      continue;
+    }
+    context.emitComment({ id: `variable:${variable.id}`, data: variable }, 0, []);
     const value = literal(variable.type, variable.initialValue, target, {});
     const line = python
       ? `${variable.name} = ${value}`
@@ -819,14 +877,16 @@ function generate(doc, target) {
   // 3. Classes
   for (const node of workingDoc.nodes) {
     if (node.type === 'classDef') {
-      generateClass(node, 0, context, []);
+      if (context.lenient && context.errorNodeIds.has(node.id)) { context.emitComment(node, 0, []); emitLine(0, `# ⚠ skipped ${context.nodeLabels.get(node.id) || `Class ${node.data?.name || 'Class'}`}: ${context.nodeMessages.get(node.id) || 'Class has an error.'}`, node.id); context.skippedNodeIds.add(node.id); }
+      else generateClass(node, 0, context, []);
     }
   }
 
   // 4. Functions
   for (const node of workingDoc.nodes) {
     if (node.type === 'functionDef') {
-      generateFunction(node, 0, context, [], false);
+      if (context.lenient && context.errorNodeIds.has(node.id)) { context.emitComment(node, 0, []); emitLine(0, `# ⚠ skipped ${context.nodeLabels.get(node.id) || `Function ${node.data?.name || 'func'}`}: ${context.nodeMessages.get(node.id) || 'Function has an error.'}`, node.id); context.skippedNodeIds.add(node.id); }
+      else generateFunction(node, 0, context, [], false);
     }
   }
 
@@ -842,12 +902,14 @@ function generate(doc, target) {
   if (python) {
     if (startNode) {
       if (startNode.data?.mainGuard === true) {
+        context.emitComment(startNode, 0, []);
         emitLine(0, 'if __name__ == "__main__":', startNode.id);
         const count = generateGraphStatements(workingDoc, 1, context, []);
         if (count === 0) {
           emitLine(1, 'pass');
         }
       } else {
+        context.emitComment(startNode, 0, []);
         generateGraphStatements(workingDoc, 0, context, []);
       }
     }
@@ -868,6 +930,7 @@ function generate(doc, target) {
       if (lines.length > 0 && lines[lines.length - 1] !== '') {
         emptyLine();
       }
+      context.emitComment(startNode, 0, []);
       emitLine(0, 'func _ready():', startNode?.id);
       const count = startNode ? generateGraphStatements(workingDoc, 1, context, []) : 0;
       if (count === 0) {
@@ -884,6 +947,55 @@ function generate(doc, target) {
 }
 
 /** Generates Python or GDScript from a valid graph. `target` overrides document.target for this call only. */
+export function generateGeometryPreview(document, target = document?.target) {
+  const diagnostics = validateGeometryDocument(document);
+  const structural = diagnostics.some((item) => item.severity === 'error' && !item.nodeId && !item.edgeId && !item.variableId);
+  if (target !== 'python' && target !== 'gdscript') diagnostics.push({ severity: 'error', code: 'unsupported-target', message: 'Target must be python or gdscript.' });
+  if (structural || diagnostics.some((item) => item.code === 'unsupported-target')) return { code: '', diagnostics, sourceMap: [], skippedNodeIds: [] };
+  const errorNodeIds = new Set(diagnostics.filter((item) => item.severity === 'error' && item.nodeId).map((item) => item.nodeId));
+  const errorEdgeIds = new Set(diagnostics.filter((item) => item.severity === 'error' && item.edgeId).map((item) => item.edgeId));
+  const errorVariableIds = new Set(diagnostics.filter((item) => item.severity === 'error' && item.variableId).map((item) => item.variableId));
+  const nodeMessages = new Map();
+  const variableMessages = new Map();
+  for (const item of diagnostics) {
+    if (item.severity === 'error' && item.nodeId && !nodeMessages.has(item.nodeId)) nodeMessages.set(item.nodeId, item.message);
+    if (item.severity === 'error' && item.variableId && !variableMessages.has(item.variableId)) variableMessages.set(item.variableId, item.message);
+  }
+  const nodeLabels = new Map();
+  const variables = new Map((document.variables || []).map((v) => [v.id, v]));
+  const visitLabels = (graph) => {
+    for (const node of graph?.nodes || []) {
+      if (node.type === 'print') nodeLabels.set(node.id, 'Print');
+      else if (node.type === 'functionDef') nodeLabels.set(node.id, `Function ${node.data?.name || 'func'}`);
+      else if (node.type === 'classDef') nodeLabels.set(node.id, `Class ${node.data?.name || 'Class'}`);
+      else if (node.type === 'setVariable') nodeLabels.set(node.id, `Set ${variables.get(node.data?.variableId)?.name || 'variable'}`);
+      else nodeLabels.set(node.id, node.type);
+      if (node.data?.graph) visitLabels(node.data.graph);
+    }
+  };
+  visitLabels(document);
+  for (const graph of [document]) {
+    const markVariableNodes = (g) => {
+      for (const node of g?.nodes || []) {
+        if (node.data?.variableId && errorVariableIds.has(node.data.variableId)) {
+          errorNodeIds.add(node.id);
+          const variable = variables.get(node.data.variableId);
+          if (variable) nodeMessages.set(node.id, `uses invalid variable "${variable.name}"`);
+        }
+        if (node.data?.graph) markVariableNodes(node.data.graph);
+      }
+    };
+    markVariableNodes(graph);
+  }
+  const skippedNodeIds = new Set();
+  try {
+    const result = generate(document, target, { lenient: true, errorNodeIds, errorEdgeIds, skippedNodeIds, nodeMessages, nodeLabels, errorVariableIds, variableMessages });
+    return { code: result.code || '', diagnostics, sourceMap: result.sourceMap, skippedNodeIds: [...skippedNodeIds] };
+  } catch (error) {
+    return { code: '', diagnostics: [...diagnostics, { severity: 'error', code: 'preview-generation', message: error.message }], sourceMap: [], skippedNodeIds: [...skippedNodeIds] };
+  }
+}
+
 export function generateGeometryCode(document, target = document?.target) {
   const diagnostics = validateGeometryDocument(document);
   if (target !== 'python' && target !== 'gdscript') {

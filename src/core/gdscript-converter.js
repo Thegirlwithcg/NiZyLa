@@ -36,14 +36,14 @@ export async function getGdscriptParser(wasmDir = null) {
 
 export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = null) {
   if (typeof source !== 'string') {
-    return { document: null, error: 'Source must be a string.' };
+    return { document: null, error: 'Source must be a string.', unattachedComments: 0 };
   }
 
   let parser;
   try {
     parser = await getGdscriptParser(wasmDir);
   } catch (err) {
-    return { document: null, error: `Failed to initialize GDScript tree-sitter parser: ${err.message}` };
+    return { document: null, error: `Failed to initialize GDScript tree-sitter parser: ${err.message}`, unattachedComments: 0 };
   }
 
   const tree = parser.parse(source);
@@ -64,7 +64,8 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
     const start = errNode.startPosition;
     return {
       document: null,
-      error: `SyntaxError in GDScript at line ${start.row + 1}, col ${start.column}: unexpected syntax near "${source.slice(errNode.startIndex, errNode.endIndex)}"`
+      error: `SyntaxError in GDScript at line ${start.row + 1}, col ${start.column}: unexpected syntax near "${source.slice(errNode.startIndex, errNode.endIndex)}"`,
+      unattachedComments: 0
     };
   }
 
@@ -321,6 +322,12 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           argsList.push(argsNode.namedChild(i));
         }
       }
+      // Named arguments and variadic/spread arguments cannot be represented safely by generic ports.
+      if (argsList.some((arg) => /^(\.\.\.)|=/.test(source.slice(arg.startIndex, arg.endIndex).trim()))) {
+        const codeNode = { id: `expr_${uuid().slice(0, 8)}`, type: 'codeNode', position: { x: posX, y: posY }, data: { codeKind: 'expression', code: text, language: 'gdscript' } };
+        graph.nodes.push(codeNode);
+        return { node: codeNode, outputHandle: 'value' };
+      }
       const argNames = argsList.map((_, i) => `arg_${i}`);
       const callNode = {
         id: `call_${uuid().slice(0, 8)}`,
@@ -492,6 +499,46 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
   }
 
   let readyInjected = false;
+  const sourceLines = source.split(/\r?\n/);
+  const commentLines = new Map();
+  const consumedComments = new Set();
+  const commentAt = (line) => {
+    const text = sourceLines[line - 1] || '';
+    let quote = null; let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\\\') { escaped = true; continue; }
+      if (quote) { if (ch === quote) quote = null; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '#') return { text: text.slice(i + 1).trim(), full: text.slice(0, i).trim() === '' };
+    }
+    return null;
+  };
+  sourceLines.forEach((_, i) => { const c = commentAt(i + 1); if (c) commentLines.set(i + 1, c); });
+  const commentCache = new WeakMap();
+  function commentForNode(node) {
+    if (commentCache.has(node)) return commentCache.get(node);
+    const start = node.startPosition.row + 1; const found = [];
+    for (let line = start - 1; line >= 1; line--) {
+      const c = commentLines.get(line);
+      if (!c?.full || consumedComments.has(line)) break;
+      found.unshift(c.text); consumedComments.add(line);
+    }
+    const inline = commentLines.get(start);
+    if (inline && !inline.full && !consumedComments.has(start)) { found.push(inline.text); consumedComments.add(start); }
+    const value = found.length ? found.join('\n').slice(0, 2000) : undefined;
+    commentCache.set(node, value); return value;
+  }
+  function markCodeComments(node) {
+    for (let line = node.startPosition.row + 1; line <= node.endPosition.row + 1; line++) if (commentLines.has(line)) consumedComments.add(line);
+  }
+  function statementNode(graph, node, sourceNode) {
+    const comment = commentForNode(sourceNode);
+    if (comment !== undefined && !(node.type === 'setVariable' && sourceNode.type === 'variable_statement')) node.data = { ...(node.data || {}), comment };
+    if (node.type === 'codeNode') markCodeComments(sourceNode);
+    graph.nodes.push(node); return node;
+  }
 
   function convertCstStatements(nodesList, targetGraph, startX = 200, startY = 150, initialPrevId = 'start', initialPrevHandle = 'next') {
     const isRoot = targetGraph === doc;
@@ -505,6 +552,8 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
       const type = node.type;
       const text = source.slice(node.startIndex, node.endIndex).trim();
 
+      // Tree-sitter exposes comments as named children; attachment consumes them by line.
+      if (type === 'comment') continue;
       if (type === 'pass_statement') continue;
 
       if (type === 'extends_statement') {
@@ -516,7 +565,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           position: { x: curX, y: curY },
           data: { importType: 'gd_extends', module: baseName, names: [] }
         };
-        targetGraph.nodes.push(extNode);
+        statementNode(targetGraph, extNode, node);
         targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: extNode.id, targetHandle: 'in' });
         prevId = extNode.id;
         prevHandle = 'next';
@@ -533,7 +582,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           position: { x: curX, y: curY },
           data: { importType: 'gd_class_name', module: className, names: [] }
         };
-        targetGraph.nodes.push(clsNameNode);
+        statementNode(targetGraph, clsNameNode, node);
         targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: clsNameNode.id, targetHandle: 'in' });
         prevId = clsNameNode.id;
         prevHandle = 'next';
@@ -542,7 +591,12 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
       }
 
       if (type === 'variable_statement') {
+        const variableComment = commentForNode(node);
         if (isRoot) {
+          const declaredNode = node.childForFieldName('name') || node.namedChild(0);
+          const declaredName = declaredNode ? source.slice(declaredNode.startIndex, declaredNode.endIndex).trim() : '';
+          const declared = doc.variables.find((v) => v.name === declaredName);
+          if (declared && variableComment !== undefined) declared.comment = variableComment;
           if (!hasRootReady) {
             const init = rootVarInits.find((item) => item.node === node);
             if (init) {
@@ -552,7 +606,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
                 position: { x: curX, y: curY },
                 data: { variableId: init.variable.id }
               };
-              targetGraph.nodes.push(setNode);
+              statementNode(targetGraph, setNode, node);
               targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: setNode.id, targetHandle: 'in' });
               const valRes = buildExpression(init.valNode, targetGraph, curX - 180, curY + 40);
               if (valRes) {
@@ -580,6 +634,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           v = { id: `v_${uuid().slice(0, 8)}`, name: varName, type: mappedType, initialValue };
           targetGraph.variables.push(v);
         }
+        if (variableComment !== undefined) v.comment = variableComment;
 
         if (valNode) {
           const setNode = {
@@ -588,7 +643,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
             position: { x: curX, y: curY },
             data: { variableId: v.id }
           };
-          targetGraph.nodes.push(setNode);
+          statementNode(targetGraph, setNode, node);
           targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: setNode.id, targetHandle: 'in' });
           const valRes = buildExpression(valNode, targetGraph, curX - 180, curY + 40);
           if (valRes) {
@@ -677,10 +732,11 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
             name: fnName,
             parameters: params,
             returnType: 'any',
-            graph: child
+            graph: child,
+            ...(commentForNode(node) ? { comment: commentForNode(node) } : {})
           }
         };
-        targetGraph.nodes.push(fnNode);
+        statementNode(targetGraph, fnNode, node);
         targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: fnNode.id, targetHandle: 'in' });
         prevId = fnNode.id;
         prevHandle = 'next';
@@ -704,7 +760,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           if (fnName === 'print') {
             if (argsList.length < 2) {
               const pNode = { id: `print_${uuid().slice(0, 8)}`, type: 'print', position: { x: curX, y: curY }, data: { argCount: argsList.length } };
-              targetGraph.nodes.push(pNode);
+              statementNode(targetGraph, pNode, node);
               targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: pNode.id, targetHandle: 'in' });
 
               if (argsList.length === 1) {
@@ -730,7 +786,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
                   sourceLocation: { startLine: node.startPosition.row + 1, startCol: node.startPosition.column, endLine: node.endPosition.row + 1, endCol: node.endPosition.column }
                 }
               };
-              targetGraph.nodes.push(cNode);
+              statementNode(targetGraph, cNode, node);
               if (prevId) {
                 targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: cNode.id, targetHandle: 'in' });
               }
@@ -744,7 +800,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           if (fnName === 'prints') {
             const count = argsList.length;
             const pNode = { id: `print_${uuid().slice(0, 8)}`, type: 'print', position: { x: curX, y: curY }, data: { argCount: count } };
-            targetGraph.nodes.push(pNode);
+            statementNode(targetGraph, pNode, node);
             targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: pNode.id, targetHandle: 'in' });
 
             for (let i = 0; i < count; i++) {
@@ -763,6 +819,8 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           // General call statement
           const callRes = buildExpression(exprChild, targetGraph, curX, curY);
           if (callRes) {
+            const comment = commentForNode(node);
+            if (comment !== undefined) callRes.node.data = { ...(callRes.node.data || {}), comment };
             targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: callRes.node.id, targetHandle: 'in' });
             prevId = callRes.node.id;
             prevHandle = 'next';
@@ -774,8 +832,8 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
 
       if (type === 'return_statement') {
         const valNode = node.namedChild(0);
-        const retNode = { id: `ret_${uuid().slice(0, 8)}`, type: 'return', position: { x: curX, y: curY }, data: { hasValue: Boolean(valNode) } };
-        targetGraph.nodes.push(retNode);
+        const retNode = { id: `ret_${uuid().slice(0, 8)}`, type: 'return', position: { x: curX, y: curY }, data: { hasValue: Boolean(valNode), ...(commentForNode(node) ? { comment: commentForNode(node) } : {}) } };
+        statementNode(targetGraph, retNode, node);
         targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: retNode.id, targetHandle: 'in' });
         if (valNode) {
           const valRes = buildExpression(valNode, targetGraph, curX - 180, curY + 40);
@@ -799,7 +857,7 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
           sourceLocation: { startLine: node.startPosition.row + 1, startCol: node.startPosition.column, endLine: node.endPosition.row + 1, endCol: node.endPosition.column }
         }
       };
-      targetGraph.nodes.push(cNode);
+      statementNode(targetGraph, cNode, node);
       if (prevId) {
         targetGraph.edges.push({ id: `e_${uuid().slice(0, 8)}`, source: prevId, sourceHandle: prevHandle, target: cNode.id, targetHandle: 'in' });
       }
@@ -811,5 +869,6 @@ export async function convertGdscriptToGcn(source, sourceFile = null, wasmDir = 
 
   convertCstStatements(topLevelChildren, doc, 200, 150);
 
-  return { document: doc, error: null };
+  const unattachedComments = [...commentLines.keys()].filter((line) => !consumedComments.has(line)).length;
+  return { document: doc, error: null, unattachedComments };
 }

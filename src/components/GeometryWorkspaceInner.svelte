@@ -2,6 +2,9 @@
   import { sameContent } from '../core/geometry-editor.js';
   const historyStore = new Map();
   const MAX_HISTORY_ENTRIES = 20;
+  export function forgetGeometryHistory(key) {
+    if (key) historyStore.delete(key);
+  }
 
   function persistHistory(key, ed, stack) {
     if (!key || !ed) return;
@@ -19,14 +22,14 @@
   import { Background, MarkerType, SvelteFlow, useSvelteFlow, useUpdateNodeInternals } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
   import { nodeDefinitions } from '../core/geometry.js';
-  import { generateGeometryCode } from '../core/geometry-codegen.js';
+  import { generateGeometryCode, generateGeometryPreview } from '../core/geometry-codegen.js';
   import { nodeHelp } from '../core/node-help.js';
   import { THEME_PRESETS } from '../core/preferences.js';
   import {
     addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, createEditorState,
-    deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, positionsFromFlow, redo,
+    deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, spliceConvertedFragment, positionsFromFlow, redo,
     removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
-    updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter
+    updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter, syncFunctionCalls
   } from '../core/geometry-editor.js';
   import CodeEditor from './CodeEditor.svelte';
   import GeometryAddMenu from './GeometryAddMenu.svelte';
@@ -46,9 +49,11 @@
     filePath = null,
     dirty = false,
     onexport,
+    onconvertcode = null,
     onrun = null,
     onstop = null,
-    isRunning = false
+    isRunning = false,
+    onfatal = null
   } = $props();
 
   const uid = $props.id();
@@ -57,12 +62,18 @@
   const nodeTypes = { geometry: GeometryNode };
 
   const startKey = untrack(() => documentKey);
-  const savedOnStart = startKey ? historyStore.get(startKey) : null;
+  let savedOnStart = null;
   let initialEditorState;
-  if (savedOnStart && sameContent(savedOnStart.editor.present, untrack(() => initialDocument))) {
-    initialEditorState = { ...savedOnStart.editor, present: untrack(() => initialDocument) };
-  } else {
-    initialEditorState = createEditorState(untrack(() => initialDocument));
+  try {
+    savedOnStart = startKey ? historyStore.get(startKey) : null;
+    if (savedOnStart && sameContent(savedOnStart.editor.present, untrack(() => initialDocument))) {
+      initialEditorState = { ...savedOnStart.editor, present: untrack(() => initialDocument) };
+    } else {
+      initialEditorState = createEditorState(untrack(() => initialDocument));
+    }
+  } catch (error) {
+    untrack(() => onfatal)?.(error);
+    initialEditorState = { present: untrack(() => initialDocument), past: [], future: [], pending: null };
   }
   let editor = $state.raw(initialEditorState);
   let loadedKey = untrack(() => documentKey);
@@ -71,7 +82,9 @@
   let nodes = $state.raw([]);
   let edges = $state.raw([]);
   let view = $state.raw({ nodes: new Map(), ports: new Map(), diagnostics: new Map(), edgeDiagnostics: new Set(), variables: [] });
-  let generated = $state.raw({ code: null, diagnostics: [], sourceMap: [] });
+  let generated = $state.raw({ code: '', diagnostics: [], sourceMap: [], skippedNodeIds: [] });
+  let strictGenerated = $state.raw({ code: null, diagnostics: [] });
+  let lastGoodPreview = $state.raw({ code: '', sourceMap: [] });
   let drafts = $state.raw({});
   let notice = $state.raw({ text: '', error: false });
   let menu = $state.raw(null);
@@ -86,7 +99,12 @@
   const savedLayout = (() => {
     try { return JSON.parse(localStorage.getItem('nizyla.gcnLayout') || '{}'); } catch { return {}; }
   })();
-  let gcnLayout = $state({ side: savedLayout.side ?? 360, details: savedLayout.details ?? 260, panelVisible: savedLayout.panelVisible ?? true });
+  let gcnLayout = $state({ side: savedLayout.side ?? 360, details: savedLayout.details ?? 260, panelVisible: savedLayout.panelVisible ?? true,
+    previewMode: savedLayout.previewMode ?? 'docked', previewBeforeFull: savedLayout.previewBeforeFull ?? 'docked', previewZoom: savedLayout.previewZoom ?? 100,
+    previewRect: savedLayout.previewRect ?? { x: 24, y: 24, width: 560, height: 420 } });
+  let previewDrag = null;
+  let previewEl = $state();
+  let previewResizeObserver;
   let collapsed = $state({ help: false, variables: false, parameters: false, diagnostics: false, ...(savedLayout.collapsed || {}) });
   let codeLineNumbers = $state(savedLayout.codeLineNumbers ?? true);
   let resizing = null;
@@ -127,8 +145,9 @@
   const errors = $derived(generated.diagnostics.filter((d) => d.severity === 'error'));
   const canUndo = $derived(editor.past.length > 0 || !!editor.pending);
   const canRedo = $derived(editor.future.length > 0);
-  const canCopy = $derived(!!generated.code && !hasDrafts);
+  const canCopy = $derived(!!strictGenerated.code && strictGenerated.diagnostics.every((d) => d.severity !== 'error') && !hasDrafts);
   const canRun = $derived(!isRunning && !hasDrafts && errors.length === 0 && doc.target === 'python');
+  const showingLastGood = $derived(hasDrafts || (errors.length > 0 && !(generated.skippedNodeIds?.length)));
   const previewFile = $derived(doc.target === 'python' ? { name: 'generated.py', path: 'generated.py' } : { name: 'generated.gd', path: 'generated.gd' });
 
   const selectedNode = $derived(nodes.find((n) => n.selected));
@@ -202,6 +221,18 @@
 
   onMount(() => {
     ondraftchange?.(false, {});
+    window.addEventListener('resize', clampPreview);
+    if (typeof ResizeObserver !== 'undefined') {
+      previewResizeObserver = new ResizeObserver(([entry]) => {
+        if (gcnLayout.previewMode !== 'float' || previewDrag) return;
+        const r = gcnLayout.previewRect;
+        if (Math.round(entry.contentRect.width) !== r.width || Math.round(entry.contentRect.height) !== r.height) {
+          gcnLayout = { ...gcnLayout, previewRect: { ...r, width: Math.max(320, Math.round(entry.contentRect.width)), height: Math.max(220, Math.round(entry.contentRect.height)) } };
+          saveGcnLayout();
+        }
+      });
+      if (previewEl) previewResizeObserver.observe(previewEl);
+    }
   });
 
   onDestroy(() => {
@@ -214,11 +245,44 @@
       window.removeEventListener('blur', onwindowblur);
       window.removeEventListener('contextmenu', onwindowcontextmenu, { capture: true });
       window.removeEventListener('pointerdown', onwindowpointerdowncapture, { capture: true });
+      window.removeEventListener('resize', clampPreview);
+      previewResizeObserver?.disconnect();
     }
   });
 
   function saveGcnLayout() {
     try { localStorage.setItem('nizyla.gcnLayout', JSON.stringify({ ...gcnLayout, collapsed, codeLineNumbers })); } catch (_) {}
+  }
+
+  function setPreviewMode(mode) {
+    if (mode === 'full' && gcnLayout.previewMode !== 'full') gcnLayout = { ...gcnLayout, previewBeforeFull: gcnLayout.previewMode, previewMode: mode };
+    else if (gcnLayout.previewMode === 'full' && mode !== 'full') gcnLayout = { ...gcnLayout, previewMode: mode };
+    else gcnLayout = { ...gcnLayout, previewMode: mode };
+    saveGcnLayout();
+  }
+  function setPreviewZoom(value) { gcnLayout = { ...gcnLayout, previewZoom: Math.max(70, Math.min(200, value)) }; saveGcnLayout(); }
+  function previewWheel(event) {
+    if (event.ctrlKey || event.metaKey) { event.preventDefault(); setPreviewZoom(gcnLayout.previewZoom + (event.deltaY < 0 ? 10 : -10)); }
+  }
+  function startPreviewDrag(event) {
+    if (event.button !== 0 || gcnLayout.previewMode !== 'float') return;
+    previewDrag = { x: event.clientX, y: event.clientY, rect: { ...gcnLayout.previewRect } };
+    window.addEventListener('pointermove', movePreviewDrag);
+    window.addEventListener('pointerup', stopPreviewDrag, { once: true });
+  }
+  function movePreviewDrag(event) {
+    if (!previewDrag) return;
+    const root = canvasEl?.closest('.gcn-workspace')?.getBoundingClientRect();
+    const maxX = Math.max(0, (root?.width ?? 1000) - previewDrag.rect.width);
+    const maxY = Math.max(0, (root?.height ?? 700) - previewDrag.rect.height);
+    gcnLayout = { ...gcnLayout, previewRect: { ...previewDrag.rect, x: Math.max(0, Math.min(maxX, previewDrag.rect.x + event.clientX - previewDrag.x)), y: Math.max(0, Math.min(maxY, previewDrag.rect.y + event.clientY - previewDrag.y)) } };
+  }
+  function stopPreviewDrag() { previewDrag = null; window.removeEventListener('pointermove', movePreviewDrag); saveGcnLayout(); }
+  function clampPreview() {
+    if (!gcnLayout.previewRect) return;
+    const root = canvasEl?.closest('.gcn-workspace')?.getBoundingClientRect();
+    const r = gcnLayout.previewRect;
+    gcnLayout = { ...gcnLayout, previewRect: { ...r, x: Math.max(0, Math.min(Math.max(0, (root?.width ?? r.width) - r.width), r.x)), y: Math.max(0, Math.min(Math.max(0, (root?.height ?? r.height) - r.height), r.y)) } };
   }
 
   function toggleSidePanel() {
@@ -272,14 +336,26 @@
   }
 
   function refresh() {
+    try {
     const d = editor.present;
     let result;
     try {
       result = generateGeometryCode(d, d.target);
+      const previewResult = hasDrafts ? null : generateGeometryPreview(d, d.target);
+      strictGenerated = { code: result.code, diagnostics: result.diagnostics };
+      if (previewResult && (previewResult.code !== '' || !result.diagnostics.some((item) => item.severity === 'error'))) {
+        generated = previewResult;
+      } else {
+        generated = { ...lastGoodPreview, diagnostics: result.diagnostics, skippedNodeIds: [] };
+      }
+      if (!result.diagnostics.some((item) => item.severity === 'error') && result.code) lastGoodPreview = { code: result.code, sourceMap: result.sourceMap };
     } catch (error) {
       result = { code: null, diagnostics: [{ severity: 'error', code: 'internal', message: `Could not generate code: ${error.message}` }], sourceMap: [] };
     }
-    generated = result;
+    if (!strictGenerated || strictGenerated.diagnostics.length === 0) {
+      strictGenerated = { code: result.code, diagnostics: result.diagnostics };
+      generated = result;
+    }
     copyResult = '';
 
     const currentGraph = getGraphAtScope(d, scopePathIds) || d;
@@ -302,6 +378,9 @@
       localVariableIds: new Set((currentGraph.variables || []).map((v) => v.id))
     };
     syncFlow();
+    } catch (error) {
+      onfatal?.(error);
+    }
   }
 
   function syncFlow() {
@@ -402,6 +481,27 @@
     applyScoped(() => result.doc, live);
   }
 
+  function dedentCode(code) {
+    const lines = String(code || '').replace(/\r/g, '').split('\n');
+    const nonEmpty = lines.filter((line) => line.trim());
+    const indent = nonEmpty.length ? Math.min(...nonEmpty.map((line) => (line.match(/^\s*/) || [''])[0].length)) : 0;
+    return lines.map((line) => line.slice(indent)).join('\n');
+  }
+
+  async function convertCodeNode(nodeId) {
+    const node = activeGraph.nodes.find((item) => item.id === nodeId && item.type === 'codeNode');
+    if (!node || !onconvertcode) return;
+    const result = await onconvertcode({ code: dedentCode(node.data?.code || ''), target: doc.target, codeKind: node.data?.codeKind || 'statement' });
+    if (!result?.ok || !result.document) {
+      say(result?.error || result?.reason || 'Code conversion failed.', true);
+      return;
+    }
+    const splice = spliceConvertedFragment(activeGraph, nodeId, result.document, getAccessibleVariables(), { isRootScope: scopePathIds.length === 0 });
+    if (splice.error) { say(splice.error, true); return; }
+    applyScoped(() => splice.doc);
+    if (splice.notice) say(splice.notice);
+  }
+
   function enterScope(nodeId) {
     if (grab) cancelGrab();
     const targetNode = activeGraph.nodes.find((n) => n.id === nodeId);
@@ -457,6 +557,7 @@
     get codeLineNumbers() { return codeLineNumbers; },
     toggleCodeLineNumbers: () => { codeLineNumbers = !codeLineNumbers; saveGcnLayout(); },
     openCode: (id) => openCodeModal(id),
+    convertCode: (id) => convertCodeNode(id),
     showHelp: (id) => showNodeHelp(id),
     describe: (item) => describe(item),
     setData,
@@ -702,6 +803,7 @@
     && !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], .cm-editor');
 
   function onkeydown(event) {
+    if (event.key === 'Escape' && gcnLayout.previewMode === 'full') { event.preventDefault(); setPreviewMode(gcnLayout.previewBeforeFull || 'docked'); return; }
     if (!active || event.defaultPrevented || typing(event.target)) return;
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
@@ -788,28 +890,33 @@
 
   function addParam(fnNodeId, scope) {
     if (!fnNodeId || !scope) return;
-    const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
+    let nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
       const r = addFunctionParameter(g, fnNodeId);
       return r ? r.doc : g;
     });
+    nextDoc = syncFunctionCalls(nextDoc, fnNodeId);
     apply(nextDoc);
   }
 
   function updateParam(fnNodeId, scope, pId, patch, live = false) {
     if (!fnNodeId || !scope) return;
-    const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
+    let nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
       const r = updateFunctionParameter(g, fnNodeId, pId, patch);
       return r ? r.doc : g;
     });
+    if (Object.prototype.hasOwnProperty.call(patch || {}, 'name')) nextDoc = syncFunctionCalls(nextDoc, fnNodeId);
     apply(nextDoc, live);
   }
 
   function removeParam(fnNodeId, scope, pId) {
     if (!fnNodeId || !scope) return;
-    const nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
+    let removedIndex = null;
+    let nextDoc = updateGraphAtScope(editor.present, scope, (g) => {
       const r = removeFunctionParameter(g, fnNodeId, pId);
+      if (r) removedIndex = r.removedIndex;
       return r ? r.doc : g;
     });
+    nextDoc = syncFunctionCalls(nextDoc, fnNodeId, { removedIndex });
     apply(nextDoc);
   }
 
@@ -886,6 +993,7 @@
   }
 </script>
 
+<svelte:boundary onerror={(e) => onfatal?.(e)}>
 <div class="gcn-workspace" {onkeydown} role="presentation">
   <div class="gcn-toolbar" role="toolbar" aria-label="Geometry Code tools">
     <button bind:this={addButton} onclick={() => openMenu(true)} aria-haspopup="dialog">+ Add Node</button>
@@ -956,6 +1064,18 @@
 
       <aside class="gcn-side" aria-label="Geometry Code panels">
         <div class="gcn-side-details">
+        {#if isSingleNodeSelected && singleSelectedNode}
+          <section aria-labelledby={`gcn-comment-${uid}`} class:collapsed={collapsed.comment}>
+            <div class="gcn-section-head">
+              <button type="button" class="gcn-collapse" aria-expanded={!collapsed.comment} onclick={() => togglePanel('comment')}>{collapsed.comment ? '▸' : '▾'}</button>
+              <h3 id={`gcn-comment-${uid}`}>Comment</h3>
+            </div>
+            {#if !collapsed.comment}
+              <textarea maxlength="2000" rows="3" aria-label="Node comment" value={singleSelectedNode.data?.comment || ''}
+                oninput={(e) => setData(singleSelectedNode.id, { comment: e.currentTarget.value.replace(/\r/g, '') }, true)} onblur={finishEdit}></textarea>
+            {/if}
+          </section>
+        {/if}
         {#if currentFunctionNode && currentFunction}
           <section aria-labelledby={`gcn-params-${uid}`} class:collapsed={collapsed.parameters}>
             <div class="gcn-section-head">
@@ -1082,21 +1202,21 @@
         <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
         <div class="gcn-panel-splitter gcn-preview-splitter" role="separator" tabindex="0" aria-label="Resize details and Code Preview" aria-orientation="horizontal" onpointerdown={(event) => startPanelResize(event, 'details')} onkeydown={(event) => { if (event.key === 'ArrowUp') nudgePanel('details', -20); if (event.key === 'ArrowDown') nudgePanel('details', 20); }}></div>
 
-        <section aria-labelledby={`gcn-code-${uid}`} class="gcn-preview">
-          <div class="gcn-section-head">
-            <h3 id={`gcn-code-${uid}`}>Code Preview</h3>
-            {#if onexport}
-              <button onclick={() => onexport?.()} disabled={!canCopy} title="Export code to file">Export</button>
-            {/if}
-            <button onclick={copyCode} disabled={!canCopy} title="Copy generated code to clipboard">Copy Code</button>
+        <section bind:this={previewEl} aria-labelledby={`gcn-code-${uid}`} class={`gcn-preview mode-${gcnLayout.previewMode}`} style={gcnLayout.previewMode === 'float' ? `left:${gcnLayout.previewRect.x}px;top:${gcnLayout.previewRect.y}px;width:${gcnLayout.previewRect.width}px;height:${gcnLayout.previewRect.height}px;` : undefined} onwheel={previewWheel}>
+          <div class="gcn-section-head gcn-preview-head" role="toolbar" tabindex="0" aria-label="Code preview controls" onpointerdown={startPreviewDrag}>
+            <h3 id={`gcn-code-${uid}`}>Code Preview {#if generated.skippedNodeIds?.length}<span class="gcn-preview-partial">Partial — {generated.skippedNodeIds.length} nodes skipped</span>{/if}</h3>
+            <span class="gcn-preview-zoom">{gcnLayout.previewZoom}%</span>
+            <button onclick={() => setPreviewZoom(gcnLayout.previewZoom - 10)} aria-label="Zoom out">−</button>
+            <button onclick={() => setPreviewZoom(gcnLayout.previewZoom + 10)} aria-label="Zoom in">+</button>
+            <button onclick={() => setPreviewZoom(100)} aria-label="Reset preview zoom">Reset</button>
+            <button onclick={() => setPreviewMode(gcnLayout.previewMode === 'float' ? 'docked' : 'float')}>{gcnLayout.previewMode === 'float' ? 'Dock' : 'Float'}</button>
+            <button onclick={() => setPreviewMode(gcnLayout.previewMode === 'full' ? (gcnLayout.previewBeforeFull || 'docked') : 'full')} aria-label="Toggle fullscreen">⛶ Full</button>
+            {#if onexport}<button onclick={() => onexport?.()} disabled={!canCopy}>Export</button>{/if}
+            <button onclick={copyCode} disabled={!canCopy}>Copy Code</button>
           </div>
-          <div class="gcn-preview-box">
-            <CodeEditor file={previewFile} content={canCopy ? generated.code : ''} readOnly={true} {showLineNumbers} {theme} {preferences} />
-            {#if !canCopy}
-              <div class="gcn-preview-blocked" role="status">
-                {hasDrafts ? 'Fix invalid input to see code.' : 'Graph has errors. Fix errors above.'}
-              </div>
-            {/if}
+          <div class="gcn-preview-box" style={`font-size:${gcnLayout.previewZoom}%`}>
+            <CodeEditor file={previewFile} content={generated.code || ''} readOnly={true} {showLineNumbers} {theme} {preferences} />
+            {#if showingLastGood}<div class="gcn-preview-blocked" role="status">Showing last valid preview</div>{/if}
           </div>
           {#if copyResult}<p class="gcn-copy" role="status">{copyResult}</p>{/if}
         </section>
@@ -1133,3 +1253,4 @@
     {/if}
   </dialog>
 </div>
+</svelte:boundary>
