@@ -1,4 +1,4 @@
-import { createChildGraph, getNodePorts, nodeDefinitions, parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument, VARIABLE_NODE_TYPES } from './geometry.js';
+import { createChildGraph, getNodePorts, nodeDefinitions, parseGeometryDocument, serializeGeometryDocument, serializeNode, validateGeometryDocument, VARIABLE_NODE_TYPES } from './geometry.js';
 
 // Pure document editing + history for the Geometry Code UI. No DOM, no Svelte Flow objects:
 // every function takes a plain .gcn document and returns a new one (inputs are never mutated).
@@ -13,27 +13,30 @@ export const defaultValues = {
   get dict() { return {}; }
 };
 
+function removeViewports(value) {
+  if (Array.isArray(value)) return value.map(removeViewports);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => key !== 'viewport')
+    .map(([key, child]) => [key, removeViewports(child)]));
+}
+
 function serializeGraphContent(graph) {
   if (!graph) return null;
-  return [
-    graph.target,
-    (graph.variables || []).map(({ id, name, type, initialValue }) => [id, name, type, initialValue]),
-    (graph.nodes || []).map((node) => {
-      const def = nodeDefinitions[node.type];
-      const defaults = def ? def.defaults : {};
-      const dataValues = Object.keys(defaults).map((k) => {
-        if (k === 'graph' && node.data?.graph) {
-          return serializeGraphContent(node.data.graph);
-        }
-        return node.data ? node.data[k] : undefined;
-      });
-      if (node.type === 'start') {
-        dataValues.push(node.data?.mainGuard === true);
-      }
-      return [node.id, node.type, node.position?.x, node.position?.y, dataValues];
-    }),
-    (graph.edges || []).map(({ id, source, sourceHandle, target, targetHandle }) => [id, source, sourceHandle, target, targetHandle])
-  ];
+  // Use the exact persistence serializer so every saved field (including comments
+  // and type-specific data) participates in content identity. Viewports are the
+  // sole exception because pan/zoom is presentation state.
+  return removeViewports({
+    format: graph.format,
+    version: graph.version,
+    target: graph.target,
+    variables: (graph.variables || []).map(({ id, name, type, initialValue }) => ({
+      id, name, type,
+      initialValue: type === 'list' ? [] : type === 'dict' ? {} : initialValue
+    })),
+    nodes: (graph.nodes || []).map(serializeNode),
+    edges: (graph.edges || []).map(({ id, source, sourceHandle, target, targetHandle }) => ({ id, source, sourceHandle, target, targetHandle }))
+  });
 }
 
 // Content = everything except the viewport; pan/zoom never counts as an edit.

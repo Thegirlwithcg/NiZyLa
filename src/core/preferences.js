@@ -471,6 +471,49 @@ export function getSyntaxStyleString(lang, theme, prefs) {
   `.trim().replace(/\s+/g, ' ');
 }
 
+export const CUSTOM_COLOR_VARS = [
+  ['bg', '--bg'], ['bgSoft', '--bg-soft'], ['panel', '--panel'], ['panelSolid', '--panel-solid'], ['editorBg', '--editor-bg'],
+  ['text', '--text'], ['muted', '--muted'], ['border', '--border'], ['borderStrong', '--border-strong'],
+  ['button', '--button'], ['buttonHover', '--button-hover'], ['accent', '--accent'], ['accent2', '--accent-2'],
+  ['activeLine', '--active-line'], ['selection', '--selection'], ['gcnSelected', '--gcn-selected'],
+  ['folderIcon', '--folder-icon'], ['fileIcon', '--file-icon'], ['graphClass', '--graph-class'],
+  ['graphFunction', '--graph-function'], ['graphVariable', '--graph-variable'], ['graphImports', '--graph-imports'],
+  ['graphLinks', '--graph-links'], ['graphDefines', '--graph-defines']
+];
+
+function parseHexColor(value) {
+  if (typeof value !== 'string') return null;
+  const hex = value.trim().replace(/^#/, '');
+  if (![6, 8].includes(hex.length) || !/^[\da-fA-F]+$/.test(hex)) return null;
+  return {
+    r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16),
+    a: hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
+  };
+}
+
+function sRGBToLinear(value) {
+  const normalized = value / 255;
+  return normalized <= 0.03928 ? normalized / 12.92 : Math.pow((normalized + 0.055) / 1.055, 2.4);
+}
+
+function luminance({ r, g, b }) {
+  return 0.2126 * sRGBToLinear(r) + 0.7152 * sRGBToLinear(g) + 0.0722 * sRGBToLinear(b);
+}
+
+function selectionContrast(selection, background) {
+  const foreground = parseHexColor(selection);
+  const base = parseHexColor(background);
+  if (!foreground || !base) return 0;
+  const blended = {
+    r: foreground.r * foreground.a + base.r * (1 - foreground.a),
+    g: foreground.g * foreground.a + base.g * (1 - foreground.a),
+    b: foreground.b * foreground.a + base.b * (1 - foreground.a)
+  };
+  const lighter = Math.max(luminance(blended), luminance(base));
+  const darker = Math.min(luminance(blended), luminance(base));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 export function applyThemePreset(prefs, id) {
   if (!prefs) prefs = {};
   if (id === 'custom') {
@@ -506,43 +549,21 @@ export function applyPreferences(prefs) {
     }
   }
 
-  // Apply custom theme colors if active
+  // Apply custom theme colors if active. The same table is used for cleanup so
+  // switching back to a preset cannot leave stale custom tokens behind.
   if (prefs.theme === 'custom' && prefs.customColors) {
     const c = prefs.customColors;
-    if (c.bg) root.style.setProperty('--bg', c.bg);
-    if (c.bgSoft) root.style.setProperty('--bg-soft', c.bgSoft);
-    if (c.panel) root.style.setProperty('--panel', c.panel);
-    if (c.panel) root.style.setProperty('--panel-solid', c.panel);
-    if (c.editorBg) root.style.setProperty('--editor-bg', c.editorBg);
-    if (c.text) root.style.setProperty('--text', c.text);
-    if (c.muted) root.style.setProperty('--muted', c.muted);
-    if (c.border) root.style.setProperty('--border', c.border);
-    if (c.borderStrong) root.style.setProperty('--border-strong', c.borderStrong);
-    if (c.button) root.style.setProperty('--button', c.button);
-    if (c.buttonHover) root.style.setProperty('--button-hover', c.buttonHover);
-    if (c.accent) root.style.setProperty('--accent', c.accent);
-    if (c.accent2) root.style.setProperty('--accent-2', c.accent2);
-    if (c.activeLine) root.style.setProperty('--active-line', c.activeLine);
-    if (c.gcnSelected) root.style.setProperty('--gcn-selected', c.gcnSelected);
-    const fallback = THEME_PRESETS.structs;
-    root.style.setProperty('--folder-icon', c.folderIcon || fallback.folderIcon);
-    root.style.setProperty('--file-icon', c.fileIcon || fallback.fileIcon);
-    root.style.setProperty('--graph-class', c.graphClass || fallback.graphClass);
-    root.style.setProperty('--graph-function', c.graphFunction || fallback.graphFunction);
-    root.style.setProperty('--graph-variable', c.graphVariable || fallback.graphVariable);
-    root.style.setProperty('--graph-imports', c.graphImports || fallback.graphImports);
-    root.style.setProperty('--graph-links', c.graphLinks || fallback.graphLinks);
-    root.style.setProperty('--graph-defines', c.graphDefines || fallback.graphDefines);
-  } else {
-    // Clean custom overrides so preset CSS classes work cleanly
-    for (const prop of [
-      '--bg', '--bg-soft', '--panel', '--panel-solid', '--editor-bg',
-      '--text', '--muted', '--border', '--border-strong', '--button',
-      '--button-hover', '--accent', '--accent-2', '--active-line', '--folder-icon', '--file-icon',
-      '--graph-class', '--graph-function', '--graph-variable', '--graph-imports', '--graph-links', '--graph-defines'
-    ]) {
-      root.style.removeProperty(prop);
+    const base = THEME_PRESETS.structs;
+    const editorBg = c.editorBg || base.editorBg;
+    for (const [key, prop] of CUSTOM_COLOR_VARS) {
+      let value = key === 'panelSolid' ? (c.panelSolid || c.panel || base.panel) : (c[key] || base[key]);
+      if (key === 'selection' && selectionContrast(value, editorBg) < 1.35) {
+        value = `color-mix(in srgb, ${c.accent || base.accent} 35%, transparent)`;
+      }
+      if (value) root.style.setProperty(prop, value);
     }
+  } else {
+    for (const [, prop] of CUSTOM_COLOR_VARS) root.style.removeProperty(prop);
   }
 
   // Apply global default syntax colors to root

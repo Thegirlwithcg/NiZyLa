@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
+import { createGeometryDocument, nodeDefinitions, serializeGeometryDocument, serializeNode, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
   HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
   createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
   pruneOrphanVariables, redo,
-  removeItems, sameContent, setLiteralType, setNodeData, setTarget, setViewport, syncFunctionCalls, undo, updateVariable, variableUsage, removeFunctionParameter
+  removeItems, contentKey, sameContent, sameDocument, setLiteralType, setNodeData, setTarget, setViewport, syncFunctionCalls, undo, updateVariable, variableUsage, removeFunctionParameter
 } from '../src/core/geometry-editor.js';
 
 const freeze = (value) => {
@@ -104,6 +104,53 @@ test('viewport changes never enter history and Undo/Redo keep the current viewpo
   state = redo(state);
   assert.deepEqual(state.present.viewport, { x: 40, y: -20, zoom: 2 });
   assert.ok(sameContent(state.present, { ...state.present, viewport: { x: 0, y: 0, zoom: 1 } }));
+});
+
+test('comment edits are retained and grouped into one undo step', () => {
+  const node = add(createGeometryDocument(), 'print');
+  const original = setNodeData(node.doc, node.nodeId, { comment: '' }).doc;
+  const edited = setNodeData(original, node.nodeId, { comment: 'x' }).doc;
+  let state = applyEdit(createEditorState(original), edited, true);
+  assert.equal(state.present.nodes.find((item) => item.id === node.nodeId).data.comment, 'x');
+  state = endEdit(state);
+  assert.equal(state.past.length, 1);
+  assert.equal(undo(state).present.nodes.find((item) => item.id === node.nodeId).data.comment, '');
+});
+
+test('every serialized node field contributes to content identity', () => {
+  for (const [type, definition] of Object.entries(nodeDefinitions)) {
+    const data = structuredClone(definition.defaults || {});
+    if (type === 'functionDef') data.graph = createGeometryDocument();
+    if (type === 'classDef') data.graph = createGeometryDocument();
+    if (type === 'start') data.mainGuard = true;
+    if (type === 'dict') data.entries = [{ id: 'entry', key: 'key' }];
+    if (type === 'functionDef') data.parameters = [{ id: 'p', name: 'value', type: 'any' }];
+    if (type === 'classDef') data.baseClass = 'Node';
+    data.comment = 'comment';
+    const node = { id: type, type, position: { x: 0, y: 0 }, data };
+    const serialized = serializeNode(node);
+    for (const key of Object.keys(serialized.data)) {
+      const changed = structuredClone(data);
+      const value = changed[key];
+      if (key === 'graph') changed[key] = { ...value, nodes: [...value.nodes, { id: 'changed', type: 'print', position: { x: 0, y: 0 }, data: { argCount: 1 } }] };
+      else if (typeof value === 'string') changed[key] = `${value}x`;
+      else if (typeof value === 'number') changed[key] = value + 1;
+      else if (typeof value === 'boolean') changed[key] = !value;
+      else if (Array.isArray(value)) changed[key] = [...value, 'changed'];
+      else if (value === null) changed[key] = { changed: true };
+      else if (value && typeof value === 'object') changed[key] = { ...value, changed: true };
+      const baseDoc = { ...createGeometryDocument(), nodes: [node] };
+      const changedDoc = { ...baseDoc, nodes: [{ ...node, data: changed }] };
+      assert.notEqual(contentKey(baseDoc), contentKey(changedDoc), `${type}.${key}`);
+    }
+  }
+});
+
+test('comment-only edits change content and document identity', () => {
+  const node = add(createGeometryDocument(), 'print');
+  const edited = setNodeData(node.doc, node.nodeId, { comment: 'x' }).doc;
+  assert.notEqual(contentKey(node.doc), contentKey(edited));
+  assert.equal(sameDocument(node.doc, edited), false);
 });
 
 test('grouped live edits (typing) are one transaction and Undo returns to the start', () => {

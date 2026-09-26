@@ -594,7 +594,7 @@ function migrateArgumentHandles(document) {
   visit(document);
 }
 
-function serializeNode(node) {
+export function serializeNode(node) {
   const def = nodeDefinitions[node.type];
   const defaults = def ? def.defaults : {};
   const data = {};

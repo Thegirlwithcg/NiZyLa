@@ -4,6 +4,7 @@ import {
   THEME_PRESETS,
   FONT_OPTIONS,
   SUPPORTED_LANGUAGES,
+  applyPreferences,
   getLanguageFromFile,
   getSyntaxColorsForLanguage,
   getSyntaxStyleString
@@ -52,6 +53,46 @@ test('generates valid CSS custom property string for syntax styling', () => {
   assert.match(css, /--syntax-function:\s*#[0-9a-fA-F]+/);
   assert.match(css, /--syntax-class:\s*#[0-9a-fA-F]+/);
   assert.match(css, /--syntax-variable:\s*#[0-9a-fA-F]+/);
+});
+
+function fakeDocument() {
+  const values = new Map();
+  return {
+    values,
+    documentElement: { style: {
+      setProperty(key, value) { values.set(key, value); },
+      removeProperty(key) { values.delete(key); }
+    } }
+  };
+}
+
+const customPrefs = (customColors) => ({
+  theme: 'custom', fontFamily: 'monospace', fontSize: 14, fontUi: true,
+  customColors, syntaxColors: {}
+});
+
+test('custom themes inherit the base selection when old saved colors omit it', () => {
+  globalThis.document = fakeDocument();
+  applyPreferences(customPrefs({ editorBg: '#11212a', accent: '#47d8d8' }));
+  assert.equal(document.values.get('--selection'), THEME_PRESETS.structs.selection);
+  delete globalThis.document;
+});
+
+test('weak custom selection uses the visible accent fallback', () => {
+  globalThis.document = fakeDocument();
+  applyPreferences(customPrefs({ editorBg: '#202020', accent: '#222222', selection: '#202020aa' }));
+  assert.equal(document.values.get('--selection'), 'color-mix(in srgb, #222222 35%, transparent)');
+  delete globalThis.document;
+});
+
+test('switching from custom to a preset removes custom color overrides', () => {
+  globalThis.document = fakeDocument();
+  applyPreferences(customPrefs({ selection: '#ffffff', gcnSelected: '#ffffff' }));
+  assert.ok(document.values.has('--selection'));
+  applyPreferences({ theme: 'obsidian', fontFamily: 'monospace', fontSize: 14, fontUi: true, syntaxColors: {} });
+  assert.equal(document.values.has('--selection'), false);
+  assert.equal(document.values.has('--gcn-selected'), false);
+  delete globalThis.document;
 });
 
 test('provides pixel and monospace font options', () => {

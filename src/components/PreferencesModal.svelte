@@ -206,6 +206,13 @@
             </label>
 
             <label class="color-item">
+              <span class="color-label">Selection</span>
+              <div class="picker-wrap">
+                <input type="color" value={preferences.customColors?.selection || currentPreset.selection} on:input={(e) => updateCustomColor('selection', e.currentTarget.value)} />
+                <input type="text" class="color-hex" value={preferences.customColors?.selection || currentPreset.selection} on:change={(e) => updateCustomColor('selection', e.currentTarget.value)} />
+              </div>
+            </label>
+            <label class="color-item">
               <span class="color-label">Secondary Accent</span>
               <div class="picker-wrap">
                 <input type="color" value={preferences.customColors?.accent2 || currentPreset.accent2} on:input={(e) => updateCustomColor('accent2', e.currentTarget.value)} />
