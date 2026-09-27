@@ -1,4 +1,5 @@
 import { getNodePorts, validateGeometryDocument, migrateV1ToV2, parseTemplate, LOOP_VARIABLE_NODE_TYPES } from './geometry.js';
+import { gcnModuleName, gcnImportDiagnostics } from './gcn-imports.js';
 
 // Limits keep output inside what Python (100 indent levels, 200 nested parentheses) accepts.
 const MAX_BLOCK_DEPTH = 50;
@@ -86,7 +87,8 @@ function render(node, sources, context) {
   } else if (node.type === 'parameter') {
     text = node.data?.name || 'param';
   } else if (node.type === 'symbolRef') {
-    text = node.data?.symbol || 'symbol';
+    const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
+    text = imported ? `${imported.data?.alias || 'module'}.${node.data?.symbol || 'symbol'}` : (node.data?.symbol || 'symbol');
   } else if (node.type === 'boolean' && operator === 'not') {
     text = `(not ${a?.text ?? 'False'})`;
   } else if (node.type === 'binary' && operator === '/' && target === 'gdscript') {
@@ -110,7 +112,10 @@ function render(node, sources, context) {
     const funcName = targetNode?.data?.name || node.data?.name || 'call';
     const argNames = node.data?.argumentNames || [];
     const argTexts = argNames.map((_, i) => inputs[`arg_${i}`]?.text ?? 'None');
-    if (node.data?.isMethod) {
+    const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
+    if (imported) {
+      text = `${imported.data?.alias || 'module'}.${funcName}(${argTexts.join(', ')})`;
+    } else if (node.data?.isMethod) {
       const targetObj = inputs.target?.text ?? 'self';
       text = `${targetObj}.${funcName}(${argTexts.join(', ')})`;
     } else {
@@ -120,7 +125,10 @@ function render(node, sources, context) {
     const className = node.data?.className || 'Object';
     const argNames = node.data?.argumentNames || [];
     const argTexts = argNames.map((_, i) => inputs[`arg_${i}`]?.text ?? 'None');
-    if (target === 'gdscript') {
+    const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
+    if (imported && target === 'python') {
+      text = `${imported.data?.alias || 'module'}.${className}(${argTexts.join(', ')})`;
+    } else if (target === 'gdscript') {
       text = `${className}.new(${argTexts.join(', ')})`;
     } else {
       text = `${className}(${argTexts.join(', ')})`;
@@ -470,7 +478,10 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       const funcName = targetNode?.data?.name || node.data?.name || 'call';
       const argNames = node.data?.argumentNames || [];
       const argTexts = argNames.map((_, i) => inputVal(`arg_${i}`).text);
-      if (node.data?.isMethod) {
+      const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
+      if (imported && context.target === 'python') {
+        emitLine(depth, `${imported.data?.alias || 'module'}.${funcName}(${argTexts.join(', ')})`, id, scopePath);
+      } else if (node.data?.isMethod) {
         const targetObj = inputVal('target').text;
         emitLine(depth, `${targetObj}.${funcName}(${argTexts.join(', ')})`, id, scopePath);
       } else {
@@ -730,6 +741,7 @@ function generate(doc, target, options = {}) {
   collectDefinitions(workingDoc);
 
   const rootVariables = new Map((workingDoc.variables || []).map((v) => [v.id, v]));
+  const gcnImports = new Map((workingDoc.nodes || []).filter((node) => node.type === 'import' && node.data?.importType === 'gcn').map((node) => [node.id, node]));
   const context = {
     target,
     sourceMap,
@@ -747,7 +759,8 @@ function generate(doc, target, options = {}) {
     emptyLine,
     variables: rootVariables,
     rootVariablesList: workingDoc.variables || [],
-    definitions
+    definitions,
+    gcnImports
   };
   context.emitComment = (node, depth, scopePath = []) => {
     const comment = typeof node?.data?.comment === 'string' ? node.data.comment.replace(/\r/g, '').trim() : '';
@@ -812,7 +825,17 @@ function generate(doc, target, options = {}) {
       const d = node.data || {};
       context.emitComment(node, 0, []);
       if (python) {
-        if (d.importType === 'from') {
+        if (d.importType === 'gcn') {
+          const resolved = gcnModuleName(options.importerRelDir || '', d.path || '');
+          const alias = d.alias || resolved.module?.split('.').pop() || 'module';
+          if (resolved.error && context.lenient) {
+            emitLine(0, `# ⚠ skipped Import ${alias}: ${resolved.error}`, node.id);
+            context.skippedNodeIds.add(node.id);
+          } else if (!resolved.error) {
+            emitLine(0, resolved.module === alias ? `import ${resolved.module}` : `import ${resolved.module} as ${alias}`, node.id);
+            importsEmitted++;
+          }
+        } else if (d.importType === 'from') {
           const dots = '.'.repeat(d.level || 0);
           const fromMod = d.module ? `${dots}${d.module}` : dots;
           const names = (d.names || []).map((n) => n.alias ? `${n.name} as ${n.alias}` : n.name).join(', ');
@@ -949,8 +972,9 @@ function generate(doc, target, options = {}) {
 }
 
 /** Generates Python or GDScript from a valid graph. `target` overrides document.target for this call only. */
-export function generateGeometryPreview(document, target = document?.target) {
+export function generateGeometryPreview(document, target = document?.target, options = {}) {
   const diagnostics = validateGeometryDocument(document);
+  diagnostics.push(...gcnImportDiagnostics(document, target, options));
   const structural = diagnostics.some((item) => item.severity === 'error' && !item.nodeId && !item.edgeId && !item.variableId);
   if (target !== 'python' && target !== 'gdscript') diagnostics.push({ severity: 'error', code: 'unsupported-target', message: 'Target must be python or gdscript.' });
   if (structural || diagnostics.some((item) => item.code === 'unsupported-target')) return { code: '', diagnostics, sourceMap: [], skippedNodeIds: [] };
@@ -991,21 +1015,22 @@ export function generateGeometryPreview(document, target = document?.target) {
   }
   const skippedNodeIds = new Set();
   try {
-    const result = generate(document, target, { lenient: true, errorNodeIds, errorEdgeIds, skippedNodeIds, nodeMessages, nodeLabels, errorVariableIds, variableMessages });
+    const result = generate(document, target, { lenient: true, errorNodeIds, errorEdgeIds, skippedNodeIds, nodeMessages, nodeLabels, errorVariableIds, variableMessages, importerRelDir: options.importerRelDir || '' });
     return { code: result.code || '', diagnostics, sourceMap: result.sourceMap, skippedNodeIds: [...skippedNodeIds] };
   } catch (error) {
     return { code: '', diagnostics: [...diagnostics, { severity: 'error', code: 'preview-generation', message: error.message }], sourceMap: [], skippedNodeIds: [...skippedNodeIds] };
   }
 }
 
-export function generateGeometryCode(document, target = document?.target) {
+export function generateGeometryCode(document, target = document?.target, options = {}) {
   const diagnostics = validateGeometryDocument(document);
+  diagnostics.push(...gcnImportDiagnostics(document, target, options));
   if (target !== 'python' && target !== 'gdscript') {
     diagnostics.push({ severity: 'error', code: 'unsupported-target', message: 'Target must be python or gdscript.' });
   }
   if (diagnostics.some((item) => item.severity === 'error')) return { code: null, diagnostics, sourceMap: [] };
   try {
-    const result = generate(document, target);
+    const result = generate(document, target, options);
     return { code: result.code, diagnostics, sourceMap: result.sourceMap };
   } catch (error) {
     if (error instanceof GenerationError) return { code: null, diagnostics: [...diagnostics, error.diagnostic], sourceMap: [] };

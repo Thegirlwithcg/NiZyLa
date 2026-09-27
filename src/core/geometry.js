@@ -215,7 +215,7 @@ export const nodeDefinitions = {
   // --- v2 nodes ---
   functionDef: {
     label: 'Function', category: 'Function',
-    defaults: { name: 'my_function', parameters: [], returnType: 'any', isAsync: false, decorators: [], graph: null },
+    defaults: { name: 'my_function', parameters: [], returnType: 'any', isAsync: false, isStatic: false, decorators: [], graph: null },
     ports: () => execution('next')
   },
   parameter: {
@@ -235,7 +235,7 @@ export const nodeDefinitions = {
   },
   functionCall: {
     label: 'Call Function', category: 'Function',
-    defaults: { targetId: '', name: 'call', argumentNames: [], isMethod: false },
+    defaults: { targetId: '', importNodeId: '', name: 'call', argumentNames: [], isMethod: false },
     ports: (node) => {
       const args = (node.data?.argumentNames || []).map((name, i) => input(`arg_${i}`, 'any', name || `arg_${i}`));
       const targetInput = node.data?.isMethod ? [input('target', 'any')] : [];
@@ -244,7 +244,7 @@ export const nodeDefinitions = {
   },
   instantiate: {
     label: 'New Instance', category: 'Class',
-    defaults: { targetId: '', className: 'MyClass', argumentNames: [] },
+    defaults: { targetId: '', importNodeId: '', className: 'MyClass', argumentNames: [] },
     ports: (node) => {
       const args = (node.data?.argumentNames || []).map((name, i) => input(`arg_${i}`, 'any', name || `arg_${i}`));
       return [...execution('next'), ...args, output('any')];
@@ -252,7 +252,7 @@ export const nodeDefinitions = {
   },
   import: {
     label: 'Import', category: 'Module',
-    defaults: { importType: 'module', module: '', names: [], isRelative: false, level: 0 },
+    defaults: { importType: 'module', module: '', names: [], isRelative: false, level: 0, path: '', alias: '' },
     ports: () => execution('next')
   },
   symbolRef: {
@@ -696,6 +696,30 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     names.add(variable.name);
   }
 
+  const gcnAliases = new Set();
+  for (const node of graph.nodes) {
+    if (node.type !== 'import' || node.data?.importType !== 'gcn') continue;
+    const alias = node.data?.alias || '';
+    if (!isRoot) error('gcn-import-not-root', 'GCN imports are only allowed in the root graph.', { nodeId: node.id });
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias) || reservedNames.has(alias) || gcnAliases.has(alias) || names.has(alias) || graph.nodes.some(n => ['functionDef', 'classDef'].includes(n.type) && n.data?.name === alias)) {
+      error('gcn-import-invalid-alias', `Invalid or duplicate GCN import alias: ${alias}.`, { nodeId: node.id });
+    }
+    gcnAliases.add(alias);
+    const path = node.data?.path;
+    if (typeof path !== 'string' || !path || !path.endsWith('.gcn') || path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
+      error('gcn-import-invalid-path', 'GCN import path must be a relative POSIX path ending in .gcn.', { nodeId: node.id });
+    }
+  }
+  const rootNodes = scopePath.length === 0 ? graph.nodes : null;
+  const referenceRoot = rootNodes || enclosingSymbols.get('_root_nodes') || [];
+  for (const node of graph.nodes) {
+    if (!['functionCall', 'instantiate', 'symbolRef'].includes(node.type)) continue;
+    const importNodeId = node.data?.importNodeId;
+    if (!importNodeId) continue;
+    const rootImport = referenceRoot.find(n => n.id === importNodeId && n.type === 'import' && n.data?.importType === 'gcn');
+    if (!rootImport || node.data?.targetId) error('gcn-import-missing-node', node.data?.targetId ? 'Use either targetId or importNodeId, not both.' : 'GCN import reference does not point to a root GCN import.', { nodeId: node.id });
+  }
+
   const starts = graph.nodes.filter((node) => node.type === 'start');
   if (starts.length !== 1) error('start-count', 'A graph requires exactly one Start node.');
 
@@ -883,6 +907,7 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
       }
       if (node.data?.graph) {
         const childSymbols = new Map(accessibleVariables);
+        childSymbols.set('_root_nodes', scopePath.length === 0 ? graph.nodes : (enclosingSymbols.get('_root_nodes') || []));
         childSymbols.set('_current_function', { id: node.id, name: node.data.name, parameters: node.data.parameters || [] });
         for (const p of node.data.parameters || []) {
           childSymbols.set(p.id, { id: p.id, name: p.name, type: p.type || 'any' });
@@ -892,6 +917,7 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     }
     if (node.type === 'classDef' && node.data?.graph) {
       const childSymbols = new Map(accessibleVariables);
+      childSymbols.set('_root_nodes', scopePath.length === 0 ? graph.nodes : (enclosingSymbols.get('_root_nodes') || []));
       childSymbols.set('_current_class', { id: node.id, name: node.data.name });
       validateSingleGraph(node.data.graph, [...scopePath, node.id], childSymbols, diagnostics);
     }
