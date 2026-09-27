@@ -768,6 +768,11 @@ export function deleteVariableAtScope(doc, scopePath, id) {
 
 export const setTarget = (doc, target) => (doc.target === target ? null : { ...doc, target });
 
+export function gcnImportStylePatch(data, style) {
+  const names = data?.names || [];
+  return { style, names: style === 'from' && names.length === 0 ? [{ name: '*' }] : names };
+}
+
 // ---- flow mapping -----------------------------------------------------------------------------
 
 /** Svelte Flow view state -> .gcn positions. Only position is read back; everything else comes from the document. */

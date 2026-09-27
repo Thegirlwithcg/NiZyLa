@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createGeometryDocument, nodeDefinitions, serializeGeometryDocument, serializeNode, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
-  HISTORY_LIMIT, addEdge, addNode, addNodeAtScope, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, startAddGrab,
+  HISTORY_LIMIT, addEdge, addNode, addNodeAtScope, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, gcnImportStylePatch, startAddGrab,
   createEditorState, deleteVariable, duplicateNodes, endEdit, filterNodePresetsForTarget, importTypeOptionsForTarget, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
   pruneOrphanVariables, redo,
   removeItems, contentKey, sameContent, sameDocument, setLiteralType, setNodeData, setTarget, setViewport, syncFunctionCalls, undo, updateVariable, variableUsage, removeFunctionParameter

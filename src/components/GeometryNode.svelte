@@ -2,7 +2,7 @@
   import { getContext } from 'svelte';
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
   import { nodeDefinitions, VARIABLE_NODE_TYPES } from '../core/geometry.js';
-  import { importTypeOptionsForTarget } from '../core/geometry-editor.js';
+  import { gcnImportStylePatch, importTypeOptionsForTarget } from '../core/geometry-editor.js';
   import { exportEntries, gcnModuleName } from '../core/gcn-imports.js';
   import GeometryField from './GeometryField.svelte';
   import GeometryVariableFields from './GeometryVariableFields.svelte';
@@ -41,7 +41,7 @@
     ctx.setData(id, { names: next.map((item) => ({ name: item })) });
   }
   function gcnStatement() {
-    const module = gcnModuleName('', node.data?.path || '').module || 'module';
+    const module = gcnModuleName(ctx.importerRelDir || '', node.data?.path || '').module || 'module';
     if (ctx.target === 'python' && (node.data?.style || 'module') === 'from') {
       return `from ${module} import ${(node.data?.names || []).map((item) => item.name).join(', ') || '…'}`;
     }
@@ -286,7 +286,7 @@
               oninput={onInputData('alias')} onblur={ctx.endEdit} spellcheck="false" />
           {/if}
           {#if ctx.target === 'python'}
-            <select aria-label="GCN import style" value={node.data?.style || 'module'} onchange={onSelectData('style')}>
+            <select aria-label="GCN import style" value={node.data?.style || 'module'} onchange={(event) => ctx.setData(id, gcnImportStylePatch(node.data, event.currentTarget.value))}>
               <option value="module">import module</option>
               <option value="from">from … import</option>
             </select>

@@ -717,6 +717,7 @@
     get isRoot() { return scopePathIds.length === 0; },
     get scopePathIds() { return scopePathIds; },
     get target() { return doc.target; },
+    get importerRelDir() { return importerRelDirFor(projectRoot, filePath); },
     get gcnExports() { return gcnExports; },
     get theme() { return theme; },
     get preferences() { return preferences; },
