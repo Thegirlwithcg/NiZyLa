@@ -15,9 +15,11 @@ export function geometryContextMenuItems({ kind, selectedTypes = [] } = {}) {
     { id: 'add', label: 'Add Node…', enabled: true }
   ];
   const startOnly = selectedTypes.length === 1 && selectedTypes[0] === 'start';
+  const hasNonStart = selectedTypes.some((type) => type !== 'start');
   return [
     { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', enabled: !startOnly && selectedTypes.length > 0 },
     { id: 'duplicate', label: 'Duplicate', shortcut: 'Shift+D', enabled: !startOnly && selectedTypes.length > 0 },
+    { id: 'convertToCode', label: 'Convert to Code Node', enabled: hasNonStart },
     { id: 'delete', label: 'Delete', shortcut: 'Del', enabled: !startOnly && selectedTypes.length > 0, danger: true },
     { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', enabled: true }
   ];

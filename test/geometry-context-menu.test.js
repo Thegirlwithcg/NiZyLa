@@ -21,9 +21,13 @@ test('add menu anchor uses the pointer only when it is inside the canvas', () =>
 test('geometry context menu model enables the correct actions', () => {
   const start = geometryContextMenuItems({ kind: 'node', selectedTypes: ['start'] });
   assert.equal(start.find((item) => item.id === 'copy').enabled, false);
+  assert.equal(start.find((item) => item.id === 'convertToCode').enabled, false);
   assert.equal(start.find((item) => item.id === 'paste').enabled, true);
   for (const types of [['print'], ['print', 'literal', 'binary']]) {
-    assert.ok(geometryContextMenuItems({ kind: 'node', selectedTypes: types }).filter((item) => item.id !== 'paste').every((item) => item.enabled));
+    const items = geometryContextMenuItems({ kind: 'node', selectedTypes: types });
+    assert.ok(items.filter((item) => item.id !== 'paste').every((item) => item.enabled));
+    assert.equal(items.findIndex((item) => item.id === 'convertToCode'), items.findIndex((item) => item.id === 'duplicate') + 1);
   }
+  assert.equal(geometryContextMenuItems({ kind: 'node', selectedTypes: ['start', 'print'] }).find((item) => item.id === 'convertToCode').enabled, true);
   assert.deepEqual(geometryContextMenuItems({ kind: 'empty' }).map((item) => item.id), ['paste', 'add']);
 });

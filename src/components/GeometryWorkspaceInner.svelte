@@ -34,7 +34,7 @@
   import { extractGcnExports, importerRelDirFor, planGcnDrop, resolveGcnImportPath, sameFilePath } from '../core/gcn-imports.js';
   import {
     addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, createEditorState,
-    deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, spliceConvertedFragment, positionsFromFlow, redo,
+    collapseToCodeNode, deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, spliceConvertedFragment, positionsFromFlow, redo,
     removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
     updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter, syncFunctionCalls,
     addGcnImports, addImportedSymbolNode, importTypeOptionsForTarget, startAddGrab
@@ -1191,13 +1191,25 @@
     if (e.target.closest?.('.svelte-flow__node')) return;
     openContextMenu(e, 'empty');
   }
-  function contextAction(id) {
+  async function contextAction(id) {
     contextMenu = null;
     if (id === 'copy') copySelection();
     else if (id === 'paste') pasteSelection();
     else if (id === 'duplicate') duplicateSelection();
     else if (id === 'delete') deleteSelection();
     else if (id === 'add') openMenu(false);
+    else if (id === 'convertToCode') {
+      const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
+      finishEdit();
+      const result = collapseToCodeNode(editor.present, scopePathIds, selectedIds, doc.target);
+      if (!result.ok) { say(result.message, true); return; }
+      setEditor(applyEdit(editor, result.doc));
+      await tick();
+      selectOnly([result.nodeId]);
+      const codeNode = (getGraphAtScope(result.doc, scopePathIds)?.nodes || []).find((node) => node.id === result.nodeId);
+      const count = Number(codeNode?.data?.title?.match(/Converted (\d+) nodes?/)?.[1]) || selectedIds.length;
+      say(`Converted ${count} nodes to a Code node. Ctrl+Z restores them.`);
+    }
   }
   function contextKeydown(event) {
     if (event.key === 'Escape') { event.preventDefault(); contextMenu = null; return; }
