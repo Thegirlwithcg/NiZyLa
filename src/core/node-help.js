@@ -105,9 +105,9 @@ export const nodeHelp = {
     gdscript: 'var player = Player.new("Hero")'
   },
   import: {
-    summary: 'Imports external modules or resources into the current module scope.',
-    python: 'import math\nfrom sys import argv',
-    gdscript: 'const Res = preload("res://scene.tscn")'
+    summary: 'Imports external modules or resources into the current module scope. Drag a .gcn file from the Explorer onto the top-level graph to import it. Click a function or class in the node to add a call. Run and Export use the SAVED version of imported files.',
+    python: 'import math\nfrom sys import argv\n\n# GCN: import lib.shapes as shapes',
+    gdscript: 'const Res = preload("res://scene.tscn")\n\n# GCN: const shapes = preload("lib/shapes.gd")'
   },
   symbolRef: {
     summary: 'References a global symbol, module identifier, or built-in object by name.',

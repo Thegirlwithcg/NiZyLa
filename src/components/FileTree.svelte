@@ -62,7 +62,7 @@
 
   function startDrag(event) {
     if (entry.type !== 'file' && (entry.type !== 'folder' || depth === 0)) return;
-    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.effectAllowed = 'linkMove';
     event.dataTransfer.setData('application/x-nizyla-file', JSON.stringify(entry));
   }
 

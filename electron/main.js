@@ -12,6 +12,8 @@ import { scanProject, readTextFile, readFileDataUrl, writeTextFile } from './sca
 import { discoverPlugins } from './plugins.js';
 import { parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
+import { buildGcnBuildPlan, planExportTargets } from '../src/core/gcn-imports.js';
+import { buildRunnerScript } from './python-runner.js';
 import { CONVERT_LIMITS } from './convert-guard.js';
 import { serializeSessionState, validateRenameName, validateSessionState } from '../src/core/session-config.js';
 
@@ -22,6 +24,11 @@ const terminals = new Map();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NIZYLA_DEV === '1';
 if (isDev) app.setPath('userData', path.join(app.getPath('temp'), 'nizyla-dev'));
+app.on('web-contents-created', (_event, webContents) => {
+  webContents.on('will-navigate', (event, url) => {
+    if (!(isDev && url.startsWith('http://127.0.0.1:5174'))) event.preventDefault();
+  });
+});
 const iconFile = process.platform === 'win32' ? 'Logo NiZyLa.ico' : 'Logo NiZyLa.png';
 const appIconPath = isDev
   ? path.join(__dirname, '..', 'resource', iconFile)
@@ -597,41 +604,54 @@ ipcMain.handle('geometry:save', async (event, targetPath, document) => {
   return writeGcnAtomic(targetPath, content);
 });
 
-ipcMain.handle('geometry:export', async (event, { defaultFileName, defaultDirectory, target, document }) => {
+ipcMain.handle('geometry:export', async (event, { defaultFileName, defaultDirectory, target, document, filePath, projectRoot }) => {
   validateSender(event);
   if (target !== 'python' && target !== 'gdscript') throw new Error(`Unsupported export target: ${target}`);
   if (!document || typeof document !== 'object') throw new TypeError('Invalid document payload');
-  const { code, diagnostics } = generateGeometryCode(document, target);
-  const errors = diagnostics.filter((d) => d.severity === 'error');
-  if (errors.length > 0 || code === null) {
-    throw new Error(`Cannot export graph with errors: ${errors.map((e) => e.message).join(', ')}`);
-  }
+  const readDoc = async (file) => parseGeometryDocument(await fs.readFile(file, 'utf8')).document ?? null;
+  const plan = await buildGcnBuildPlan({ entryPath: filePath, entryDoc: document, projectRoot, readDoc, target, generate: generateGeometryCode });
+  if (!plan.ok) throw new Error(plan.error);
 
   const ext = target === 'python' ? 'py' : 'gd';
   const filterName = target === 'python' ? 'Python Script' : 'GDScript';
   const defaultName = (defaultFileName ? path.basename(defaultFileName, path.extname(defaultFileName)) : 'main') + `.${ext}`;
-  let defaultPath = defaultName;
-  if (defaultDirectory !== undefined) {
-    if (typeof defaultDirectory !== 'string' || !path.isAbsolute(defaultDirectory)) throw new Error('Invalid export folder');
-    const directory = path.resolve(defaultDirectory);
-    if (![...knownProjectRoots].some((root) => directory.toLowerCase() === root.toLowerCase()) && !isPathInsideProject(directory, knownProjectRoots)) {
-      throw new Error('Export default folder must be inside an open project');
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (plan.deps.length === 0) {
+    let defaultPath = defaultName;
+    if (defaultDirectory !== undefined) {
+      if (typeof defaultDirectory !== 'string' || !path.isAbsolute(defaultDirectory)) throw new Error('Invalid export folder');
+      const directory = path.resolve(defaultDirectory);
+      if (![...knownProjectRoots].some((root) => directory.toLowerCase() === root.toLowerCase()) && !isPathInsideProject(directory, knownProjectRoots)) {
+        throw new Error('Export default folder must be inside an open project');
+      }
+      if (!(await fs.stat(directory)).isDirectory()) throw new Error('Export default folder is not a directory');
+      defaultPath = path.join(directory, defaultName);
     }
-    if (!(await fs.stat(directory)).isDirectory()) throw new Error('Export default folder is not a directory');
-    defaultPath = path.join(directory, defaultName);
+    const result = await dialog.showSaveDialog(win, { title: `Export ${filterName}`, defaultPath, filters: [{ name: filterName, extensions: [ext] }] });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fs.writeFile(result.filePath, plan.entryCode, 'utf8');
+    return { ok: true, filePath: result.filePath };
   }
 
-  const win = BrowserWindow.fromWebContents(event.sender);
-  const result = await dialog.showSaveDialog(win, {
-    title: `Export ${filterName}`,
-    defaultPath,
-    filters: [{ name: filterName, extensions: [ext] }]
-  });
-
-  if (result.canceled || !result.filePath) return { canceled: true };
-  const targetPath = result.filePath;
-  await fs.writeFile(targetPath, code, 'utf8');
-  return { ok: true, filePath: targetPath };
+  let defaultPath;
+  if (typeof defaultDirectory === 'string' && path.isAbsolute(defaultDirectory)) {
+    try { if ((await fs.stat(defaultDirectory)).isDirectory()) defaultPath = defaultDirectory; } catch (_) {}
+  }
+  const folderResult = await dialog.showOpenDialog(win, { title: 'Export with imported files — choose folder', properties: ['openDirectory', 'createDirectory'], ...(defaultPath ? { defaultPath } : {}) });
+  if (folderResult.canceled || !folderResult.filePaths?.[0]) return { canceled: true };
+  const folder = folderResult.filePaths[0];
+  const files = [{ outPath: plan.entryOutPath, code: plan.entryCode }, ...plan.deps];
+  const targets = planExportTargets(folder, files, { resolve: path.resolve, relative: path.relative, isAbsolute: path.isAbsolute });
+  const existing = [];
+  for (const item of targets) { try { await fs.access(item.target); existing.push(item.relFromFolder); } catch (_) {} }
+  if (existing.length > 0) {
+    const shown = existing.slice(0, 10);
+    if (existing.length > 10) shown.push(`…and ${existing.length - 10} more`);
+    const overwrite = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Overwrite', 'Cancel'], defaultId: 1, cancelId: 1, message: `These files already exist:\n${shown.join('\n')}` });
+    if (overwrite.response === 1) return { canceled: true };
+  }
+  for (const item of targets) { await fs.mkdir(path.dirname(item.target), { recursive: true }); await fs.writeFile(item.target, item.code, 'utf8'); }
+  return { ok: true, filePath: targets[0].target, files: targets.map((item) => item.target), folder };
 });
 
 ipcMain.on('geometry:sync-unload-state', (event, state) => {
@@ -787,19 +807,9 @@ ipcMain.handle('run:python', async (event, { document, filePath, projectRoot, so
     throw new Error('A Python program is already running. Please stop it first.');
   }
 
-  const { code, diagnostics, sourceMap } = generateGeometryCode(document, 'python');
-  const errors = diagnostics.filter((d) => d.severity === 'error');
-  if (errors.length > 0 || code === null) {
-    return { ok: false, error: `Cannot run graph with errors: ${errors.map((e) => e.message).join(', ')}`, diagnostics };
-  }
-
-  const interpreter = resolvePythonInterpreter(projectRoot, preferredInterpreter);
-  if (!interpreter) {
-    return { ok: false, error: 'No working Python interpreter found. Please install Python 3.10+ or configure interpreter in Preferences.', noInterpreter: true };
-  }
-
   let cwd;
   let logicalFile;
+  const entryPath = sourceFile || filePath;
   if (sourceFile) {
     cwd = path.dirname(path.resolve(sourceFile));
     logicalFile = path.resolve(sourceFile);
@@ -807,11 +817,18 @@ ipcMain.handle('run:python', async (event, { document, filePath, projectRoot, so
     cwd = path.dirname(path.resolve(filePath));
     logicalFile = path.resolve(filePath);
   } else {
-    if (!projectRoot) {
-      return { ok: false, error: 'Unsaved graph requires an open project folder to run.' };
-    }
+    if (!projectRoot) return { ok: false, error: 'Unsaved graph requires an open project folder to run.' };
     cwd = path.resolve(projectRoot);
     logicalFile = path.join(cwd, 'scratch.py');
+  }
+  const readDoc = async (file) => parseGeometryDocument(await fs.readFile(file, 'utf8')).document ?? null;
+  const plan = await buildGcnBuildPlan({ entryPath, entryDoc: document, projectRoot, readDoc, target: 'python', generate: generateGeometryCode });
+  if (!plan.ok) return { ok: false, error: plan.error };
+  const code = plan.entryCode;
+
+  const interpreter = resolvePythonInterpreter(projectRoot, preferredInterpreter);
+  if (!interpreter) {
+    return { ok: false, error: 'No working Python interpreter found. Please install Python 3.10+ or configure interpreter in Preferences.', noInterpreter: true };
   }
 
   const runId = randomUUID();
@@ -819,17 +836,20 @@ ipcMain.handle('run:python', async (event, { document, filePath, projectRoot, so
   await fs.mkdir(tempDir, { recursive: true });
   const snapshotFile = path.join(tempDir, 'snapshot.py');
   await fs.writeFile(snapshotFile, code, 'utf8');
+  const depsDir = path.join(tempDir, 'deps');
+  // ponytail: a real project lib/__init__.py shadows generated lib.* namespace modules; generate it in the upgrade path.
+  if (plan.deps.length > 0) {
+    for (const dep of plan.deps) {
+      const output = path.join(depsDir, ...dep.outPath.split('/'));
+      await fs.mkdir(path.dirname(output), { recursive: true });
+      await fs.writeFile(output, dep.code, 'utf8');
+    }
+  }
 
   const runnerScript = path.join(tempDir, 'runner.py');
-  const runnerCode = `import sys
-sys.path.insert(0, ${JSON.stringify(cwd)})
-sys.argv = [${JSON.stringify(logicalFile)}]
-with open(${JSON.stringify(snapshotFile)}, "rb") as f:
-    source_bytes = f.read()
-code_obj = compile(source_bytes, ${JSON.stringify(logicalFile)}, "exec")
-exec(code_obj, {"__name__": "__main__", "__file__": ${JSON.stringify(logicalFile)}, "__doc__": None})
-`;
+  const runnerCode = buildRunnerScript({ cwd, depsDir: plan.deps.length > 0 ? depsDir : undefined, snapshotFile, logicalFile });
   await fs.writeFile(runnerScript, runnerCode, 'utf8');
+  const sourceMap = generateGeometryCode(document, 'python', { importerRelDir: plan.importerRelDir }).sourceMap;
 
   const args = [...interpreter.args, '-u', runnerScript];
   const win = BrowserWindow.fromWebContents(event.sender);

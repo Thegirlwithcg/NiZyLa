@@ -68,6 +68,21 @@ function literal(type, value, target, location) {
 }
 
 /** Renders a value node after its inputs are cached; iterative so deep graphs cannot overflow the stack. */
+function importedCallText(node, argTexts, context) {
+  const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
+  if (!imported) return null;
+  const alias = imported.data?.alias || 'module';
+  if (node.type === 'functionCall') {
+    const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
+    const name = targetNode?.data?.name || node.data?.name || 'call';
+    return `${alias}.${name}(${argTexts.join(', ')})`;
+  }
+  const className = node.data?.className || 'Object';
+  return context.target === 'gdscript'
+    ? `${alias}.${className}.new(${argTexts.join(', ')})`
+    : `${alias}.${className}(${argTexts.join(', ')})`;
+}
+
 function render(node, sources, context) {
   const { cache, variables, target } = context;
   context.emitComment?.(node, context.commentDepth || 0, context.commentScope || []);
@@ -112,9 +127,9 @@ function render(node, sources, context) {
     const funcName = targetNode?.data?.name || node.data?.name || 'call';
     const argNames = node.data?.argumentNames || [];
     const argTexts = argNames.map((_, i) => inputs[`arg_${i}`]?.text ?? 'None');
-    const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
-    if (imported) {
-      text = `${imported.data?.alias || 'module'}.${funcName}(${argTexts.join(', ')})`;
+    const importedText = importedCallText(node, argTexts, context);
+    if (importedText) {
+      text = importedText;
     } else if (node.data?.isMethod) {
       const targetObj = inputs.target?.text ?? 'self';
       text = `${targetObj}.${funcName}(${argTexts.join(', ')})`;
@@ -125,9 +140,9 @@ function render(node, sources, context) {
     const className = node.data?.className || 'Object';
     const argNames = node.data?.argumentNames || [];
     const argTexts = argNames.map((_, i) => inputs[`arg_${i}`]?.text ?? 'None');
-    const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
-    if (imported && target === 'python') {
-      text = `${imported.data?.alias || 'module'}.${className}(${argTexts.join(', ')})`;
+    const importedText = importedCallText(node, argTexts, context);
+    if (importedText) {
+      text = importedText;
     } else if (target === 'gdscript') {
       text = `${className}.new(${argTexts.join(', ')})`;
     } else {
@@ -478,9 +493,9 @@ function generateGraphStatements(graph, baseDepth, context, scopePath = [], isCl
       const funcName = targetNode?.data?.name || node.data?.name || 'call';
       const argNames = node.data?.argumentNames || [];
       const argTexts = argNames.map((_, i) => inputVal(`arg_${i}`).text);
-      const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
-      if (imported && context.target === 'python') {
-        emitLine(depth, `${imported.data?.alias || 'module'}.${funcName}(${argTexts.join(', ')})`, id, scopePath);
+      const importedText = importedCallText(node, argTexts, context);
+      if (importedText) {
+        emitLine(depth, importedText, id, scopePath);
       } else if (node.data?.isMethod) {
         const targetObj = inputVal('target').text;
         emitLine(depth, `${targetObj}.${funcName}(${argTexts.join(', ')})`, id, scopePath);
@@ -559,7 +574,8 @@ function generateFunction(node, baseDepth, context, scopePath = [], isClassMetho
   } else {
     const retType = typeName(returnType, 'gdscript');
     const ret = returnType && returnType !== 'any' && returnType !== 'void' && retType ? ` -> ${retType}` : '';
-    sig = `func ${name}(${formattedParams})${ret}:`;
+    const staticKw = node.data?.isStatic === true && !isClassMethod && scopePath.length === 0 ? 'static ' : '';
+    sig = `${staticKw}func ${name}(${formattedParams})${ret}:`;
   }
 
   emitLine(baseDepth, sig, node.id, scopePath);
@@ -824,6 +840,12 @@ function generate(doc, target, options = {}) {
     if (node.type === 'import') {
       const d = node.data || {};
       context.emitComment(node, 0, []);
+      if (context.lenient && context.errorNodeIds.has(node.id) && d.importType === 'gcn') {
+        const alias = d.alias || 'module';
+        emitLine(0, `# ⚠ skipped Import ${alias}: ${context.nodeMessages.get(node.id) || 'Import has an error.'}`, node.id);
+        context.skippedNodeIds.add(node.id);
+        continue;
+      }
       if (python) {
         if (d.importType === 'gcn') {
           const resolved = gcnModuleName(options.importerRelDir || '', d.path || '');
@@ -865,6 +887,18 @@ function generate(doc, target, options = {}) {
           importsEmitted++;
         }
       }
+    }
+  }
+
+  if (!python) {
+    const gcnNodes = workingDoc.nodes.filter((node) => node.type === 'import' && node.data?.importType === 'gcn');
+    if (gcnNodes.length > 0 && lines[lines.length - 1] !== '') emptyLine();
+    for (const node of gcnNodes) {
+      if (context.lenient && context.errorNodeIds.has(node.id)) continue;
+      const path = String(node.data?.path || '').replace(/\.gcn$/, '.gd');
+      const alias = node.data?.alias || 'module';
+      emitLine(0, `const ${alias} = preload("${path}")`, node.id);
+      importsEmitted++;
     }
   }
 

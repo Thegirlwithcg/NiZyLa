@@ -2,6 +2,7 @@
   import { getContext } from 'svelte';
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
   import { nodeDefinitions, VARIABLE_NODE_TYPES } from '../core/geometry.js';
+  import { exportEntries } from '../core/gcn-imports.js';
   import GeometryField from './GeometryField.svelte';
   import GeometryVariableFields from './GeometryVariableFields.svelte';
   import CodeEditor from './CodeEditor.svelte';
@@ -171,6 +172,10 @@
               {/each}
             </select>
           </div>
+          {#if ctx.target === 'gdscript' && ctx.isRoot}
+            <label class="gcn-check-row"><input type="checkbox" checked={node.data?.isStatic === true}
+              onchange={(e) => ctx.setData(id, { isStatic: e.currentTarget.checked })} /> Static</label>
+          {/if}
 
           <button type="button" class="gcn-enter-btn" onclick={() => ctx.enterScope(id)} title="Open function body" aria-label="Open Subgraph">
             Open Subgraph ⏎
@@ -255,16 +260,35 @@
         {/if}
 
       {:else if node.type === 'import'}
-        <select aria-label="Import type" value={node.data?.importType || 'module'} onchange={onSelectData('importType')}>
-          <option value="module">import module</option>
-          <option value="from">from ... import ...</option>
-          <option value="gd_extends">extends (GDScript)</option>
-          <option value="gd_class_name">class_name (GDScript)</option>
-          <option value="gd_preload">preload (GDScript)</option>
-          <option value="gd_load">load (GDScript)</option>
-        </select>
-        <input aria-label="Module name or path" value={node.data?.module || ''} placeholder="module or res://"
-          oninput={onInputData('module')} onblur={ctx.endEdit} spellcheck="false" />
+        {#if node.data?.importType === 'gcn'}
+          {@const importedExports = ctx.gcnExports?.get(node.data?.path)}
+          {@const hasExports = ctx.gcnExports?.has(node.data?.path)}
+          <input aria-label="Import alias" value={node.data?.alias || ''} placeholder="alias"
+            oninput={onInputData('alias')} onblur={ctx.endEdit} spellcheck="false" />
+          <span class="gcn-import-path" title={node.data?.path || ''}>{node.data?.path || ''}</span>
+          <div class="gcn-import-status" class:error={hasExports && importedExports === null}>
+            {#if !hasExports}Loading…{:else if importedExports === null}Cannot read file{:else}{importedExports.functions?.length || 0} functions · {importedExports.classes?.length || 0} classes{/if}
+            <button type="button" aria-label="Reload imported file" onclick={() => ctx.refreshGcnExports()}>⟳</button>
+          </div>
+          {#if hasExports && importedExports}
+            <div class="gcn-import-list">
+              {#each exportEntries(importedExports, ctx.target) as row, index}
+                <button type="button" disabled={row.disabled} title={row.title} onclick={() => ctx.addImportedSymbol(id, row, index)}>{row.label}</button>
+              {/each}
+            </div>
+          {/if}
+        {:else}
+          <select aria-label="Import type" value={node.data?.importType || 'module'} onchange={onSelectData('importType')}>
+            <option value="module">import module</option>
+            <option value="from">from ... import ...</option>
+            <option value="gd_extends">extends (GDScript)</option>
+            <option value="gd_class_name">class_name (GDScript)</option>
+            <option value="gd_preload">preload (GDScript)</option>
+            <option value="gd_load">load (GDScript)</option>
+          </select>
+          <input aria-label="Module name or path" value={node.data?.module || ''} placeholder="module or res://"
+            oninput={onInputData('module')} onblur={ctx.endEdit} spellcheck="false" />
+        {/if}
 
       {:else if node.type === 'symbolRef'}
         <input aria-label="Symbol name" value={node.data?.symbol || ''} placeholder="symbol_name"

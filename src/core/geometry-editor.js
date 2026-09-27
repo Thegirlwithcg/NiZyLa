@@ -260,6 +260,33 @@ export function addNode(doc, presetId, position) {
   return { doc: { ...currentDoc, nodes: [...currentDoc.nodes, node] }, nodeId: node.id };
 }
 
+export function addGcnImports(doc, adds, position) {
+  const origin = finitePoint(position);
+  const nodes = (adds || []).map((item, index) => ({
+    id: uuid(),
+    type: 'import',
+    position: { x: origin.x, y: origin.y + index * 90 },
+    data: { ...nodeDefinitions.import.defaults, importType: 'gcn', path: item.path, alias: item.alias }
+  }));
+  return { doc: { ...doc, nodes: [...doc.nodes, ...nodes] }, nodeIds: nodes.map((item) => item.id) };
+}
+
+export function addImportedSymbolNode(doc, importNodeId, entry, index = 0) {
+  const imported = doc.nodes.find((item) => item.id === importNodeId && item.type === 'import' && item.data?.importType === 'gcn');
+  if (!imported) throw new Error('Symbol nodes require a root gcn import');
+  const type = entry?.kind === 'class' ? 'instantiate' : entry?.kind === 'function' ? 'functionCall' : null;
+  if (!type) throw new Error('Unknown imported symbol kind');
+  const params = entry.kind === 'class' ? (entry.initParams || []) : (entry.params || []);
+  const data = {
+    ...nodeDefinitions[type].defaults,
+    importNodeId,
+    targetId: '',
+    ...(type === 'functionCall' ? { name: entry.name, argumentNames: [...params], isMethod: false } : { className: entry.name, argumentNames: [...params] })
+  };
+  const node = { id: uuid(), type, position: { x: imported.position.x + 260, y: imported.position.y + 70 * index }, data };
+  return { doc: { ...doc, nodes: [...doc.nodes, node] }, nodeId: node.id };
+}
+
 export function addNodeAtScope(doc, scopePath, presetId, position) {
   let createdNodeId = null;
   const nextDoc = updateGraphAtScope(doc, scopePath, (graph) => {

@@ -269,6 +269,7 @@
     const filePath = tab.file.path;
     try {
       await api.saveGeometryFile(filePath, snapshot);
+      window.dispatchEvent(new CustomEvent('nizyla:gcn-saved', { detail: { path: filePath } }));
       panes = panes.map((p) => ({
         ...p,
         tabs: p.tabs.map((t) => t.id === tab.id ? {
@@ -479,7 +480,7 @@
       const res = await api.runPython({
         document: tab.doc,
         filePath: tab.file?.path ?? null,
-        projectRoot: project?.rootPath,
+        projectRoot: projectRootForTab(tab),
         sourceFile: tab.doc.sourceFile,
         preferredInterpreter: preferences?.pythonInterpreter
       });
@@ -531,13 +532,15 @@
         defaultFileName: defaultName,
         defaultDirectory: activeExplorerFolder?.path,
         target: tab.doc.target,
-        document: tab.doc
+        document: tab.doc,
+        filePath: tab.file?.path ?? null,
+        projectRoot: projectRootForTab(tab)
       });
       if (res.canceled) {
         status = 'Export cancelled.';
       } else {
         const refreshError = await refreshFileProject(res.filePath);
-        status = refreshError || `Export succeeded: ${res.filePath}`;
+        status = refreshError || (res.files ? `Exported ${res.files.length} files to ${res.folder}` : `Export succeeded: ${res.filePath}`);
       }
     } catch (err) {
       status = `Export failed: ${err.message}`;
@@ -732,6 +735,9 @@
       if (contextMenu && !event.target.closest('.context-menu')) contextMenu = null;
       if (tabMenu && !event.target.closest('.context-menu')) tabMenu = null;
     };
+    const preventFileNavigation = (event) => {
+      if (event.dataTransfer?.types?.includes('Files')) event.preventDefault();
+    };
     const keydown = async (event) => {
       if (isShortcut(event, 'KeyP', { mod: true })) { event.preventDefault(); openPalette(); query = ''; }
       if (isShortcut(event, 'KeyS', { mod: true })) { event.preventDefault(); await handleSave(); }
@@ -768,12 +774,16 @@
     window.addEventListener('keydown', keydown);
     window.addEventListener('beforeunload', beforeUnload);
     window.addEventListener('pointerdown', closeContextMenuOnOutsideClick);
+    window.addEventListener('dragover', preventFileNavigation);
+    window.addEventListener('drop', preventFileNavigation);
     return () => {
       window.removeEventListener('resize', handleWindowResize);
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('beforeunload', beforeUnload);
       clearTimeout(sessionSaveTimer);
       window.removeEventListener('pointerdown', closeContextMenuOnOutsideClick);
+      window.removeEventListener('dragover', preventFileNavigation);
+      window.removeEventListener('drop', preventFileNavigation);
       sidebarEl?.removeEventListener('wheel', handleExplorerWheel);
       unlistenDock?.();
       unlistenClosed?.();
@@ -1223,6 +1233,12 @@
     const file = normalizeSearchPath(filePath);
     const parent = normalizeSearchPath(parentPath).replace(/\/$/, '');
     return file === parent || file.startsWith(`${parent}/`);
+  }
+
+  function projectRootForTab(tab) {
+    const filePath = tab?.file?.path;
+    return projects.filter((item) => filePath && isSameOrDescendant(filePath, item.rootPath))
+      .sort((a, b) => b.rootPath.length - a.rootPath.length)[0]?.rootPath ?? null;
   }
 
   async function moveEntry(event) {
@@ -2521,6 +2537,7 @@
                   documentKey={tab.documentKey}
                   active={activePaneId === pane.id}
                   filePath={tab.file?.path ?? null}
+                  projectRoot={projectRootForTab(tab)}
                   dirty={isTabDirty(tab)}
                   {theme}
                   {preferences}
@@ -2659,6 +2676,7 @@
               documentKey={tab.documentKey}
               active={activePaneId === pane.id}
               filePath={tab.file?.path ?? null}
+              projectRoot={projectRootForTab(tab)}
               dirty={isTabDirty(tab)}
               {theme}
               {preferences}

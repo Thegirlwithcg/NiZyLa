@@ -22,7 +22,7 @@
   import { onDestroy, onMount, setContext, tick, untrack } from 'svelte';
   import { Background, MarkerType, SvelteFlow, useSvelteFlow, useUpdateNodeInternals } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
-  import { nodeDefinitions } from '../core/geometry.js';
+  import { nodeDefinitions, parseGeometryDocument } from '../core/geometry.js';
   import { isShortcut } from '../core/shortcuts.js';
   import { geometryContextMenuItems } from '../core/geometry-context-menu.js';
   import { layoutGraph } from '../core/geometry-layout.js';
@@ -30,11 +30,13 @@
   import { getPreviewStatus } from '../core/geometry-preview-status.js';
   import { nodeHelp } from '../core/node-help.js';
   import { THEME_PRESETS } from '../core/preferences.js';
+  import { extractGcnExports, importerRelDirFor, planGcnDrop, resolveGcnImportPath, sameFilePath } from '../core/gcn-imports.js';
   import {
     addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, createEditorState,
     deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, spliceConvertedFragment, positionsFromFlow, redo,
     removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
-    updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter, syncFunctionCalls
+    updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter, syncFunctionCalls,
+    addGcnImports, addImportedSymbolNode
   } from '../core/geometry-editor.js';
   import CodeEditor from './CodeEditor.svelte';
   import GeometryAddMenu from './GeometryAddMenu.svelte';
@@ -60,10 +62,12 @@
     isRunning = false,
     onfatal = null,
     freshConversion = false,
-    onbaselinechange = null
+    onbaselinechange = null,
+    projectRoot = null
   } = $props();
 
   const uid = $props.id();
+  const api = globalThis.nizyla;
   const flow = useSvelteFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const nodeTypes = { geometry: GeometryNode };
@@ -95,6 +99,8 @@
   let usingLastGood = $state(false);
   let drafts = $state.raw({});
   let notice = $state.raw({ text: '', error: false });
+  let gcnExports = $state.raw(new Map());
+  let gcnExportLoadSequence = 0;
   let menu = $state.raw(null);
   let contextMenu = $state.raw(null);
   let deleting = $state.raw(null);
@@ -211,6 +217,65 @@
     if (grab) cancelGrab();
   }
 
+  function onCanvasDragOver(event) {
+    const types = event.dataTransfer?.types || [];
+    if (types.includes('application/x-nizyla-file') || types.includes('Files')) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'link';
+    }
+  }
+
+  async function onCanvasDrop(event) {
+    event.preventDefault();
+    const paths = [];
+    const addPath = (value) => { if (value && !paths.includes(value)) paths.push(value); };
+    const custom = event.dataTransfer?.getData('application/x-nizyla-file');
+    if (custom) {
+      try {
+        const entry = JSON.parse(custom);
+        if (entry?.type === 'file') addPath(entry.path);
+      } catch {}
+    }
+    for (const file of event.dataTransfer?.files || []) {
+      try { addPath(api?.getPathForFile?.(file)); } catch {}
+    }
+    if (scopeStack.length !== 0) {
+      say('Imports live in the top-level graph', true);
+      return;
+    }
+    const docTargets = new Map();
+    for (const file of paths.filter((item) => /\.gcn$/i.test(item))) {
+      try { docTargets.set(file, parseGeometryDocument(await api.readFile(file)).document?.target ?? null); } catch { docTargets.set(file, null); }
+    }
+    const rootImports = doc.nodes.filter((item) => item.type === 'import' && item.data?.importType === 'gcn');
+    const takenNames = new Set([
+      ...(doc.variables || []).map((item) => item.name),
+      ...doc.nodes.filter((item) => ['functionDef', 'classDef'].includes(item.type)).map((item) => item.data?.name),
+      ...rootImports.map((item) => item.data?.alias)
+    ].filter(Boolean));
+    const plan = planGcnDrop({
+      importerPath: filePath,
+      projectRoot,
+      target: doc.target,
+      droppedPaths: paths,
+      docTargets,
+      existingImports: rootImports.map((item) => ({ nodeId: item.id, path: item.data.path })),
+      takenNames
+    });
+    let selectedIds = plan.selectNodeIds;
+    if (plan.adds.length > 0) {
+      const result = addGcnImports(doc, plan.adds, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+      apply(result.doc);
+      await loadGcnExports();
+      selectedIds = result.nodeIds;
+      await tick();
+    }
+    selectOnly(selectedIds);
+    if (selectedIds.length > 0) await flow.fitView({ nodes: [{ id: selectedIds[0] }], maxZoom: 1.2, padding: 0.6, duration: 250 });
+    if (plan.toasts.length > 0) say(plan.toasts.join(' · '), true);
+    else if (plan.adds.length > 0) say(`Imported ${plan.adds.length} file(s)`);
+  }
+
   function onwindowcontextmenu(e) {
     if (suppressNextContextMenu) {
       e.preventDefault();
@@ -231,8 +296,25 @@
     window.addEventListener('pointerdown', onwindowpointerdowncapture, { capture: true });
   }
 
+  let wasActive = false;
+  let hasMounted = false;
+  $effect(() => {
+    if (!hasMounted) return;
+    if (active && !wasActive) untrack(() => loadGcnExports());
+    wasActive = active;
+  });
+
   onMount(() => {
     ondraftchange?.(false, {});
+    hasMounted = true;
+    wasActive = active;
+    const onGcnSaved = (event) => {
+      const savedPath = event.detail?.path;
+      const matches = [...gcnExports.keys()].some((importPath) => sameFilePath(resolveGcnImportPath(filePath, importPath), savedPath));
+      if (matches) loadGcnExports();
+    };
+    window.addEventListener('nizyla:gcn-saved', onGcnSaved);
+    loadGcnExports();
     window.addEventListener('resize', clampPreview);
     if (typeof ResizeObserver !== 'undefined') {
       previewResizeObserver = new ResizeObserver(([entry]) => {
@@ -245,6 +327,7 @@
       });
       if (previewEl) previewResizeObserver.observe(previewEl);
     }
+    return () => window.removeEventListener('nizyla:gcn-saved', onGcnSaved);
   });
 
   onDestroy(() => {
@@ -378,8 +461,9 @@
     const d = editor.present;
     let result;
     try {
-      result = generateGeometryCode(d, d.target);
-      const previewResult = hasDrafts ? null : generateGeometryPreview(d, d.target);
+      const codegenOptions = { importerRelDir: importerRelDirFor(projectRoot, filePath), gcnExports };
+      result = generateGeometryCode(d, d.target, codegenOptions);
+      const previewResult = hasDrafts ? null : generateGeometryPreview(d, d.target, codegenOptions);
       strictGenerated = { code: result.code, diagnostics: result.diagnostics };
       if (previewResult && (previewResult.code !== '' || !result.diagnostics.some((item) => item.severity === 'error'))) {
         generated = previewResult;
@@ -420,6 +504,24 @@
     } catch (error) {
       onfatal?.(error);
     }
+  }
+
+  async function loadGcnExports() {
+    const sequence = ++gcnExportLoadSequence;
+    const imports = editor.present.nodes.filter((item) => item.type === 'import' && item.data?.importType === 'gcn');
+    const entries = await Promise.all(imports.map(async (item) => {
+      const absolute = resolveGcnImportPath(filePath, item.data?.path);
+      if (!absolute) return [item.data.path, null];
+      try {
+        const parsed = parseGeometryDocument(await api.readFile(absolute)).document;
+        return [item.data.path, parsed ? extractGcnExports(parsed) : null];
+      } catch {
+        return [item.data.path, null];
+      }
+    }));
+    if (sequence !== gcnExportLoadSequence) return;
+    gcnExports = new Map(entries);
+    refresh();
   }
 
   function syncFlow() {
@@ -588,6 +690,13 @@
     });
   }
 
+  async function addImportedSymbol(importNodeId, entry, index) {
+    const result = addImportedSymbolNode(doc, importNodeId, entry, index);
+    apply(result.doc);
+    await tick();
+    selectOnly([result.nodeId]);
+  }
+
   setContext('gcn', {
     get view() { return view; },
     get parameters() { return functionParameters; },
@@ -595,6 +704,7 @@
     get isRoot() { return scopePathIds.length === 0; },
     get scopePathIds() { return scopePathIds; },
     get target() { return doc.target; },
+    get gcnExports() { return gcnExports; },
     get theme() { return theme; },
     get preferences() { return preferences; },
     get codeLineNumbers() { return codeLineNumbers; },
@@ -604,6 +714,8 @@
     showHelp: (id) => showNodeHelp(id),
     describe: (item) => describe(item),
     setData,
+    refreshGcnExports: loadGcnExports,
+    addImportedSymbol,
     setLiteralType: (id, type) => {
       const r = setLiteralType(activeGraph, id, type);
       if (r) applyScoped(() => r.doc);
@@ -1116,6 +1228,8 @@
       onpointerdowncapture={oncanvaspointerdowncapture}
       onpointermove={oncanvaspointermove}
       onpointerleave={() => { if (!grab) pointer = null; }}
+      ondragover={onCanvasDragOver}
+      ondrop={onCanvasDrop}
       oncontextmenu={oncanvascontextmenu}>
       <SvelteFlow bind:nodes bind:edges {nodeTypes} colorMode={THEME_PRESETS[theme]?.scheme === 'light' ? 'light' : 'dark'}
         multiSelectionKey={['Shift', 'Control', 'Meta']} selectionKey="Shift" deleteKey={[]} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} edgesReconnectable={false} autoPanOnNodeFocus={false}

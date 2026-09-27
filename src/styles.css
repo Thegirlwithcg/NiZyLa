@@ -2174,6 +2174,12 @@ div.gcn-diag { border: 1px solid var(--border); }
 .gcn-stop-btn:hover:not(:disabled) { background: #dc2626 !important; }
 
 .gcn-subgraph-card { display: grid; gap: 4px; }
+.gcn-import-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
+.gcn-import-status { display: flex; align-items: center; justify-content: space-between; gap: 4px; color: var(--muted); font-size: 10px; }
+.gcn-import-status.error { color: var(--gcn-error); }
+.gcn-import-status button { padding: 1px 5px; font-size: 11px; }
+.gcn-import-list { display: grid; gap: 3px; max-height: 120px; overflow-y: auto; }
+.gcn-import-list button { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .gcn-subgraph-info { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
 
 .gcn-param-badge { display: inline-block; padding: 3px 6px; font-size: 11px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); border: 1px solid var(--border); }

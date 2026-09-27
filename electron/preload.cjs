@@ -1,10 +1,11 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('nizyla', {
   openProject: () => ipcRenderer.invoke('project:open'),
   scanProject: (rootPath) => ipcRenderer.invoke('project:scan', rootPath),
   readFile: (filePath) => ipcRenderer.invoke('file:read', filePath),
   readFileDataUrl: (filePath) => ipcRenderer.invoke('file:read-data-url', filePath),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   writeFile: (filePath, content) => ipcRenderer.invoke('file:write', filePath, content),
   createFile: (filePath) => ipcRenderer.invoke('file:create', filePath),
   createFolder: (folderPath) => ipcRenderer.invoke('folder:create', folderPath),
