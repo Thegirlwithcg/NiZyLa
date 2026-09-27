@@ -146,7 +146,7 @@ export function setViewportAtScope(doc, scopePath = [], viewport) {
 
 // ---- node presets -----------------------------------------------------------------------------
 
-const preset = (id, label, category, type, data = {}) => ({ id, label, category, type, data });
+const preset = (id, label, category, type, data = {}, targets) => ({ id, label, category, type, data, ...(targets ? { targets } : {}) });
 export const nodePresets = [
   // 1. Value
   preset('int', 'Integer', 'Value', 'literal', { valueType: 'int', value: 0 }),
@@ -232,11 +232,30 @@ export const nodePresets = [
   preset('code-block', 'Code (Block)', 'Code', 'codeNode', { codeKind: 'block', code: 'pass', language: 'python' })
 ];
 
+export function filterNodePresetsForTarget(presets, target) {
+  return (presets || []).filter((item) => !item.targets || item.targets.includes(target));
+}
+
+const IMPORT_TYPE_OPTIONS = [
+  { value: 'module', label: 'import module', targets: ['python'] },
+  { value: 'from', label: 'from ... import ...', targets: ['python'] },
+  { value: 'gd_extends', label: 'extends (GDScript)', targets: ['gdscript'] },
+  { value: 'gd_class_name', label: 'class_name (GDScript)', targets: ['gdscript'] },
+  { value: 'gd_preload', label: 'preload (GDScript)', targets: ['gdscript'] },
+  { value: 'gd_load', label: 'load (GDScript)', targets: ['gdscript'] },
+  { value: 'gcn', label: 'Geometry Code module', targets: ['python', 'gdscript'] }
+];
+
+export function importTypeOptionsForTarget(target) {
+  return IMPORT_TYPE_OPTIONS.filter((item) => item.targets.includes(target));
+}
+
 const uuid = () => globalThis.crypto.randomUUID();
 const finitePoint = (p) => ({ x: Number.isFinite(p?.x) ? Math.round(p.x) : 0, y: Number.isFinite(p?.y) ? Math.round(p.y) : 0 });
 
 /** Returns { doc, nodeId } or null for an unknown preset. Start is never offered. */
-export function addNode(doc, presetId, position) {
+export function addNode(doc, presetId, position, { target } = {}) {
+  const effectiveTarget = target ?? doc?.target ?? 'python';
   const item = nodePresets.find((p) => p.id === presetId);
   if (!item) return null;
   let currentDoc = doc;
@@ -247,6 +266,10 @@ export function addNode(doc, presetId, position) {
     varId = res.variableId;
   }
   const data = { ...nodeDefinitions[item.type].defaults, ...item.data };
+  if (item.type === 'codeNode') data.language = effectiveTarget;
+  if (item.type === 'import' && !importTypeOptionsForTarget(effectiveTarget).some((option) => option.value === data.importType)) {
+    data.importType = importTypeOptionsForTarget(effectiveTarget)[0]?.value || data.importType;
+  }
   if (varId !== undefined) {
     data.variableId = varId;
   } else {
@@ -290,7 +313,7 @@ export function addImportedSymbolNode(doc, importNodeId, entry, index = 0) {
 export function addNodeAtScope(doc, scopePath, presetId, position) {
   let createdNodeId = null;
   const nextDoc = updateGraphAtScope(doc, scopePath, (graph) => {
-    const res = addNode(graph, presetId, position);
+    const res = addNode(graph, presetId, position, { target: doc?.target });
     if (!res) return graph;
     createdNodeId = res.nodeId;
     if (presetId === 'parameter' && scopePath && scopePath.length > 0) {

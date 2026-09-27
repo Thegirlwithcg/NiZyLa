@@ -2,6 +2,7 @@
   import { getContext } from 'svelte';
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
   import { nodeDefinitions, VARIABLE_NODE_TYPES } from '../core/geometry.js';
+  import { importTypeOptionsForTarget } from '../core/geometry-editor.js';
   import { exportEntries } from '../core/gcn-imports.js';
   import GeometryField from './GeometryField.svelte';
   import GeometryVariableFields from './GeometryVariableFields.svelte';
@@ -278,13 +279,16 @@
             </div>
           {/if}
         {:else}
-          <select aria-label="Import type" value={node.data?.importType || 'module'} onchange={onSelectData('importType')}>
-            <option value="module">import module</option>
-            <option value="from">from ... import ...</option>
-            <option value="gd_extends">extends (GDScript)</option>
-            <option value="gd_class_name">class_name (GDScript)</option>
-            <option value="gd_preload">preload (GDScript)</option>
-            <option value="gd_load">load (GDScript)</option>
+          {@const importOptions = importTypeOptionsForTarget(ctx.target)}
+          {@const currentImportType = node.data?.importType || importOptions[0]?.value}
+          {@const currentOption = importOptions.find((option) => option.value === currentImportType)}
+          {@const visibleImportOptions = currentOption || !currentImportType
+            ? importOptions
+            : [{ value: currentImportType, label: `${currentImportType} (other language)` }, ...importOptions]}
+          <select aria-label="Import type" value={currentImportType} onchange={onSelectData('importType')}>
+            {#each visibleImportOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
           </select>
           <input aria-label="Module name or path" value={node.data?.module || ''} placeholder="module or res://"
             oninput={onInputData('module')} onblur={ctx.endEdit} spellcheck="false" />

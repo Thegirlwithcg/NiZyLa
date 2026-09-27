@@ -3,8 +3,8 @@ import test from 'node:test';
 import { createGeometryDocument, nodeDefinitions, serializeGeometryDocument, serializeNode, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
-  HISTORY_LIMIT, addEdge, addNode, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
-  createEditorState, deleteVariable, duplicateNodes, endEdit, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
+  HISTORY_LIMIT, addEdge, addNode, addNodeAtScope, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
+  createEditorState, deleteVariable, duplicateNodes, endEdit, filterNodePresetsForTarget, importTypeOptionsForTarget, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
   pruneOrphanVariables, redo,
   removeItems, contentKey, sameContent, sameDocument, setLiteralType, setNodeData, setTarget, setViewport, syncFunctionCalls, undo, updateVariable, variableUsage, removeFunctionParameter
 } from '../src/core/geometry-editor.js';
@@ -755,6 +755,31 @@ test('variableUsage counts forEach and copy/pasteFragment remaps forEach variabl
   assert.equal(pastedNode.type, 'forEach');
   assert.equal(pastedNode.data.variableId, 'diff_item_id');
   assert.equal(variableUsage(pasted.doc, 'diff_item_id'), 1);
+});
+
+test('language-specific presets and import options follow the document target', () => {
+  const pythonPresets = filterNodePresetsForTarget(nodePresets, 'python');
+  const gdscriptPresets = filterNodePresetsForTarget(nodePresets, 'gdscript');
+  assert.ok(pythonPresets.every((item) => !item.targets || item.targets.includes('python')));
+  assert.ok(gdscriptPresets.every((item) => !item.targets || item.targets.includes('gdscript')));
+  assert.deepEqual(importTypeOptionsForTarget('python').map((item) => item.value), ['module', 'from', 'gcn']);
+  assert.deepEqual(importTypeOptionsForTarget('gdscript').map((item) => item.value), ['gd_extends', 'gd_class_name', 'gd_preload', 'gd_load', 'gcn']);
+  assert.equal(addNode(createGeometryDocument('gdscript'), 'import', { x: 0, y: 0 }).doc.nodes.at(-1).data.importType, 'gd_extends');
+  assert.equal(addNode(createGeometryDocument('python'), 'import', { x: 0, y: 0 }).doc.nodes.at(-1).data.importType, 'module');
+});
+
+test('code presets use the document target', () => {
+  const python = addNode(createGeometryDocument('python'), 'code-stmt', { x: 0, y: 0 });
+  const gdscript = addNode(createGeometryDocument('gdscript'), 'code-stmt', { x: 0, y: 0 });
+  assert.equal(python.doc.nodes.at(-1).data.language, 'python');
+  assert.equal(gdscript.doc.nodes.at(-1).data.language, 'gdscript');
+  const child = { ...createGeometryDocument('python'), target: undefined };
+  const childCode = addNode(child, 'code-stmt', { x: 0, y: 0 }, { target: 'gdscript' });
+  assert.equal(childCode.doc.nodes.at(-1).data.language, 'gdscript');
+  const scopedDoc = createGeometryDocument('gdscript');
+  const fn = addNode(scopedDoc, 'function', { x: 0, y: 0 });
+  const scoped = addNodeAtScope(fn.doc, [fn.nodeId], 'code-stmt', { x: 0, y: 0 });
+  assert.equal(scoped.doc.nodes.find((node) => node.type === 'functionDef').data.graph.nodes.at(-1).data.language, 'gdscript');
 });
 
 test('Prompt F: nodePresets category order and unique categories', () => {

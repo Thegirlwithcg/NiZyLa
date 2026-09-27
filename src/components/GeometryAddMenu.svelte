@@ -1,8 +1,9 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { nodePresets } from '../core/geometry-editor.js';
+  import { filterNodePresetsForTarget, nodePresets } from '../core/geometry-editor.js';
 
-  let { x, y, onpick, onclose } = $props();
+  let { x, y, target, onpick, onclose } = $props();
+  const availablePresets = $derived(filterNodePresetsForTarget(nodePresets, target));
   const uid = $props.id();
   let query = $state('');
   let input;
@@ -15,7 +16,7 @@
   const categories = $derived.by(() => {
     const seen = new Set();
     const list = [];
-    for (const p of nodePresets) {
+    for (const p of availablePresets) {
       if (!seen.has(p.category)) {
         seen.add(p.category);
         list.push(p.category);
@@ -28,7 +29,7 @@
   const matches = $derived.by(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return [];
-    return nodePresets.filter((p) => words.every((w) => `${p.label} ${p.category}`.toLowerCase().includes(w)));
+    return availablePresets.filter((p) => words.every((w) => `${p.label} ${p.category}`.toLowerCase().includes(w)));
   });
 
   // State for empty-query category navigation
@@ -43,7 +44,7 @@
 
   const categoryPresets = $derived.by(() => {
     if (!activeCategory) return [];
-    return nodePresets.filter((p) => p.category === activeCategory);
+    return availablePresets.filter((p) => p.category === activeCategory);
   });
 
   const isFlipped = $derived(left + 250 + 200 > (typeof window !== 'undefined' ? window.innerWidth - 4 : 1000));

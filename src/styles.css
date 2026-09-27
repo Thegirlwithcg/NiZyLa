@@ -1975,7 +1975,8 @@ button.danger:hover { background: #942d26; border-color: #942d26; }
   box-sizing: border-box;
 }
 .gcn-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); min-width: 0; }
-.gcn-toolbar button, .gcn-toolbar select { padding: 4px 9px; font-size: 12px; }
+.gcn-toolbar button, .gcn-toolbar select, .gcn-target-badge { padding: 4px 9px; font-size: 12px; }
+.gcn-target-badge { border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-weight: 600; }
 .gcn-toolbar .gcn-panel-toggle.active { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--accent); }
 .gcn-banner { padding: 3px 8px; border: 1px dashed var(--gcn-warn); border-radius: 4px; color: var(--gcn-warn); font-weight: 600; }
 .gcn-notice { flex: 1 1 200px; min-width: 0; color: var(--muted); }

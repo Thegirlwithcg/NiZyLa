@@ -25,7 +25,7 @@
   import { nodeDefinitions, parseGeometryDocument } from '../core/geometry.js';
   import { isShortcut } from '../core/shortcuts.js';
   import { addMenuAnchor, geometryContextMenuItems, pointInRect } from '../core/geometry-context-menu.js';
-  import { isGeometryPath } from '../core/geometry-files.js';
+  import { isGeometryPath, targetForGeometryPath } from '../core/geometry-files.js';
   import { layoutGraph } from '../core/geometry-layout.js';
   import { generateGeometryCode, generateGeometryPreview } from '../core/geometry-codegen.js';
   import { getPreviewStatus, previewLinesForNodes } from '../core/geometry-preview-status.js';
@@ -37,7 +37,7 @@
     deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, spliceConvertedFragment, positionsFromFlow, redo,
     removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
     updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter, syncFunctionCalls,
-    addGcnImports, addImportedSymbolNode
+    addGcnImports, addImportedSymbolNode, importTypeOptionsForTarget
   } from '../core/geometry-editor.js';
   import CodeEditor from './CodeEditor.svelte';
   import GeometryAddMenu from './GeometryAddMenu.svelte';
@@ -166,6 +166,7 @@
   const canRun = $derived(!isRunning && !hasDrafts && errors.length === 0 && doc.target === 'python');
   const previewStatus = $derived(getPreviewStatus(hasDrafts, usingLastGood && !hasDrafts, !!lastGoodPreview.code));
   const previewFile = $derived(doc.target === 'python' ? { name: 'generated.py', path: 'generated.py' } : { name: 'generated.gd', path: 'generated.gd' });
+  const fixedFileTarget = $derived(targetForGeometryPath(filePath));
   const previewBaseFontSize = $derived(Number(preferences?.fontSize) || 14);
 
   const selectedNode = $derived(nodes.find((n) => n.selected));
@@ -942,7 +943,7 @@
   async function pick(presetId) {
     const at = menu.flowAt;
     menu = null;
-    const result = addNode(activeGraph, presetId, { x: at.x - 20, y: at.y - 14 });
+    const result = addNode(activeGraph, presetId, { x: at.x - 20, y: at.y - 14 }, { target: doc.target });
     if (!result) return;
     applyScoped(() => result.doc);
     await tick();
@@ -1209,10 +1210,14 @@
       </button>
     {/if}
 
-    <select aria-label="Target language" value={doc.target} onchange={(e) => apply(setTarget(doc, e.currentTarget.value))}>
-      <option value="python">Python</option>
-      <option value="gdscript">GDScript</option>
-    </select>
+    {#if fixedFileTarget}
+      <span class="gcn-target-badge" aria-label={`Target language: ${fixedFileTarget === 'gdscript' ? 'GDScript' : 'Python'}`}>{fixedFileTarget === 'gdscript' ? 'GDScript' : 'Python'}</span>
+    {:else}
+      <select aria-label="Target language" value={doc.target} onchange={(e) => apply(setTarget(doc, e.currentTarget.value))}>
+        <option value="python">Python</option>
+        <option value="gdscript">GDScript</option>
+      </select>
+    {/if}
     <span class="gcn-file-badge" class:dirty>
       {filePath ? filePath.split(/[/\\]/).pop() : 'Scratch Graph'}{dirty ? ' •' : ''}
     </span>
@@ -1430,7 +1435,7 @@
   </div>
 
   {#if menu}
-    <GeometryAddMenu x={menu.x} y={menu.y} onpick={pick} onclose={closeMenu} />
+    <GeometryAddMenu x={menu.x} y={menu.y} target={doc.target} onpick={pick} onclose={closeMenu} />
   {/if}
 
   <dialog bind:this={codeDialogEl} class="gcn-code-dialog" onclose={() => { finishEdit(); codeModalNodeId = null; canvasEl?.focus({ preventScroll: true }); }}>
