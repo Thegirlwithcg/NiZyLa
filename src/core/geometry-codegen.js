@@ -729,10 +729,7 @@ function hasExecutableStatements(graph) {
   return false;
 }
 
-function generate(doc, target, options = {}) {
-  // If v1, migrate first
-  const workingDoc = doc.version === 1 ? migrateV1ToV2({ ...doc, target }) : doc;
-  const python = target === 'python';
+function createCodegenContext(workingDoc, target, options = {}) {
   const sourceMap = [];
   const lines = [];
 
@@ -788,6 +785,15 @@ function generate(doc, target, options = {}) {
     context.commentSeen.add(node.id);
     for (const line of comment.split('\n')) emitLine(depth, line ? `# ${line}` : '#', node.id, scopePath);
   };
+  return { context, lines, sourceMap };
+}
+
+function generate(doc, target, options = {}) {
+  // If v1, migrate first
+  const workingDoc = doc.version === 1 ? migrateV1ToV2({ ...doc, target }) : doc;
+  const python = target === 'python';
+  const { context, lines, sourceMap } = createCodegenContext(workingDoc, target, options);
+  const { emitLine, emptyLine } = context;
 
   // If this is a migrated v1 document:
   if (workingDoc.isMigratedV1) {
@@ -1016,6 +1022,63 @@ function generate(doc, target, options = {}) {
 }
 
 /** Generates Python or GDScript from a valid graph. `target` overrides document.target for this call only. */
+function graphAtScopePath(doc, scopePath) {
+  let graph = doc;
+  for (const id of scopePath || []) {
+    const owner = graph?.nodes?.find((node) => node.id === id);
+    if (!owner?.data?.graph) return null;
+    graph = owner.data.graph;
+  }
+  return graph;
+}
+
+/** Generates only the requested graph fragment, while resolving names against the full document. */
+export function generateFragmentCode(doc, { scopePath = [], nodeIds = [], entryId = null, valueId = null } = {}, target = doc?.target, options = {}) {
+  try {
+    const graph = graphAtScopePath(doc, scopePath);
+    if (!graph) return { ok: false, error: 'Graph scope was not found.' };
+    const ids = new Set(nodeIds);
+    const nodes = (graph.nodes || []).filter((node) => ids.has(node.id));
+    const edges = (graph.edges || []).filter((edge) => ids.has(edge.source) && ids.has(edge.target));
+    const fragmentGraph = { nodes: [{ id: '__fragment_start', type: 'start', position: { x: 0, y: 0 }, data: {} }, ...nodes], edges: [...edges], variables: [] };
+    if (entryId) fragmentGraph.edges.push({ id: '__fragment_entry', source: '__fragment_start', sourceHandle: 'next', target: entryId, targetHandle: 'in' });
+
+    const workingDoc = doc.version === 1 ? migrateV1ToV2({ ...doc, target }) : doc;
+    const { context, lines } = createCodegenContext(workingDoc, target, options);
+    const scopeVariables = [...(workingDoc.variables || [])];
+    let parent = workingDoc;
+    for (const id of scopePath) {
+      const owner = parent.nodes?.find((node) => node.id === id);
+      if (!owner?.data?.graph) return { ok: false, error: 'Graph scope was not found.' };
+      parent = owner.data.graph;
+      scopeVariables.push(...(parent.variables || []));
+    }
+    scopeVariables.push(...(graph.variables || []));
+    context.variables = new Map(scopeVariables.map((variable) => [variable.id, variable]));
+
+    if (entryId) {
+      generateGraphStatements(fragmentGraph, 0, context, scopePath);
+      return { ok: true, code: lines.join('\n') };
+    }
+    if (valueId) {
+      const nodeMap = new Map(fragmentGraph.nodes.map((node) => [node.id, node]));
+      const variables = new Map((fragmentGraph.variables || []).map((variable) => [variable.id, variable]));
+      const values = new Map(fragmentGraph.nodes.map((node) => [node.id, new Map()]));
+      for (const edge of fragmentGraph.edges) {
+        const source = nodeMap.get(edge.source);
+        if (!source) continue;
+        const port = getNodePorts(source, [...variables.values()]).find((item) => item.id === edge.sourceHandle);
+        if (port?.kind !== 'exec') values.get(edge.target)?.set(edge.targetHandle, edge.source);
+      }
+      const localContext = { ...context, nodes: nodeMap, values, variables: new Map([...context.variables, ...variables]), cache: new Map() };
+      return { ok: true, code: expression(valueId, localContext).text };
+    }
+    return { ok: false, error: 'Provide an entryId or valueId.' };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
 export function generateGeometryPreview(document, target = document?.target, options = {}) {
   const diagnostics = validateGeometryDocument(document);
   diagnostics.push(...gcnImportDiagnostics(document, target, options));
