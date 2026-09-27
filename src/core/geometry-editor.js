@@ -1,4 +1,5 @@
 import { createChildGraph, getNodePorts, nodeDefinitions, parseGeometryDocument, serializeGeometryDocument, serializeNode, validateGeometryDocument, VARIABLE_NODE_TYPES } from './geometry.js';
+import { generateFragmentCode } from './geometry-codegen.js';
 
 // Pure document editing + history for the Geometry Code UI. No DOM, no Svelte Flow objects:
 // every function takes a plain .gcn document and returns a new one (inputs are never mutated).
@@ -1076,6 +1077,168 @@ export function pasteFragment(graph, text, anchor = { x: 0, y: 0 }, accessibleVa
     addedVariableIds,
     idMap: nodeIdMap
   };
+}
+
+/** Collapse a selected graph fragment into one Code node without mutating the input document. */
+export function collapseToCodeNode(doc, scopePath = [], nodeIds = [], target = doc?.target, options = {}) {
+  const graph = getGraphAtScope(doc, scopePath);
+  const fail = (message) => ({ ok: false, message });
+  const selected = new Set(nodeIds || []);
+  if (!graph || selected.size === 0 || selected.has('start') || [...selected].some((id) => graph.nodes?.find((node) => node.id === id)?.type === 'start')) {
+    return fail('Select nodes other than Start.');
+  }
+  const nodeMap = new Map((graph.nodes || []).map((node) => [node.id, node]));
+  if ([...selected].some((id) => !nodeMap.has(id))) return fail('Select nodes other than Start.');
+  const nodesFor = (ids) => [...ids].map((id) => nodeMap.get(id));
+  let chosen = nodesFor(selected);
+  if (chosen.some((node) => ['functionDef', 'classDef', 'import'].includes(node.type))) {
+    return fail("Function, Class and Import nodes can't be converted to code.");
+  }
+  if (target === 'gdscript' && chosen.some((node) => node.type === 'input')) {
+    return fail("Input can't be converted in GDScript (it needs the _gcn_input helper).");
+  }
+  if (target === 'python' && scopePath.length > 0) {
+    const scopeVariables = new Set((graph.variables || []).map((variable) => variable.id));
+    const allVariables = new Map((doc.variables || []).map((variable) => [variable.id, variable]));
+    let parentGraph = doc;
+    for (const id of scopePath) {
+      for (const variable of parentGraph.variables || []) allVariables.set(variable.id, variable);
+      const parentNode = parentGraph.nodes?.find((node) => node.id === id);
+      if (parentNode?.data?.graph) parentGraph = parentNode.data.graph;
+    }
+    for (const variable of parentGraph.variables || []) allVariables.set(variable.id, variable);
+    for (const node of chosen.filter((item) => item.type === 'setVariable')) {
+      const variableId = node.data?.variableId;
+      if (!scopeVariables.has(variableId) && allVariables.has(variableId)) {
+        const name = allVariables.get(variableId)?.name || variableId;
+        return fail(`Setting module variable ${name} inside a function needs \`global\`; convert it without this node.`);
+      }
+    }
+  }
+
+  const ports = (node) => getNodePorts(node, graph.variables || []);
+  const edgeKind = (edge) => ports(nodeMap.get(edge.source))?.find((port) => port.id === edge.sourceHandle)?.kind;
+  // Absorb pure input expressions only when doing so cannot alter another consumer.
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const edge of graph.edges || []) {
+      if (selected.has(edge.source) || !selected.has(edge.target)) continue;
+      const targetPort = ports(nodeMap.get(edge.target))?.find((port) => port.id === edge.targetHandle);
+      if (targetPort?.kind !== 'value') continue;
+      const source = nodeMap.get(edge.source);
+      if (!source) continue;
+      const sourcePorts = ports(source);
+      const sourceEdges = (graph.edges || []).filter((item) => item.source === source.id);
+      if (!sourcePorts.some((port) => port.kind === 'exec') && sourceEdges.every((item) => selected.has(item.target))) {
+        selected.add(source.id);
+        grew = true;
+        continue;
+      }
+      return fail(`${nodeDefinitions[source.type]?.label || source.type} feeds this selection and is used elsewhere; select it too or leave this node out.`);
+    }
+  }
+  chosen = nodesFor(selected);
+  const execNodes = chosen.filter((node) => ports(node).some((port) => port.kind === 'exec'));
+  const execEdges = (graph.edges || []).filter((edge) => edgeKind(edge) === 'exec');
+
+  if (execNodes.length > 0) {
+    const inbound = execEdges.filter((edge) => !selected.has(edge.source) && selected.has(edge.target));
+    const outbound = execEdges.filter((edge) => selected.has(edge.source) && !selected.has(edge.target));
+    const internal = execEdges.filter((edge) => selected.has(edge.source) && selected.has(edge.target));
+    const predecessors = new Set(internal.map((edge) => edge.target));
+    const entries = execNodes.filter((node) => !predecessors.has(node.id));
+    if (inbound.length > 1 || outbound.length > 1 || outbound.some((edge) => edge.sourceHandle !== 'next')
+      || (inbound.length === 1 && !entries.some((node) => node.id === inbound[0].target)) || entries.length !== 1) {
+      return fail('Select one continuous chain of statements.');
+    }
+    // Block contents are structurally required, not merely the paths currently occupied by selected edges.
+    const bodyHandles = new Set(['then', 'else', 'body']);
+    const reachable = new Set();
+    const pending = execEdges.filter((edge) => selected.has(edge.source) && bodyHandles.has(edge.sourceHandle)).map((edge) => edge.target);
+    while (pending.length) {
+      const id = pending.pop();
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const edge of execEdges) if (edge.source === id && edge.sourceHandle === 'next') pending.push(edge.target);
+      const node = nodeMap.get(id);
+      if (node && ports(node).some((port) => ['then', 'else', 'body'].includes(port.id))) {
+        for (const edge of execEdges) if (edge.source === id && bodyHandles.has(edge.sourceHandle)) pending.push(edge.target);
+      }
+    }
+    if ([...reachable].some((id) => !selected.has(id))) return fail('Select one continuous chain of statements.');
+  }
+
+  const outsideValueUse = (node) => (graph.edges || []).some((edge) => edge.source === node.id && !selected.has(edge.target)
+    && ports(node)?.some((port) => port.id === edge.sourceHandle && port.kind === 'value'));
+  const expressionUses = [];
+  for (const node of chosen) {
+    const valueOutputs = ports(node).filter((port) => port.direction === 'out' && port.kind === 'value');
+    for (const port of valueOutputs) {
+      for (const edge of graph.edges || []) {
+        if (edge.source === node.id && edge.sourceHandle === port.id && !selected.has(edge.target)) expressionUses.push({ node, edge });
+      }
+    }
+  }
+  let codeKind = 'statement';
+  let entryId = null;
+  let valueId = null;
+  let expressionConsumer = null;
+  if (execNodes.length > 0) {
+    for (const node of chosen) {
+      if (outsideValueUse(node)) return fail(`${nodeDefinitions[node.type]?.label || node.type}'s value is used outside the selection.`);
+    }
+    entryId = execNodes.find((node) => !new Set(execEdges.filter((edge) => selected.has(edge.source) && selected.has(edge.target)).map((edge) => edge.target)).has(node.id))?.id;
+  } else {
+    if (expressionUses.length !== 1) return fail('Select an expression whose result is used once.');
+    codeKind = 'expression';
+    expressionConsumer = expressionUses[0].edge;
+    valueId = expressionUses[0].node.id;
+  }
+  const generated = generateFragmentCode(doc, { scopePath, nodeIds: [...selected], ...(entryId ? { entryId } : { valueId }) }, target, options);
+  if (!generated.ok) return fail(`Cannot convert: ${generated.error}`);
+  let code = generated.code;
+  if (codeKind === 'expression' && code.startsWith('(') && code.endsWith(')')) {
+    let depth = 0;
+    let quote = null;
+    let escaped = false;
+    let enclosesAll = true;
+    for (let i = 0; i < code.length; i++) {
+      const char = code[i];
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (char === '\\\\') escaped = true;
+        else if (char === quote) quote = null;
+      } else if (char === '\\"' || char === "'") quote = char;
+      else if (char === '(') depth++;
+      else if (char === ')' && --depth === 0 && i !== code.length - 1) { enclosesAll = false; break; }
+    }
+    if (enclosesAll) code = code.slice(1, -1);
+  }
+
+  const id = uuid();
+  const positions = chosen.map((node) => node.position || { x: 0, y: 0 });
+  const codeNode = {
+    id, type: 'codeNode',
+    position: { x: Math.min(...positions.map((position) => position.x)), y: Math.min(...positions.map((position) => position.y)) },
+    data: { codeKind, code, language: target, title: `Converted ${selected.size} nodes` }
+  };
+  const inboundExec = execEdges.filter((edge) => !selected.has(edge.source) && selected.has(edge.target));
+  const outboundExec = execEdges.filter((edge) => selected.has(edge.source) && !selected.has(edge.target));
+  const retainedEdges = (graph.edges || []).filter((edge) => !selected.has(edge.source) && !selected.has(edge.target));
+  if (codeKind === 'statement') {
+    if (inboundExec.length) retainedEdges.push({ ...inboundExec[0], id: uuid(), target: id, targetHandle: 'in' });
+    if (outboundExec.length) retainedEdges.push({ ...outboundExec[0], id: uuid(), source: id, sourceHandle: 'next' });
+  } else {
+    const output = getNodePorts(codeNode).find((port) => port.direction === 'out' && port.kind === 'value');
+    retainedEdges.push({ id: uuid(), source: id, sourceHandle: output.id, target: expressionConsumer.target, targetHandle: expressionConsumer.targetHandle });
+  }
+  const nextDoc = updateGraphAtScope(doc, scopePath, (current) => ({
+    ...current,
+    nodes: [...current.nodes.filter((node) => !selected.has(node.id)), codeNode],
+    edges: retainedEdges
+  }));
+  return { ok: true, doc: nextDoc, nodeId: id };
 }
 
 /** Replace a Code node with the converted graph fragment while preserving execution/value wires. */
