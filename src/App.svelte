@@ -14,7 +14,7 @@
   import { loadPreferences, applyPreferences, savePreferences, THEME_PRESETS, applyThemePreset } from './core/preferences.js';
   import { repathTab } from './core/session-config.js';
   import { isShortcut } from './core/shortcuts.js';
-  import { geometryExtension, isGeometryPath, targetForGeometryPath, withGeometryExtension } from './core/geometry-files.js';
+  import { geometryExtension, isGeometryPath, normalizeGeometryTarget, targetForGeometryPath, withGeometryExtension } from './core/geometry-files.js';
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -310,7 +310,7 @@
       status = 'Please open a project folder before creating Geometry Code.';
       return;
     }
-    geometryCreateTarget = target;
+    geometryCreateTarget = normalizeGeometryTarget(target);
     openCreateDialog('geometry');
   }
 
@@ -1871,7 +1871,7 @@
           return;
         }
         const targetTab = savingGraph ? savingGeometryTab : null;
-        const selectedTarget = typedTarget || targetTab?.doc?.target || geometryCreateTarget;
+        const selectedTarget = normalizeGeometryTarget(typedTarget || targetTab?.doc?.target || geometryCreateTarget);
         const geometryName = savingGraph && /\.gcn$/i.test(name) ? name : withGeometryExtension(name, selectedTarget);
         const filePath = `${parent.path}/${geometryName}`;
         const initialDoc = targetTab
@@ -2364,7 +2364,7 @@
         {/if}
         <button on:click={toggleGraph}>Graph {graphDetached ? '(Detached)' : (graphVisible ? (graphFloating ? '(Float)' : 'Hide') : 'Show')}</button>
         {#if isGeometryTab(activeTab)}
-          <button on:click={handleNewGeometryCode} title="Create a new Geometry Code Node (.gcn) in the project">+ Node</button>
+          <button on:click={() => handleNewGeometryCode('python')} title="Create a new Geometry Code file (.gcpy / .gcgd)">+ Node</button>
           <button on:click={() => saveGeometry(activeTab, true)} disabled={activeTab?.hasDrafts || isSavingTabs.has(activeTab?.id) || !!createDialog} title="Save a copy in the selected Explorer folder">Save As</button>
           <button on:click={() => handleExportGeometry(activeTab)} disabled={!canExportTab(activeTab)} title="Export Python / GDScript">Export</button>
           <button on:click={closeGeometryGraph} title="Close the current Geometry Code Node">Close Node</button>

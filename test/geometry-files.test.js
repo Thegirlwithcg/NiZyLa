@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GEOMETRY_FILE_RE, geometryExtension, isGeometryPath, targetForGeometryPath, withGeometryExtension } from '../src/core/geometry-files.js';
+import { GEOMETRY_FILE_RE, geometryExtension, isGeometryPath, normalizeGeometryTarget, targetForGeometryPath, withGeometryExtension } from '../src/core/geometry-files.js';
 
 test('geometry file extensions identify new and legacy formats', () => {
   assert.equal(GEOMETRY_FILE_RE.test('main.gcpy'), true);
@@ -14,4 +14,11 @@ test('geometry file extensions identify new and legacy formats', () => {
   assert.equal(geometryExtension('gdscript'), '.gcgd');
   assert.equal(withGeometryExtension('logic.gcn', 'python'), 'logic.gcpy');
   assert.equal(withGeometryExtension('logic', 'gdscript'), 'logic.gcgd');
+});
+
+test('normalizeGeometryTarget accepts only supported targets', () => {
+  assert.equal(normalizeGeometryTarget('gdscript'), 'gdscript');
+  assert.equal(normalizeGeometryTarget({ type: 'click' }), 'python');
+  assert.equal(normalizeGeometryTarget(undefined), 'python');
+  assert.equal(normalizeGeometryTarget('x'), 'python');
 });

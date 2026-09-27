@@ -193,7 +193,7 @@ try {
   const plusNodeBtn = toolbarBtnLabels.find(b => b.text === '+ Node');
   const closeNodeBtn = toolbarBtnLabels.find(b => b.text === 'Close Node');
   assert.ok(plusNodeBtn, '+ Node toolbar button must exist');
-  assert.equal(plusNodeBtn.title, 'Create a new Geometry Code Node (.gcn) in the project');
+  assert.equal(plusNodeBtn.title, 'Create a new Geometry Code file (.gcpy / .gcgd)');
   assert.ok(closeNodeBtn, 'Close Node toolbar button must exist');
   assert.equal(closeNodeBtn.title, 'Close the current Geometry Code Node');
 

@@ -11,6 +11,11 @@ export function targetForGeometryPath(path) {
   return null;
 }
 
+export function normalizeGeometryTarget(value, fallback = 'python') {
+  const safeFallback = fallback === 'gdscript' ? 'gdscript' : 'python';
+  return value === 'python' || value === 'gdscript' ? value : safeFallback;
+}
+
 export function geometryExtension(target) {
   return target === 'gdscript' ? '.gcgd' : '.gcpy';
 }

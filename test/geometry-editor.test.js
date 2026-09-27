@@ -777,7 +777,7 @@ test('Prompt F: App.svelte toolbar has + Node and Close Node, leaves other Graph
   const fs = await import('node:fs/promises');
   const appContent = await fs.readFile('src/App.svelte', 'utf8');
   assert.match(appContent, />\+ Node<\/button>/);
-  assert.match(appContent, /title="Create a new Geometry Code Node \(\.gcn\) in the project"/);
+  assert.match(appContent, /title="Create a new Geometry Code file \(\.gcpy \/ \.gcgd\)"/);
   assert.match(appContent, />Close Node<\/button>/);
   assert.match(appContent, /title="Close the current Geometry Code Node"/);
 
