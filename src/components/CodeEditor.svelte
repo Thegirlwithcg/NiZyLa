@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { createEventDispatcher } from 'svelte';
-  import { EditorState } from '@codemirror/state';
+  import { EditorState, StateEffect, StateField } from '@codemirror/state';
   import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter, Decoration, ViewPlugin, MatchDecorator } from '@codemirror/view';
   import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
   import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
@@ -10,6 +10,7 @@
   import { tags } from '@lezer/highlight';
   import { languageExtension } from '../core/languages.js';
   import { getLanguageFromFile, getSyntaxStyleString } from '../core/preferences.js';
+  import { clampHighlightLines, planEditorUpdate } from '../core/editor-update.js';
   import logoUrl from '../../resource/Logo NiZyLa.svg';
 
   export let file = null;
@@ -21,6 +22,19 @@
   export let searchLine = null;
   export let readOnly = false;
   export let onchange = null;
+  export let highlightLines = []; 
+
+  const setHighlightLines = StateEffect.define();
+  const lineHighlightField = StateField.define({
+    create: (state) => lineDecorations(state, highlightLines),
+    update: (decorations, transaction) => {
+      for (const effect of transaction.effects) {
+        if (effect.is(setHighlightLines)) return lineDecorations(transaction.state, effect.value);
+      }
+      return transaction.docChanged ? decorations.map(transaction.changes) : decorations;
+    },
+    provide: (field) => EditorView.decorations.from(field)
+  });
 
   const dispatch = createEventDispatcher();
   let host;
@@ -29,6 +43,7 @@
   let lastShowLineNumbers = true;
   let lastSearchHighlight = '';
   let lastSearchLine = null;
+  let lastHighlightKey = '';
   let markdownMenu = null;
   let tablePicker = false;
   let tableSize = { columns: 2, rows: 2 };
@@ -38,20 +53,46 @@
   $: currentLang = getLanguageFromFile(file?.name);
   $: syntaxStyle = getSyntaxStyleString(currentLang, theme, preferences);
 
-  $: if (view && (file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers || searchHighlight !== lastSearchHighlight || searchLine !== lastSearchLine)) {
-    const fileChanged = file?.path !== lastFilePath || showLineNumbers !== lastShowLineNumbers || searchHighlight !== lastSearchHighlight;
+  $: if (view) {
+    const nextHighlightKey = normalizedHighlightLines(highlightLines).join(',');
+    const actions = planEditorUpdate(
+      {
+        path: lastFilePath,
+        showLineNumbers: lastShowLineNumbers,
+        searchHighlight: lastSearchHighlight,
+        searchLine: lastSearchLine,
+        content,
+        docText: view.state.doc.toString(),
+        highlightKey: lastHighlightKey
+      },
+      {
+        path: file?.path ?? null,
+        showLineNumbers,
+        searchHighlight,
+        searchLine,
+        content,
+        docText: view.state.doc.toString(),
+        highlightKey: nextHighlightKey
+      }
+    );
+    const highlightChanged = nextHighlightKey !== lastHighlightKey;
     lastFilePath = file?.path ?? null;
     lastShowLineNumbers = showLineNumbers;
     lastSearchHighlight = searchHighlight;
     lastSearchLine = searchLine;
-    if (fileChanged) {
+    if (actions.includes('setState')) {
       view.setState(createState(content));
+    } else if (actions.includes('replaceContent')) {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: content },
+        effects: actions.includes('setHighlights') ? setHighlightLines.of(highlightLines) : []
+      });
+    } else if (actions.includes('setHighlights')) {
+      view.dispatch({ effects: setHighlightLines.of(highlightLines) });
     }
-    revealSearchTarget();
-  } else if (view && content !== view.state.doc.toString()) {
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: content }
-    });
+    lastHighlightKey = nextHighlightKey;
+    if (highlightChanged) scrollToFirstHighlight();
+    if (actions.includes('revealSearch')) revealSearchTarget();
   }
 
   const customHighlightStyle = HighlightStyle.define([
@@ -104,6 +145,7 @@
     window.addEventListener('pointerdown', closeMenu);
     lastFilePath = file?.path ?? null;
     lastShowLineNumbers = showLineNumbers;
+    lastHighlightKey = normalizedHighlightLines(highlightLines).join(',');
     view = new EditorView({
       parent: host,
       state: createState(content)
@@ -226,6 +268,22 @@
     });
   }
 
+  function normalizedHighlightLines(lines) {
+    return [...new Set((Array.isArray(lines) ? lines : []).filter((line) => Number.isInteger(line) && line > 0))].sort((a, b) => a - b);
+  }
+
+  function lineDecorations(state, lines) {
+    const decorations = clampHighlightLines(lines, state.doc.lines)
+      .map((line) => Decoration.line({ class: 'cm-gcn-node-line' }).range(state.doc.line(line).from));
+    return Decoration.set(decorations, true);
+  }
+
+  function scrollToFirstHighlight() {
+    if (!view) return;
+    const firstLine = clampHighlightLines(highlightLines, view.state.doc.lines)[0];
+    if (firstLine) view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.line(firstLine).from, { y: 'nearest' }) });
+  }
+
   function createState(doc) {
     return EditorState.create({
       doc,
@@ -233,6 +291,7 @@
         ...(showLineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : []),
         drawSelection(),
         ...(readOnly ? [EditorState.readOnly.of(true)] : []),
+        lineHighlightField,
         history(),
         indentOnInput(),
         bracketMatching(),

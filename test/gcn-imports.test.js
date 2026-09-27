@@ -1,12 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nodeDefinitions, validateGeometryDocument, createGeometryDocument, serializeGeometryDocument, parseGeometryDocument } from '../src/core/geometry.js';
-import { extractGcnExports, resolveGcnImportClosure } from '../src/core/gcn-imports.js';
+import { extractGcnExports, gcnModuleName, planGcnDrop, resolveGcnImportClosure } from '../src/core/gcn-imports.js';
 const gcn = (path='a.gcn', alias='a') => ({id:`i-${alias}`,type:'import',position:{x:0,y:0},data:{importType:'gcn',path,alias}});
 const diagCodes = doc => validateGeometryDocument(doc).filter(d=>d.code.startsWith('gcn-'));
 const docWith = (...nodes) => { const d=createGeometryDocument('python'); d.nodes.push(...nodes); return d; };
 const ref = (id, extra={}) => ({id,type:'functionCall',position:{x:1,y:1},data:{targetId:'',importNodeId:id,name:'f',argumentNames:[],...extra}});
 const func = (id='f', graph=null, more={}) => ({id,type:'functionDef',position:{x:1,y:1},data:{name:'f',parameters:[],returnType:'any',isStatic:false,graph,...more}});
+
+test('module names strip every Geometry Code extension', () => {
+  for (const extension of ['.gcpy', '.gcgd', '.gcn']) assert.deepEqual(gcnModuleName('', `lib/shape${extension}`), { module: 'lib.shape' });
+});
+
+test('gcpy to python drop is accepted and gcgd to python is refused by extension', () => {
+  const args = { importerPath: '/project/main.gcpy', projectRoot: '/project', target: 'python', droppedPaths: ['/project/lib/a.gcpy', '/project/lib/b.gcgd'], docTargets: new Map([['/project/lib/a.gcpy', 'python']]) };
+  const result = planGcnDrop(args);
+  assert.deepEqual(result.adds.map((item) => item.path), ['lib/a.gcpy']);
+  assert.ok(result.toasts.some((toast) => toast.includes('b.gcgd')));
+});
 
 test('gcn import and cross-file references have schema defaults', () => {
   assert.equal(nodeDefinitions.import.defaults.importType, 'module');

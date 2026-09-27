@@ -1,3 +1,14 @@
+export function pointInRect(point, rect) {
+  return !!point
+    && point.x > rect.left && point.x < rect.left + rect.width
+    && point.y > rect.top && point.y < rect.top + rect.height;
+}
+
+export function addMenuAnchor({ pointer, canvasRect }) {
+  const center = { x: canvasRect.left + canvasRect.width / 2, y: canvasRect.top + canvasRect.height / 2 };
+  return pointInRect(pointer, canvasRect) ? pointer : center;
+}
+
 export function geometryContextMenuItems({ kind, selectedTypes = [] } = {}) {
   if (kind === 'empty') return [
     { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', enabled: true },

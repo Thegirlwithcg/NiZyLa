@@ -1,5 +1,6 @@
 import { getNodePorts, validateGeometryDocument, migrateV1ToV2, parseTemplate, LOOP_VARIABLE_NODE_TYPES } from './geometry.js';
 import { gcnModuleName, gcnImportDiagnostics } from './gcn-imports.js';
+import { GEOMETRY_FILE_RE } from './geometry-files.js';
 
 // Limits keep output inside what Python (100 indent levels, 200 nested parentheses) accepts.
 const MAX_BLOCK_DEPTH = 50;
@@ -895,7 +896,7 @@ function generate(doc, target, options = {}) {
     if (gcnNodes.length > 0 && lines[lines.length - 1] !== '') emptyLine();
     for (const node of gcnNodes) {
       if (context.lenient && context.errorNodeIds.has(node.id)) continue;
-      const path = String(node.data?.path || '').replace(/\.gcn$/, '.gd');
+      const path = String(node.data?.path || '').replace(GEOMETRY_FILE_RE, '.gd');
       const alias = node.data?.alias || 'module';
       emitLine(0, `const ${alias} = preload("${path}")`, node.id);
       importsEmitted++;

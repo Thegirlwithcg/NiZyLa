@@ -759,6 +759,10 @@ button.primary, button.active { background: var(--accent); border-color: var(--a
 .tab.muted { color: var(--muted); }
 .editor-host { height: 100%; min-height: 0; }
 .editor-host.hidden { display: none; }
+.cm-gcn-node-line {
+  background: color-mix(in srgb, var(--gcn-selected) 22%, transparent) !important;
+  box-shadow: inset 2px 0 var(--gcn-selected);
+}
 .editor-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: 14px; text-align: center; color: var(--muted); }
 .editor-empty img { width: min(260px, 34vw); height: min(260px, 34vw); object-fit: contain; filter: drop-shadow(0 16px 32px color-mix(in srgb, var(--accent) 24%, transparent)); }
 .editor-empty h1 { margin: 0; font-size: 54px; color: var(--text); text-shadow: 0 0 40px color-mix(in srgb, var(--accent) 30%, transparent); }

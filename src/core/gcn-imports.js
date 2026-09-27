@@ -1,3 +1,5 @@
+import { GEOMETRY_FILE_RE, isGeometryPath, targetForGeometryPath } from './geometry-files.js';
+
 const posix = (value) => {
   const input = String(value || '').replace(/\\/g, '/');
   const absolute = input.startsWith('/');
@@ -28,7 +30,7 @@ export function gcnModuleName(importerRelDir = '', path = '') {
   const normalized = posix(`${importerRelDir}/${path}`);
   const relative = normalized.replace(/^\.\//, '');
   if (relative === '..' || relative.startsWith('../')) return { error: `Import path escapes the project root: ${path}.` };
-  const withoutExtension = relative.endsWith('.gcn') ? relative.slice(0, -4) : relative;
+  const withoutExtension = isGeometryPath(relative) ? relative.replace(GEOMETRY_FILE_RE, '') : relative;
   const segments = withoutExtension.split('/').filter(Boolean);
   for (const segment of segments) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(segment) || pythonKeywords.has(segment)) {
@@ -39,7 +41,7 @@ export function gcnModuleName(importerRelDir = '', path = '') {
 }
 const basename = value => posix(value).split('/').filter(Boolean).pop() || '';
 export function gcnAliasFor(fileName, takenNames = new Set()) {
-  const stem = basename(fileName).replace(/\.gcn$/i, '');
+  const stem = basename(fileName).replace(GEOMETRY_FILE_RE, '');
   let alias = stem.replace(/[^A-Za-z0-9_]/g, '_');
   if (!alias) alias = 'module';
   if (/^[0-9]/.test(alias)) alias = `_${alias}`;
@@ -83,7 +85,7 @@ export function planGcnDrop({ importerPath, projectRoot, target, droppedPaths = 
   for (const item of existingImports || []) normalizedMap.set(posix(item.path || ''), item.nodeId);
   const validPaths = [];
   for (const dropped of droppedPaths) {
-    if (!/\.gcn$/i.test(String(dropped || ''))) invalid.push(dropName(dropped));
+    if (!isGeometryPath(String(dropped || ''))) invalid.push(dropName(dropped));
     else validPaths.push(dropped);
   }
   if (!importerPath) {
@@ -102,6 +104,8 @@ export function planGcnDrop({ importerPath, projectRoot, target, droppedPaths = 
     if (!root || !inside(keyPath(file), keyPath(root))) { toasts.push(`File must be inside the open project folder: ${name}`); continue; }
     if (pathEqual(file, importer)) { toasts.push('A file cannot import itself'); continue; }
     const relPath = relativePosix(root, file);
+    const extensionTarget = targetForGeometryPath(file);
+    if (extensionTarget && extensionTarget !== target) { toasts.push(`Target mismatch: ${name} is ${extensionTarget}`); continue; }
     const docTarget = docTargets.has(dropped) ? docTargets.get(dropped) : docTargets.get(file);
     if (docTarget === null || docTarget === undefined) { toasts.push(`Cannot read ${name}`); continue; }
     if (docTarget !== target) { toasts.push(`Target mismatch: ${name} is ${docTarget}`); continue; }
@@ -211,12 +215,12 @@ export async function buildGcnBuildPlan({ entryPath, entryDoc, projectRoot, read
   const deps = [];
   const extension = target === 'gdscript' ? '.gd' : '.py';
   const entryName = projectRoot ? entryRelPath : (posix(entryPath || '').split('/').pop() || 'main.gcn');
-  const entryOutPath = entryName.replace(/\.gcn$/, extension);
+  const entryOutPath = entryName.replace(GEOMETRY_FILE_RE, extension);
   for (const file of closure.files) {
     const depImporterRelDir = dirnamePosix(file.relPath);
     const result = generate(file.doc, target, { importerRelDir: depImporterRelDir });
     for (const message of codegenErrors(result)) problems.push(`${file.relPath}: ${message}`);
-    if (result?.code !== null && result?.code !== undefined) deps.push({ relPath: file.relPath, outPath: file.relPath.replace(/\.gcn$/, extension), code: result.code });
+    if (result?.code !== null && result?.code !== undefined) deps.push({ relPath: file.relPath, outPath: file.relPath.replace(GEOMETRY_FILE_RE, extension), code: result.code });
   }
   if (problems.length > 0) return { ok: false, error: problems.join('\n') };
   return { ok: true, importerRelDir, entryCode: entryResult.code, entryOutPath, deps };
@@ -247,6 +251,11 @@ export async function resolveGcnImportClosure({entryPath, entryDoc, projectRoot,
     if(current.index>=imports.length) { states.set(current.key,'done'); stack.pop(); continue; }
     const node=imports[current.index++], dir=current.relPath.includes('/')?current.relPath.slice(0,current.relPath.lastIndexOf('/')+1):'';
     const raw=String(node.data?.path||'');
+    const extensionTarget = targetForGeometryPath(raw);
+    if (extensionTarget && extensionTarget !== entryDoc.target) {
+      diagnostic('gcn-import-target-mismatch',`Target mismatch in ${raw}.`,file,node.id);
+      continue;
+    }
     const nextRel=posix(dir+raw);
     const file=current.relPath;
     if(nextRel===current.relPath) { diagnostic('gcn-import-self','A file cannot import itself.',file,node.id); continue; }

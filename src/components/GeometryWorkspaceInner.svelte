@@ -24,10 +24,11 @@
   import '@xyflow/svelte/dist/style.css';
   import { nodeDefinitions, parseGeometryDocument } from '../core/geometry.js';
   import { isShortcut } from '../core/shortcuts.js';
-  import { geometryContextMenuItems } from '../core/geometry-context-menu.js';
+  import { addMenuAnchor, geometryContextMenuItems, pointInRect } from '../core/geometry-context-menu.js';
+  import { isGeometryPath } from '../core/geometry-files.js';
   import { layoutGraph } from '../core/geometry-layout.js';
   import { generateGeometryCode, generateGeometryPreview } from '../core/geometry-codegen.js';
-  import { getPreviewStatus } from '../core/geometry-preview-status.js';
+  import { getPreviewStatus, previewLinesForNodes } from '../core/geometry-preview-status.js';
   import { nodeHelp } from '../core/node-help.js';
   import { THEME_PRESETS } from '../core/preferences.js';
   import { extractGcnExports, importerRelDirFor, planGcnDrop, resolveGcnImportPath, sameFilePath } from '../core/gcn-imports.js';
@@ -109,7 +110,7 @@
   let suppressNextContextMenu = false;
   let canvasEl = $state();
   let addButton = $state();
-  let pointer = null;
+  let lastPointer = null;
   let noticeTimer;
   const savedLayout = (() => {
     try { return JSON.parse(localStorage.getItem('nizyla.gcnLayout') || '{}'); } catch { return {}; }
@@ -169,6 +170,7 @@
 
   const selectedNode = $derived(nodes.find((n) => n.selected));
   const selectedNodes = $derived(nodes.filter((n) => n.selected));
+  const previewLines = $derived(previewLinesForNodes(usingLastGood ? lastGoodPreview : generated, selectedNodes.map((node) => node.id)));
   const isSingleNodeSelected = $derived(selectedNodes.length === 1);
   const singleSelectedNode = $derived(isSingleNodeSelected ? activeGraph.nodes.find((n) => n.id === selectedNodes[0].id) : null);
   const singleSelectedDef = $derived(singleSelectedNode ? nodeDefinitions[singleSelectedNode.type] : null);
@@ -244,7 +246,7 @@
       return;
     }
     const docTargets = new Map();
-    for (const file of paths.filter((item) => /\.gcn$/i.test(item))) {
+    for (const file of paths.filter((item) => isGeometryPath(item))) {
       try { docTargets.set(file, parseGeometryDocument(await api.readFile(file)).document?.target ?? null); } catch { docTargets.set(file, null); }
     }
     const rootImports = doc.nodes.filter((item) => item.type === 'import' && item.data?.importType === 'gcn');
@@ -304,8 +306,13 @@
     wasActive = active;
   });
 
+  function onwindowpointermove(e) {
+    lastPointer = { x: e.clientX, y: e.clientY };
+  }
+
   onMount(() => {
     ondraftchange?.(false, {});
+    window.addEventListener('pointermove', onwindowpointermove, { passive: true });
     hasMounted = true;
     wasActive = active;
     const onGcnSaved = (event) => {
@@ -340,6 +347,7 @@
     window.removeEventListener('pointermove', resizePanels);
     window.removeEventListener('pointerup', stopResizePanels);
     if (typeof window !== 'undefined') {
+      window.removeEventListener('pointermove', onwindowpointermove);
       window.removeEventListener('blur', onwindowblur);
       window.removeEventListener('contextmenu', onwindowcontextmenu, { capture: true });
       window.removeEventListener('pointerdown', onwindowpointerdowncapture, { capture: true });
@@ -444,6 +452,10 @@
 
   $effect(() => {
     if (!freshConversion || measuredFreshLayoutDone || !nodes.length) return;
+    if (editor.past.length > 0) {
+      measuredFreshLayoutDone = true;
+      return;
+    }
     const measured = nodes.filter((n) => n.measured?.width && n.measured?.height);
     if (measured.length !== nodes.length) return;
     const graph = structuredClone(activeGraph);
@@ -755,7 +767,7 @@
         say(`Removed unused variable "${v.name}". Undo restores it.`);
       }
     }
-    canvasEl?.focus();
+    canvasEl?.focus({ preventScroll: true });
   }
 
   function placeGrab() {
@@ -777,7 +789,7 @@
       applyScoped(() => nextGraph, true);
     }
     finishEdit();
-    canvasEl?.focus();
+    canvasEl?.focus({ preventScroll: true });
   }
 
   function cancelGrab() {
@@ -789,7 +801,7 @@
     }
     setEditor(cancelEdit(editor));
     selectOnly(originalIds);
-    canvasEl?.focus();
+    canvasEl?.focus({ preventScroll: true });
   }
 
   async function duplicateSelection() {
@@ -801,13 +813,14 @@
       return;
     }
 
-    if (!pointer) {
+    const canvasRect = canvasEl?.getBoundingClientRect();
+    if (!pointInRect(lastPointer, canvasRect || { left: 0, top: 0, width: 0, height: 0 })) {
       const result = duplicateNodes(activeGraph, nonStartIds, { x: 40, y: 40 });
       if (!result) return;
       applyScoped(() => result.doc);
       await tick();
       selectOnly(result.nodeIds);
-      canvasEl?.focus();
+      canvasEl?.focus({ preventScroll: true });
       return;
     }
 
@@ -823,10 +836,10 @@
       ids: result.nodeIds,
       originalIds: nonStartIds,
       origins,
-      startFlow: flow.screenToFlowPosition(pointer)
+      startFlow: flow.screenToFlowPosition(lastPointer)
     };
     say('Move to place · Click / Enter = place · Esc / Right-click = cancel');
-    canvasEl?.focus();
+    canvasEl?.focus({ preventScroll: true });
   }
 
   function getAccessibleVariables(targetDoc = doc, targetScope = scopePathIds) {
@@ -868,8 +881,7 @@
     if (!text) return;
 
     const box = canvasEl.getBoundingClientRect();
-    const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-    const anchorScreen = pointer ?? center;
+    const anchorScreen = addMenuAnchor({ pointer: lastPointer, canvasRect: box });
     const anchorFlow = flow.screenToFlowPosition(anchorScreen);
 
     let result;
@@ -881,7 +893,7 @@
       return;
     }
 
-    if (!result) return; // Non-.gcn text stays a silent no-op
+    if (!result) return; // Non-Geometry Code text stays a silent no-op
     if (result.error) {
       say(result.error, true);
       return;
@@ -895,7 +907,7 @@
     const nodeCount = result.nodeIds.length;
     const varMsg = varCount > 0 ? ` (+${varCount} variable${varCount === 1 ? '' : 's'})` : '';
     say(`Pasted ${nodeCount} node${nodeCount === 1 ? '' : 's'}${varMsg}`);
-    canvasEl?.focus();
+    canvasEl?.focus({ preventScroll: true });
   }
 
   function connect(connection) {
@@ -920,17 +932,17 @@
     const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
     if (fromButton) {
       const b = addButton.getBoundingClientRect();
-      menu = { x: b.left, y: b.bottom + 4, at: center };
+      menu = { x: b.left, y: b.bottom + 4, flowAt: flow.screenToFlowPosition(center) };
     } else {
-      const at = pointer ?? center;
-      menu = { x: at.x + 8, y: at.y + 8, at };
+      const at = addMenuAnchor({ pointer: lastPointer, canvasRect: box });
+      menu = { x: at.x + 8, y: at.y + 8, flowAt: flow.screenToFlowPosition(at) };
     }
   }
 
   async function pick(presetId) {
-    const at = menu.at;
+    const at = menu.flowAt;
     menu = null;
-    const result = addNode(activeGraph, presetId, flow.screenToFlowPosition(at));
+    const result = addNode(activeGraph, presetId, { x: at.x - 20, y: at.y - 14 });
     if (!result) return;
     applyScoped(() => result.doc);
     await tick();
@@ -943,13 +955,13 @@
         input.select();
       }
     } else {
-      canvasEl.focus();
+      canvasEl.focus({ preventScroll: true });
     }
   }
 
   function closeMenu() {
     menu = null;
-    canvasEl?.focus();
+    canvasEl?.focus({ preventScroll: true });
   }
 
   // ---- keyboard --------------------------------------------------------------------------------
@@ -1097,7 +1109,7 @@
     if (!nodeId && !edgeId) return;
     selectOnly(nodeId ? [nodeId] : [], edgeId ? [edgeId] : []);
     if (nodeId) await flow.fitView({ nodes: [{ id: nodeId }], maxZoom: 1.2, padding: 0.6, duration: 250 });
-    canvasEl.focus();
+    canvasEl.focus({ preventScroll: true });
   }
 
   async function copyCode() {
@@ -1126,9 +1138,9 @@
   }
 
   function oncanvaspointermove(e) {
-    pointer = { x: e.clientX, y: e.clientY };
+    lastPointer = { x: e.clientX, y: e.clientY };
     if (!grab) return;
-    const nowFlow = flow.screenToFlowPosition(pointer);
+    const nowFlow = flow.screenToFlowPosition(lastPointer);
     const dx = nowFlow.x - grab.startFlow.x;
     const dy = nowFlow.y - grab.startFlow.y;
     nodes = nodes.map((n) => {
@@ -1143,7 +1155,7 @@
     if (grab) return;
     event.preventDefault();
     event.stopPropagation();
-    pointer = { x: event.clientX, y: event.clientY };
+    lastPointer = { x: event.clientX, y: event.clientY };
     if (nodeId && !nodes.find((n) => n.id === nodeId)?.selected) selectOnly([nodeId]);
     contextMenu = { x: event.clientX, y: event.clientY, kind, nodeId };
     tick().then(() => document.querySelector('.gcn-geometry-context-menu button:not(:disabled)')?.focus());
@@ -1227,7 +1239,6 @@
       class:grabbing={!!grab}
       onpointerdowncapture={oncanvaspointerdowncapture}
       onpointermove={oncanvaspointermove}
-      onpointerleave={() => { if (!grab) pointer = null; }}
       ondragover={onCanvasDragOver}
       ondrop={onCanvasDrop}
       oncontextmenu={oncanvascontextmenu}>
@@ -1409,7 +1420,7 @@
             <button onclick={copyCode} disabled={!canCopy}>Copy Code</button>
           </div>
           <div class="gcn-preview-box" style={`--editor-font-size:${previewBaseFontSize * gcnLayout.previewZoom / 100}px`}>
-            <CodeEditor file={previewFile} content={generated.code || ''} readOnly={true} {showLineNumbers} {theme} {preferences} />
+            <CodeEditor file={previewFile} content={generated.code || ''} readOnly={true} {showLineNumbers} {theme} {preferences} highlightLines={previewLines} />
             {#if usingLastGood && !lastGoodPreview.code}<div class="gcn-preview-blocked" role="status">{previewStatus.message}</div>{/if}
           </div>
           {#if copyResult}<p class="gcn-copy" role="status">{copyResult}</p>{/if}
@@ -1422,7 +1433,7 @@
     <GeometryAddMenu x={menu.x} y={menu.y} onpick={pick} onclose={closeMenu} />
   {/if}
 
-  <dialog bind:this={codeDialogEl} class="gcn-code-dialog" onclose={() => { finishEdit(); codeModalNodeId = null; canvasEl?.focus(); }}>
+  <dialog bind:this={codeDialogEl} class="gcn-code-dialog" onclose={() => { finishEdit(); codeModalNodeId = null; canvasEl?.focus({ preventScroll: true }); }}>
     {#if codeModalNode}
       {@const ext = doc.target === 'gdscript' ? 'gd' : 'py'}
       {@const title = codeModalNode.data?.title || 'Code'}

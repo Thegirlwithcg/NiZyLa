@@ -14,6 +14,7 @@
   import { loadPreferences, applyPreferences, savePreferences, THEME_PRESETS, applyThemePreset } from './core/preferences.js';
   import { repathTab } from './core/session-config.js';
   import { isShortcut } from './core/shortcuts.js';
+  import { geometryExtension, isGeometryPath, targetForGeometryPath, withGeometryExtension } from './core/geometry-files.js';
 
   const api = globalThis.nizyla;
   const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
@@ -72,6 +73,7 @@
   let showLineNumbers = localStorage.getItem('nizyla.lineNumbers') !== 'false';
   let createDialog = null;
   let createPath = '';
+  let geometryCreateTarget = 'python';
   let createParent = null;
   let createInput;
   let createBusy = false;
@@ -213,11 +215,13 @@
     const relativePath = project?.rootPath && filePath.startsWith(project.rootPath)
       ? filePath.slice(project.rootPath.length).replace(/^[/\\]/, '')
       : fileName;
+    const extensionTarget = targetForGeometryPath(filePath);
+    const effectiveDoc = extensionTarget && extensionTarget !== parsedDoc.target ? { ...parsedDoc, target: extensionTarget } : parsedDoc;
     const newTab = {
       id: filePath,
       kind: 'geometry',
       file: { name: fileName, path: filePath, relativePath, type: 'file' },
-      doc: parsedDoc,
+      doc: effectiveDoc,
       baseline: parsedDoc,
       documentKey: crypto.randomUUID(),
       hasDrafts: false,
@@ -235,7 +239,9 @@
 
     const errCount = diagnostics.filter((d) => d.severity === 'error').length;
     const warnCount = diagnostics.filter((d) => d.severity === 'warning').length;
-    if (errCount > 0) {
+    if (extensionTarget && extensionTarget !== parsedDoc.target) {
+      status = `Target set to ${extensionTarget === 'python' ? 'Python' : 'GDScript'} from file extension`;
+    } else if (errCount > 0) {
       status = `Opened ${fileName} with ${errCount} graph error(s) (Export disabled)`;
     } else if (warnCount > 0) {
       status = `Opened ${fileName} with ${warnCount} warning(s)`;
@@ -298,12 +304,13 @@
     }
   }
 
-  async function handleNewGeometryCode() {
+  async function handleNewGeometryCode(target = 'python') {
     if (createBusy || createDialog) return;
     if (!project) {
       status = 'Please open a project folder before creating Geometry Code.';
       return;
     }
+    geometryCreateTarget = target;
     openCreateDialog('geometry');
   }
 
@@ -361,7 +368,7 @@
       }
 
       const unattachedNotice = Number(res.unattachedComments) > 0 ? ` ${res.unattachedComments} comments could not be attached.` : '';
-      const targetPath = file.path.replace(/\.(py|gd)$/i, '.gcn');
+      const targetPath = file.path.replace(/\.(py|gd)$/i, (extension) => geometryExtension(extension.toLowerCase() === '.gd' ? 'gdscript' : 'python'));
       const normTarget = targetPath.replace(/\\/g, '/').toLowerCase();
 
       // Find a tab with the same normalized target path in ANY pane
@@ -390,7 +397,7 @@
         }
 
         const fileName = targetPath.split(/[/\\]/).pop();
-        const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
+        const relativePath = file.relativePath.replace(/\.(py|gd)$/i, (extension) => geometryExtension(extension.toLowerCase() === '.gd' ? 'gdscript' : 'python'));
         const updatedTab = {
           ...existingTab,
           file: { name: fileName, path: targetPath, relativePath, type: 'file' },
@@ -420,10 +427,10 @@
           panes = panes.map((p) => p.id === targetPane.id ? { ...p, zIndex: topZIndex } : p);
           activeFloatingWindow = `editor-${targetPane.id}`;
         }
-        status = `Converted ${file.name} successfully! Replaced unsaved .gcn${unattachedNotice}`;
+        status = `Converted ${file.name} successfully! Replaced unsaved Geometry Code${unattachedNotice}`;
       } else {
         const fileName = targetPath.split(/[/\\]/).pop();
-        const relativePath = file.relativePath.replace(/\.(py|gd)$/i, '.gcn');
+        const relativePath = file.relativePath.replace(/\.(py|gd)$/i, (extension) => geometryExtension(extension.toLowerCase() === '.gd' ? 'gdscript' : 'python'));
         const newTab = {
           id: targetPath,
           kind: 'geometry',
@@ -442,7 +449,7 @@
           tabs: [...p.tabs.filter((t) => t.id !== targetPath), newTab]
         } : p);
         activePaneId = targetPane.id;
-        status = `Converted ${file.name} successfully! Opened as unsaved .gcn${unattachedNotice}`;
+        status = `Converted ${file.name} successfully! Opened as unsaved Geometry Code${unattachedNotice}`;
       }
     } catch (err) {
       conversionDialog = { title: `Cannot convert ${file.name}`, error: `The conversion failed: ${err.message}.` };
@@ -527,7 +534,7 @@
       return;
     }
     try {
-      const defaultName = tab.file?.path ? tab.file.path.split(/[/\\]/).pop().replace(/\.gcn$/i, '') : 'main';
+      const defaultName = tab.file?.path ? tab.file.path.split(/[/\\]/).pop().replace(/\.(gcpy|gcgd|gcn)$/i, '') : 'main';
       const res = await api.exportGeometryFile({
         defaultFileName: defaultName,
         defaultDirectory: activeExplorerFolder?.path,
@@ -1187,7 +1194,7 @@
 
   async function selectFile(entry, targetPaneId = activePaneId) {
     if (entry.type !== 'file' && entry.type !== 'symbol') return;
-    if (entry.path?.toLowerCase().endsWith('.gcn')) {
+    if (isGeometryPath(entry.path)) {
       await openGeometryFile(entry.path, targetPaneId);
       return;
     }
@@ -1705,6 +1712,7 @@
     if (!project) return;
     createDialog = type;
     createParent = parent;
+    geometryCreateTarget = type === 'geometry-save' ? (savingGeometryTab?.doc?.target || 'python') : geometryCreateTarget;
     createPath = type === 'geometry-save' && savingGeometryTab?.file?.name ? savingGeometryTab.file.name : '';
     await tick();
     createInput?.focus();
@@ -1732,7 +1740,7 @@
   }
 
   function tabKindForPath(filePath) {
-    return /\.gcn$/i.test(filePath) ? 'geometry' : 'file';
+    return isGeometryPath(filePath) ? 'geometry' : 'file';
   }
 
   function repathOpenTabs(oldPath, newPath, newRelativePath) {
@@ -1857,17 +1865,25 @@
     createBusy = true;
     try {
       if (createDialog === 'geometry' || savingGraph) {
-        const gcnName = name.toLowerCase().endsWith('.gcn') ? name : `${name}.gcn`;
-        const filePath = `${parent.path}/${gcnName}`;
+        const typedTarget = targetForGeometryPath(name);
+        if (createDialog === 'geometry' && /\.gcn$/i.test(name)) {
+          status = 'Use .gcpy or .gcgd';
+          return;
+        }
         const targetTab = savingGraph ? savingGeometryTab : null;
-        const initialDoc = targetTab ? targetTab.doc : createGeometryDocument();
+        const selectedTarget = typedTarget || targetTab?.doc?.target || geometryCreateTarget;
+        const geometryName = savingGraph && /\.gcn$/i.test(name) ? name : withGeometryExtension(name, selectedTarget);
+        const filePath = `${parent.path}/${geometryName}`;
+        const initialDoc = targetTab
+          ? (typedTarget && typedTarget !== targetTab.doc.target ? { ...targetTab.doc, target: typedTarget } : targetTab.doc)
+          : createGeometryDocument(selectedTarget);
         const initialContent = serializeGeometryDocument(initialDoc);
         await api.createGeometryFile(filePath, initialContent);
 
         const file = {
-          name: gcnName.split('/').pop(),
+          name: geometryName.split('/').pop(),
           path: filePath,
-          relativePath: parent.path === project.rootPath ? gcnName : `${parent.relativePath}/${gcnName}`,
+          relativePath: parent.path === project.rootPath ? geometryName : `${parent.relativePath}/${geometryName}`,
           type: 'file',
           previewType: 'geometry'
         };
@@ -1913,7 +1929,7 @@
         }
 
         const refreshError = await refreshFileProject(filePath);
-        status = refreshError || `Saved Geometry Code ${gcnName.split('/').pop()} successfully.`;
+        status = refreshError || `Saved Geometry Code ${geometryName.split('/').pop()} successfully.`;
         createBusy = false;
         closeCreateDialog(true);
         return;
@@ -2353,7 +2369,7 @@
           <button on:click={() => handleExportGeometry(activeTab)} disabled={!canExportTab(activeTab)} title="Export Python / GDScript">Export</button>
           <button on:click={closeGeometryGraph} title="Close the current Geometry Code Node">Close Node</button>
         {:else if activeFile && /\.(py|gd)$/i.test(activeFile.name)}
-          <button class="primary" disabled={conversionBusy} on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code (.gcn)">⇄ Convert to .gcn</button>
+          <button class="primary" disabled={conversionBusy} on:click={() => handleConvertSourceToGeometry(activeFile)} title="Convert to Geometry Code">⇄ Convert to Geometry Code</button>
         {/if}
         <button class="primary" on:click={handleSave} disabled={!canSave}>Save</button>
       </div>
@@ -2759,7 +2775,7 @@
       </section>
     {/if}
 
-    <footer class="statusbar">{isGeometryTab(activeTab) ? `${activeTab.file?.name ?? 'scratch.gcn'}${isTabDirty(activeTab) ? ' •' : ''} · ` : ''}{status} · Ctrl/⌘P search · Ctrl/⌘\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
+    <footer class="statusbar">{isGeometryTab(activeTab) ? `${activeTab.file?.name ?? 'Scratch Graph'}${isTabDirty(activeTab) ? ' •' : ''} · ` : ''}{status} · Ctrl/⌘P search · Ctrl/⌘\ split · Ctrl/⌘` terminal · Ctrl/⌘G graph · Ctrl/⌘S save</footer>
 
     {#if contextMenu}
       <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
@@ -2773,7 +2789,7 @@
           <button on:click={() => openCreateFromContext('geometry')}>New Geometry Code</button>
           <button on:click={() => openCreateFromContext('folder')}>New Folder</button>
         {:else if contextMenu.entry.type === 'file' && /\.(py|gd)$/i.test(contextMenu.entry.name)}
-          <button disabled={conversionBusy} on:click={() => handleConvertSourceToGeometry(contextMenu.entry)}>Convert to Geometry Code (.gcn)</button>
+          <button disabled={conversionBusy} on:click={() => handleConvertSourceToGeometry(contextMenu.entry)}>Convert to Geometry Code</button>
         {/if}
         {#if contextMenu.entry.path !== project?.rootPath}
           <button class="danger" on:click={() => askDelete(contextMenu.entry)}>Delete {contextMenu.entry.type}</button>
@@ -2818,7 +2834,13 @@
         <form class="modal" on:submit|preventDefault={submitCreateDialog}>
           <h2>{createDialog === 'geometry-save' ? 'Save Geometry Code' : `Create ${createDialog === 'note' ? 'note' : createDialog === 'geometry' ? 'Geometry Code' : createDialog}`}</h2>
           <p>Path inside <strong>{createParent?.relativePath ?? project?.tree.name}</strong></p>
-          <input bind:this={createInput} bind:value={createPath} disabled={createBusy} placeholder={createDialog === 'folder' ? 'src/components' : createDialog === 'note' ? 'notes/my-note.md' : createDialog.startsWith('geometry') ? 'logic.gcn' : 'src/example.js'} />
+          {#if createDialog === 'geometry'}
+            <div class="modal-actions" aria-label="Geometry Code language">
+              <button type="button" class:primary={geometryCreateTarget === 'python'} on:click={() => (geometryCreateTarget = 'python')}>Python .gcpy</button>
+              <button type="button" class:primary={geometryCreateTarget === 'gdscript'} on:click={() => (geometryCreateTarget = 'gdscript')}>GDScript .gcgd</button>
+            </div>
+          {/if}
+          <input bind:this={createInput} bind:value={createPath} disabled={createBusy} placeholder={createDialog === 'folder' ? 'src/components' : createDialog === 'note' ? 'notes/my-note.md' : createDialog.startsWith('geometry') ? (geometryCreateTarget === 'gdscript' ? 'logic.gcgd' : 'logic.gcpy') : 'src/example.js'} />
           <div class="modal-actions">
             <button type="button" on:click={() => closeCreateDialog()} disabled={createBusy}>Cancel</button>
             <button class="primary" type="submit" disabled={createBusy}>{createDialog === 'geometry-save' ? 'Save' : 'Create'}</button>
@@ -2861,7 +2883,8 @@
       <div class="palette-backdrop" role="presentation" on:click={closePalette} on:keydown={(event) => event.key === 'Escape' && closePalette()}>
         <div class="palette" role="dialog" tabindex="-1" aria-label="Command palette" on:click|stopPropagation on:keydown|stopPropagation>
           <input bind:this={paletteInput} bind:value={query} placeholder="Search files or type a command..." />
-          <button on:click={() => { paletteOpen = false; handleNewGeometryCode(); }}>+ New Geometry Code (.gcn)</button>
+          <button on:click={() => { paletteOpen = false; handleNewGeometryCode('python'); }}>+ New Geometry Code (Python .gcpy)</button>
+          <button on:click={() => { paletteOpen = false; handleNewGeometryCode('gdscript'); }}>+ New Geometry Code (GDScript .gcgd)</button>
           <button on:click={() => { paletteOpen = false; showPreferences = true; }}>⚙ Preferences: Color Theme, Fonts & Syntax</button>
           {#each Object.values(THEME_PRESETS) as preset}
             <button on:click={() => { paletteOpen = false; setTheme(preset.id); }}>Theme: {preset.name}</button>

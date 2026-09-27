@@ -1,3 +1,5 @@
+import { isGeometryPath } from './geometry-files.js';
+
 export const valueTypes = ['int', 'float', 'string', 'bool'];
 export const variableTypes = [...valueTypes, 'list', 'dict'];
 export const VARIABLE_NODE_TYPES = ['getVariable', 'setVariable', 'forRange', 'forEach'];
@@ -706,8 +708,8 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
     }
     gcnAliases.add(alias);
     const path = node.data?.path;
-    if (typeof path !== 'string' || !path || !path.endsWith('.gcn') || path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
-      error('gcn-import-invalid-path', 'GCN import path must be a relative POSIX path ending in .gcn.', { nodeId: node.id });
+    if (typeof path !== 'string' || !path || !isGeometryPath(path) || path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
+      error('gcn-import-invalid-path', 'GCN import path must be a relative POSIX path ending in .gcpy, .gcgd, or .gcn.', { nodeId: node.id });
     }
   }
   const rootNodes = scopePath.length === 0 ? graph.nodes : null;

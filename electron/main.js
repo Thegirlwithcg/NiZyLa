@@ -13,6 +13,7 @@ import { discoverPlugins } from './plugins.js';
 import { parseGeometryDocument, serializeGeometryDocument, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import { buildGcnBuildPlan, planExportTargets } from '../src/core/gcn-imports.js';
+import { isGeometryPath } from '../src/core/geometry-files.js';
 import { buildRunnerScript } from './python-runner.js';
 import { CONVERT_LIMITS } from './convert-guard.js';
 import { serializeSessionState, validateRenameName, validateSessionState } from '../src/core/session-config.js';
@@ -60,8 +61,8 @@ function validateGcnPath(targetPath) {
   if (typeof targetPath !== 'string' || !targetPath.trim()) {
     throw new Error('Invalid file path');
   }
-  if (path.extname(targetPath).toLowerCase() !== '.gcn') {
-    throw new Error('File path must have .gcn extension');
+  if (!isGeometryPath(targetPath)) {
+    throw new Error('File path must have .gcpy, .gcgd, or .gcn extension');
   }
   if (!isPathInsideProject(targetPath, knownProjectRoots)) {
     throw new Error('File path must be located inside an open project');
@@ -78,7 +79,7 @@ function validateSender(event) {
 async function writeGcnAtomic(targetPath, content) {
   const resolved = path.resolve(targetPath);
   const dir = path.dirname(resolved);
-  const tempPath = path.join(dir, `.tmp_${randomUUID()}.gcn`);
+  const tempPath = path.join(dir, `.tmp_${randomUUID()}${path.extname(resolved).toLowerCase()}`);
   let handle;
   try {
     handle = await fs.open(tempPath, 'wx');
@@ -99,7 +100,7 @@ async function writeGcnAtomic(targetPath, content) {
 function writeGcnAtomicSync(targetPath, content) {
   const resolved = path.resolve(targetPath);
   const dir = path.dirname(resolved);
-  const tempPath = path.join(dir, `.tmp_${randomUUID()}.gcn`);
+  const tempPath = path.join(dir, `.tmp_${randomUUID()}${path.extname(resolved).toLowerCase()}`);
   try {
     fsSync.writeFileSync(tempPath, content, { flag: 'wx', encoding: 'utf8' });
     fsSync.renameSync(tempPath, resolved);
