@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createGeometryDocument, nodeDefinitions, serializeGeometryDocument, serializeNode, validateGeometryDocument } from '../src/core/geometry.js';
 import { generateGeometryCode } from '../src/core/geometry-codegen.js';
 import {
-  HISTORY_LIMIT, addEdge, addNode, addNodeAtScope, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment,
+  HISTORY_LIMIT, addEdge, addNode, addNodeAtScope, addVariable, applyEdit, cancelEdit, checkConnection, computePorts, copyFragment, startAddGrab,
   createEditorState, deleteVariable, duplicateNodes, endEdit, filterNodePresetsForTarget, importTypeOptionsForTarget, moveNodes, nodePresets, pasteFragment, positionsFromFlow,
   pruneOrphanVariables, redo,
   removeItems, contentKey, sameContent, sameDocument, setLiteralType, setNodeData, setTarget, setViewport, syncFunctionCalls, undo, updateVariable, variableUsage, removeFunctionParameter
@@ -755,6 +755,12 @@ test('variableUsage counts forEach and copy/pasteFragment remaps forEach variabl
   assert.equal(pastedNode.type, 'forEach');
   assert.equal(pastedNode.data.variableId, 'diff_item_id');
   assert.equal(variableUsage(pasted.doc, 'diff_item_id'), 1);
+});
+
+test('startAddGrab anchors a new node at the pointer flow position', () => {
+  assert.deepEqual(startAddGrab({ nodeId: 'new', position: { x: 12, y: 26 }, pointerFlow: { x: 32, y: 40 } }), {
+    ids: ['new'], originalIds: [], origins: { new: { x: 12, y: 26 } }, startFlow: { x: 32, y: 40 }
+  });
 });
 
 test('language-specific presets and import options follow the document target', () => {

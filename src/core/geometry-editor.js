@@ -253,6 +253,15 @@ export function importTypeOptionsForTarget(target) {
 const uuid = () => globalThis.crypto.randomUUID();
 const finitePoint = (p) => ({ x: Number.isFinite(p?.x) ? Math.round(p.x) : 0, y: Number.isFinite(p?.y) ? Math.round(p.y) : 0 });
 
+export function startAddGrab({ nodeId, position, pointerFlow }) {
+  return {
+    ids: [nodeId],
+    originalIds: [],
+    origins: { [nodeId]: { x: position.x, y: position.y } },
+    startFlow: { x: pointerFlow.x, y: pointerFlow.y }
+  };
+}
+
 /** Returns { doc, nodeId } or null for an unknown preset. Start is never offered. */
 export function addNode(doc, presetId, position, { target } = {}) {
   const effectiveTarget = target ?? doc?.target ?? 'python';
@@ -289,7 +298,14 @@ export function addGcnImports(doc, adds, position) {
     id: uuid(),
     type: 'import',
     position: { x: origin.x, y: origin.y + index * 90 },
-    data: { ...nodeDefinitions.import.defaults, importType: 'gcn', path: item.path, alias: item.alias }
+    data: {
+      ...nodeDefinitions.import.defaults,
+      importType: 'gcn',
+      path: item.path,
+      alias: item.alias,
+      style: doc?.target === 'python' ? 'from' : 'module',
+      names: doc?.target === 'python' ? [{ name: '*' }] : []
+    }
   }));
   return { doc: { ...doc, nodes: [...doc.nodes, ...nodes] }, nodeIds: nodes.map((item) => item.id) };
 }

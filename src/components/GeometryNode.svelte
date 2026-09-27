@@ -3,7 +3,7 @@
   import { Handle, Position, useUpdateNodeInternals } from '@xyflow/svelte';
   import { nodeDefinitions, VARIABLE_NODE_TYPES } from '../core/geometry.js';
   import { importTypeOptionsForTarget } from '../core/geometry-editor.js';
-  import { exportEntries } from '../core/gcn-imports.js';
+  import { exportEntries, gcnModuleName } from '../core/gcn-imports.js';
   import GeometryField from './GeometryField.svelte';
   import GeometryVariableFields from './GeometryVariableFields.svelte';
   import CodeEditor from './CodeEditor.svelte';
@@ -31,6 +31,23 @@
   const hasError = $derived(allDiagnostics.some((d) => d.severity === 'error'));
   const operatorLabels = { and: 'And', or: 'Or', not: 'Not' };
   const commentText = $derived(typeof node?.data?.comment === 'string' ? node.data.comment : '');
+  function toggleGcnName(name, checked) {
+    const names = (node.data?.names || []).map((item) => item.name);
+    const next = name === '*' && checked
+      ? ['*']
+      : checked
+        ? [...names.filter((item) => item !== '*'), name]
+        : names.filter((item) => item !== name);
+    ctx.setData(id, { names: next.map((item) => ({ name: item })) });
+  }
+  function gcnStatement() {
+    const module = gcnModuleName('', node.data?.path || '').module || 'module';
+    if (ctx.target === 'python' && (node.data?.style || 'module') === 'from') {
+      return `from ${module} import ${(node.data?.names || []).map((item) => item.name).join(', ') || '…'}`;
+    }
+    if (ctx.target === 'gdscript') return `const ${node.data?.alias || 'module'} = preload("${node.data?.path || ''}")`;
+    return `import ${module}${node.data?.alias ? ` as ${node.data.alias}` : ''}`;
+  }
 
   const PARAM_TYPES = ['any', 'int', 'float', 'string', 'bool', 'list', 'dict'];
   function getTypeOptions(current) {
@@ -264,20 +281,39 @@
         {#if node.data?.importType === 'gcn'}
           {@const importedExports = ctx.gcnExports?.get(node.data?.path)}
           {@const hasExports = ctx.gcnExports?.has(node.data?.path)}
-          <input aria-label="Import alias" value={node.data?.alias || ''} placeholder="alias"
-            oninput={onInputData('alias')} onblur={ctx.endEdit} spellcheck="false" />
+          {#if ctx.target !== 'python' || (node.data?.style || 'module') === 'module'}
+            <input aria-label="Import alias" value={node.data?.alias || ''} placeholder="alias"
+              oninput={onInputData('alias')} onblur={ctx.endEdit} spellcheck="false" />
+          {/if}
+          {#if ctx.target === 'python'}
+            <select aria-label="GCN import style" value={node.data?.style || 'module'} onchange={onSelectData('style')}>
+              <option value="module">import module</option>
+              <option value="from">from … import</option>
+            </select>
+          {/if}
           <span class="gcn-import-path" title={node.data?.path || ''}>{node.data?.path || ''}</span>
           <div class="gcn-import-status" class:error={hasExports && importedExports === null}>
             {#if !hasExports}Loading…{:else if importedExports === null}Cannot read file{:else}{importedExports.functions?.length || 0} functions · {importedExports.classes?.length || 0} classes{/if}
             <button type="button" aria-label="Reload imported file" onclick={() => ctx.refreshGcnExports()}>⟳</button>
           </div>
           {#if hasExports && importedExports}
+            {#if ctx.target === 'python' && (node.data?.style || 'module') === 'from'}
+              <div class="gcn-import-checklist">
+                <label><input type="checkbox" checked={(node.data?.names || []).some((item) => item.name === '*')}
+                  onchange={(event) => toggleGcnName('*', event.currentTarget.checked)} /> * (all)</label>
+                {#each exportEntries(importedExports, 'python') as row}
+                  <label><input type="checkbox" checked={(node.data?.names || []).some((item) => item.name === row.name)}
+                    onchange={(event) => toggleGcnName(row.name, event.currentTarget.checked)} /> {row.label}</label>
+                {/each}
+              </div>
+            {/if}
             <div class="gcn-import-list">
               {#each exportEntries(importedExports, ctx.target) as row, index}
                 <button type="button" disabled={row.disabled} title={row.title} onclick={() => ctx.addImportedSymbol(id, row, index)}>{row.label}</button>
               {/each}
             </div>
           {/if}
+          <code class="gcn-import-statement">{gcnStatement()}</code>
         {:else}
           {@const importOptions = importTypeOptionsForTarget(ctx.target)}
           {@const currentImportType = node.data?.importType || importOptions[0]?.value}

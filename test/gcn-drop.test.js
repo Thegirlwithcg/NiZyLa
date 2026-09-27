@@ -128,8 +128,10 @@ test('addImportedSymbolNode creates a function call and class instance', () => {
     { id: 'member-print', source: member.id, target: printCircle.id, sourceHandle: 'value', targetHandle: 'value' }
   ] };
   const code = generateGeometryCode(doc, 'python').code;
-  assert.match(code, /shapes[.]area[(]/);
-  assert.match(code, /shapes[.]Circle[(]/);
+  assert.match(code, /area[(]/);
+  assert.match(code, /Circle[(]/);
+  assert.equal(doc.nodes.find((item) => item.id === importId).data.style, 'from');
+  assert.deepEqual(doc.nodes.find((item) => item.id === importId).data.names, [{ name: '*' }]);
 });
 test('addImportedSymbolNode rejects a non-root import', () => assert.throws(() => addImportedSymbolNode(createGeometryDocument('python'), 'missing', { kind: 'function', name: 'x', params: [] }, 0), /root gcn import/));
 test('addImportedSymbolNode rejects a non-GCN root import', () => {

@@ -20,6 +20,23 @@ const generate = (doc, target, options) => generateGeometryCode(doc, target, opt
 
 const oldRunner = ({ cwd, snapshotFile, logicalFile }) => ['import sys', `sys.path.insert(0, ${JSON.stringify(cwd)})`, `sys.argv = [${JSON.stringify(logicalFile)}]`, `with open(${JSON.stringify(snapshotFile)}, "rb") as f:`, '    source_bytes = f.read()', `code_obj = compile(source_bytes, ${JSON.stringify(logicalFile)}, "exec")`, `exec(code_obj, {"__name__": "__main__", "__file__": ${JSON.stringify(logicalFile)}, "__doc__": None})`, ''].join(NL);
 
+test('GCN Python imports support module, wildcard from, explicit from, and bare references', () => {
+  const make = (style, names) => {
+    const d = createGeometryDocument('python');
+    d.nodes.push(gcn('imp', 'lib/player.gcpy', 'player'));
+    d.nodes[1].data.style = style;
+    d.nodes[1].data.names = names;
+    d.nodes.push(node('call', 'functionCall', { importNodeId: 'imp', name: 'spawn', argumentNames: [] }), node('print', 'print', { argCount: 1 }));
+    d.edges.push({ id: 'start', source: 'start', target: 'print', sourceHandle: 'next', targetHandle: 'in' }, { id: 'value', source: 'call', target: 'print', sourceHandle: 'value', targetHandle: 'value' });
+    return generateGeometryCode(d, 'python', { importerRelDir: '' }).code;
+  };
+  assert.match(make('module', []), /import lib\.player as player/);
+  assert.match(make('from', [{ name: '*' }]), /from lib\.player import \*/);
+  assert.match(make('from', [{ name: 'Player' }, { name: 'spawn' }]), /from lib\.player import Player, spawn/);
+  assert.match(make('from', [{ name: '*' }]), /print\(spawn\(\)\)/);
+  assert.match(make('module', []), /print\(player\.spawn\(\)\)/);
+});
+
 test('build plan with no imports does not call readDoc', async () => { const d = createGeometryDocument('python'); let reads = 0; const plan = await buildGcnBuildPlan({ entryPath: 'main.gcn', entryDoc: d, target: 'python', readDoc: async () => { reads++; }, generate }); assert.equal(plan.ok, true); assert.deepEqual(plan.deps, []); assert.equal(reads, 0); });
 test('build plan emits a Python dependency', async () => { const entry = docWithImport('lib/shapes.gcn'); const dep = functionDoc(); const plan = await buildGcnBuildPlan({ entryPath: '/project/main.gcn', projectRoot: '/project', entryDoc: entry, target: 'python', readDoc: readMap({ '/project/lib/shapes.gcn': dep }), generate }); assert.equal(plan.ok, true); assert.equal(plan.deps[0].outPath, 'lib/shapes.py'); assert.equal(plan.deps[0].code.includes('def area'), true); });
 test('build plan resolves entry importer directory', async () => { const entry = docWithImport('../lib/shapes.gcn'); const dep = functionDoc(); const plan = await buildGcnBuildPlan({ entryPath: '/project/app/main.gcn', projectRoot: '/project', entryDoc: entry, target: 'python', readDoc: readMap({ '/project/lib/shapes.gcn': dep }), generate }); assert.equal(plan.entryCode.includes('import lib.shapes as shapes'), true); });
@@ -39,6 +56,8 @@ test('real Python run across GCN files', async (t) => {
   try {
     const mainDoc = createGeometryDocument('python');
     mainDoc.nodes.push(gcn('imp', 'lib/shapes.gcn', 'shapes'));
+    mainDoc.nodes.at(-1).data.style = 'from';
+    mainDoc.nodes.at(-1).data.names = [{ name: '*' }];
     mainDoc.nodes.push(node('areaCall', 'functionCall', { importNodeId: 'imp', name: 'area', argumentNames: ['r'] }), node('two', 'literal', { valueType: 'int', value: 2 }), node('printArea', 'print', { argCount: 1 }), node('circle', 'instantiate', { importNodeId: 'imp', className: 'Circle', argumentNames: ['r'] }), node('three', 'literal', { valueType: 'int', value: 3 }), node('member', 'getMember', { memberName: 'r' }), node('printMember', 'print', { argCount: 1 }));
     mainDoc.edges.push({ id: 'start-area', source: 'start', target: 'printArea', sourceHandle: 'next', targetHandle: 'in' }, { id: 'area-value', source: 'areaCall', target: 'printArea', sourceHandle: 'value', targetHandle: 'value' }, { id: 'two-area', source: 'two', target: 'areaCall', sourceHandle: 'value', targetHandle: 'arg_0' }, { id: 'area-next', source: 'printArea', target: 'printMember', sourceHandle: 'next', targetHandle: 'in' }, { id: 'three-circle', source: 'three', target: 'circle', sourceHandle: 'value', targetHandle: 'arg_0' }, { id: 'circle-member', source: 'circle', target: 'member', sourceHandle: 'value', targetHandle: 'object' }, { id: 'member-print', source: 'member', target: 'printMember', sourceHandle: 'value', targetHandle: 'value' });
     const depDoc = createGeometryDocument('python');

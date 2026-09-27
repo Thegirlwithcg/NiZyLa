@@ -254,7 +254,7 @@ export const nodeDefinitions = {
   },
   import: {
     label: 'Import', category: 'Module',
-    defaults: { importType: 'module', module: '', names: [], isRelative: false, level: 0, path: '', alias: '' },
+    defaults: { importType: 'module', module: '', names: [], isRelative: false, level: 0, path: '', alias: '', style: 'module' },
     ports: () => execution('next')
   },
   symbolRef: {
@@ -707,6 +707,21 @@ function validateSingleGraph(graph, scopePath = [], enclosingSymbols = new Map()
       error('gcn-import-invalid-alias', `Invalid or duplicate GCN import alias: ${alias}.`, { nodeId: node.id });
     }
     gcnAliases.add(alias);
+    const style = node.data?.style || 'module';
+    if (!['module', 'from'].includes(style)) error('gcn-import-invalid-style', `GCN import style must be module or from: ${style}.`, { nodeId: node.id });
+    const importNames = node.data?.names || [];
+    if (!Array.isArray(importNames) || (style === 'from' && importNames.length === 0)) {
+      error('gcn-import-invalid-names', 'GCN from imports must select at least one name.', { nodeId: node.id });
+    } else {
+      const seenImportNames = new Set();
+      for (const item of importNames) {
+        if (!item || typeof item.name !== 'string' || !/^(?:[A-Za-z_][A-Za-z0-9_]*|\*)$/.test(item.name) || seenImportNames.has(item.name)
+          || (item.name === '*' && importNames.length !== 1)) {
+          error('gcn-import-invalid-names', 'GCN import names must be identifiers or a lone *.', { nodeId: node.id });
+        }
+        seenImportNames.add(item?.name);
+      }
+    }
     const path = node.data?.path;
     if (typeof path !== 'string' || !path || !isGeometryPath(path) || path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
       error('gcn-import-invalid-path', 'GCN import path must be a relative POSIX path ending in .gcpy, .gcgd, or .gcn.', { nodeId: node.id });

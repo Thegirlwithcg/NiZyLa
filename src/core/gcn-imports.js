@@ -142,6 +142,11 @@ export function exportEntries(exports, target) {
 }
 export function gcnImportDiagnostics(doc, target, options = {}) {
   const diagnostics = [];
+  const exportNames = (exports) => new Set([...(exports?.functions || []), ...(exports?.classes || [])].map(item => item.name).filter(Boolean));
+  const selectedNames = (node, exports) => {
+    const names = node.data?.names || [];
+    return names.some(item => item.name === '*') ? exportNames(exports) : new Set(names.map(item => item.name));
+  };
   const imports = new Map((doc?.nodes || []).filter(node => node.type === 'import' && node.data?.importType === 'gcn').map(node => [node.id, node]));
   for (const node of imports.values()) {
     if (target === 'python') {
@@ -151,6 +156,18 @@ export function gcnImportDiagnostics(doc, target, options = {}) {
     if (options.gcnExports?.has?.(node.data?.path)) {
       const exports = options.gcnExports.get(node.data.path);
       if (exports === null) diagnostics.push({ severity: 'error', code: 'gcn-import-not-found', message: `Cannot read ${node.data.path}.`, nodeId: node.id });
+      if ((node.data?.style || 'module') === 'from') {
+        const names = node.data?.names || [];
+        if (names.length === 0) diagnostics.push({ severity: 'error', code: 'gcn-import-empty-from', message: `Nothing is imported from ${node.data.path}.`, nodeId: node.id });
+        if (exports) {
+          const available = exportNames(exports);
+          for (const item of names) {
+            if (item.name !== '*' && !available.has(item.name)) {
+              diagnostics.push({ severity: 'error', code: 'gcn-import-unexported-name', message: `${item.name} is not exported by ${node.data.path}.`, nodeId: node.id });
+            }
+          }
+        }
+      }
     }
   }
   const walk = (graph) => {
@@ -160,8 +177,13 @@ export function gcnImportDiagnostics(doc, target, options = {}) {
         const exports = options.gcnExports.get(imported.data.path);
         if (exports) {
           const alias = imported.data?.alias || 'module';
+          const fromStyle = target === 'python' && (imported.data?.style || 'module') === 'from';
+          const selected = selectedNames(imported, exports);
           if (node.type === 'functionCall') {
             const name = node.data?.name || 'call';
+            if (fromStyle && !selected.has(name)) {
+              diagnostics.push({ severity: 'error', code: 'gcn-import-name-not-selected', message: `${name} is not imported from ${imported.data.path}; tick it in the Import node`, nodeId: node.id });
+            }
             const fn = (exports.functions || []).find(item => item.name === name);
             if (!fn) diagnostics.push({ severity: 'error', code: 'gcn-import-missing-symbol', message: `${alias} has no function ${name}.`, nodeId: node.id });
             else {
@@ -172,6 +194,9 @@ export function gcnImportDiagnostics(doc, target, options = {}) {
             }
           } else {
             const name = node.data?.className || 'Object';
+            if (fromStyle && !selected.has(name)) {
+              diagnostics.push({ severity: 'error', code: 'gcn-import-name-not-selected', message: `${name} is not imported from ${imported.data.path}; tick it in the Import node`, nodeId: node.id });
+            }
             const cls = (exports.classes || []).find(item => item.name === name);
             if (!cls) diagnostics.push({ severity: 'error', code: 'gcn-import-missing-symbol', message: `${alias} has no class ${name}.`, nodeId: node.id });
             else {
@@ -182,10 +207,34 @@ export function gcnImportDiagnostics(doc, target, options = {}) {
           }
         }
       }
+      if (node.type === 'symbolRef' && imports.has(node.data?.importNodeId)) {
+        const imported = imports.get(node.data.importNodeId);
+        const exports = options.gcnExports?.get?.(imported.data?.path);
+        if (target === 'python' && exports && (imported.data?.style || 'module') === 'from' && !selectedNames(imported, exports).has(node.data?.symbol)) {
+          diagnostics.push({ severity: 'error', code: 'gcn-import-name-not-selected', message: `${node.data?.symbol} is not imported from ${imported.data.path}; tick it in the Import node`, nodeId: node.id });
+        }
+      }
       if (node.data?.graph) walk(node.data.graph);
     }
   };
   walk(doc);
+
+  if (target === 'python') {
+    const localNames = new Set([...(doc.variables || []).map(item => item.name), ...(doc.nodes || [])
+      .filter(item => ['functionDef', 'classDef'].includes(item.type)).map(item => item.data?.name)].filter(Boolean));
+    const fromNames = new Map();
+    for (const imported of imports.values()) {
+      if ((imported.data?.style || 'module') !== 'from') continue;
+      const exports = options.gcnExports?.get?.(imported.data?.path);
+      if (!exports) continue;
+      for (const name of selectedNames(imported, exports)) {
+        if (localNames.has(name)) diagnostics.push({ severity: 'warning', code: 'gcn-import-shadow', message: `${name} from ${imported.data.path} shadows a local definition.`, nodeId: imported.id });
+        const previous = fromNames.get(name);
+        if (previous) diagnostics.push({ severity: 'warning', code: 'gcn-import-shadow', message: `${name} from ${imported.data.path} shadows another from-import from ${previous}.`, nodeId: imported.id });
+        fromNames.set(name, imported.data.path);
+      }
+    }
+  }
   return diagnostics;
 }
 const dirnamePosix = value => { const normalized = posix(value); const index = normalized.lastIndexOf('/'); return index < 0 ? '' : normalized.slice(0, index); };

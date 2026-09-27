@@ -73,15 +73,16 @@ function importedCallText(node, argTexts, context) {
   const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
   if (!imported) return null;
   const alias = imported.data?.alias || 'module';
+  const bare = context.target === 'python' && (imported.data?.style || 'module') === 'from';
   if (node.type === 'functionCall') {
     const targetNode = node.data?.targetId ? context.definitions?.get(node.data.targetId) : null;
     const name = targetNode?.data?.name || node.data?.name || 'call';
-    return `${alias}.${name}(${argTexts.join(', ')})`;
+    return `${bare ? '' : `${alias}.`}${name}(${argTexts.join(', ')})`;
   }
   const className = node.data?.className || 'Object';
   return context.target === 'gdscript'
     ? `${alias}.${className}.new(${argTexts.join(', ')})`
-    : `${alias}.${className}(${argTexts.join(', ')})`;
+    : `${bare ? '' : `${alias}.`}${className}(${argTexts.join(', ')})`;
 }
 
 function render(node, sources, context) {
@@ -104,7 +105,9 @@ function render(node, sources, context) {
     text = node.data?.name || 'param';
   } else if (node.type === 'symbolRef') {
     const imported = node.data?.importNodeId ? context.gcnImports?.get(node.data.importNodeId) : null;
-    text = imported ? `${imported.data?.alias || 'module'}.${node.data?.symbol || 'symbol'}` : (node.data?.symbol || 'symbol');
+    const symbol = node.data?.symbol || 'symbol';
+    const bare = context.target === 'python' && (imported?.data?.style || 'module') === 'from';
+    text = imported ? `${bare ? '' : `${imported.data?.alias || 'module'}.`}${symbol}` : symbol;
   } else if (node.type === 'boolean' && operator === 'not') {
     text = `(not ${a?.text ?? 'False'})`;
   } else if (node.type === 'binary' && operator === '/' && target === 'gdscript') {
@@ -855,7 +858,13 @@ function generate(doc, target, options = {}) {
             emitLine(0, `# ⚠ skipped Import ${alias}: ${resolved.error}`, node.id);
             context.skippedNodeIds.add(node.id);
           } else if (!resolved.error) {
-            emitLine(0, resolved.module === alias ? `import ${resolved.module}` : `import ${resolved.module} as ${alias}`, node.id);
+            const style = d.style || 'module';
+            if (style === 'from') {
+              const names = (d.names || []).map((item) => item.name).join(', ');
+              emitLine(0, `from ${resolved.module} import ${names}`, node.id);
+            } else {
+              emitLine(0, resolved.module === alias ? `import ${resolved.module}` : `import ${resolved.module} as ${alias}`, node.id);
+            }
             importsEmitted++;
           }
         } else if (d.importType === 'from') {

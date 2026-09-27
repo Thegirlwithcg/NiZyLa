@@ -56,6 +56,19 @@ const withImport = (lines) => {
 const allNodes = (graph, result = []) => { for (const node of graph.nodes || []) { result.push(node); if (node.data?.graph) allNodes(node.data.graph, result); } return result; };
 
 test('gcnImportDiagnostics reports invalid Python module', () => { const d = simpleDoc('my-lib/a.gcn'); const x = gcnImportDiagnostics(d, 'python', {}); assert.equal(x[0].code, 'gcn-import-invalid-module'); assert.equal(x[0].nodeId, 'imp'); });
+test('from GCN diagnostics cover empty, unexported, and unselected names', () => {
+  const d = withImport(['area(1)']);
+  const imp = d.nodes.find(node => node.id === 'imp');
+  imp.data.style = 'from'; imp.data.names = [{ name: 'Player' }];
+  const call = allNodes(d).find(node => node.type === 'functionCall'); call.data.importNodeId = 'imp';
+  const exports = new Map([['lib/shapes.gcn', { functions: [{ name: 'area', params: [] }], classes: [{ name: 'Player', initParams: [] }] }]]);
+  const diagnostics = gcnImportDiagnostics(d, 'python', { gcnExports: exports });
+  assert.ok(diagnostics.some(item => item.code === 'gcn-import-name-not-selected' && item.nodeId === call.id));
+  imp.data.names = [{ name: 'Missing' }];
+  assert.ok(gcnImportDiagnostics(d, 'python', { gcnExports: exports }).some(item => item.code === 'gcn-import-unexported-name'));
+  imp.data.names = [];
+  assert.ok(gcnImportDiagnostics(d, 'python', { gcnExports: exports }).some(item => item.code === 'gcn-import-empty-from'));
+});
 test('two-argument codegen signature remains valid', () => { const r = generateGeometryCode(simpleDoc()); assert.equal(r.diagnostics.some(d => d.severity === 'error'), false); });
 test('Python GCN import emits aliased module', () => { const r = generateGeometryCode(simpleDoc()); assert.match(r.code, new RegExp('^import lib[.]shapes as shapes', 'm')); });
 test('Python GCN import emits bare module when alias matches', () => { const r = generateGeometryCode(simpleDoc('shapes.gcn', 'shapes')); assert.match(r.code, new RegExp('^import shapes$', 'm')); });

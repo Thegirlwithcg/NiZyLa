@@ -8,12 +8,12 @@
   //   active        false while the workspace is hidden: shortcuts and interaction are disabled
   //   theme, preferences, showLineNumbers   passed to the code preview
   //   onchange(nextDocument)   called with a fresh plain .gcn document after every edit or viewport move
-  // Svelte Flow hooks need a provider ancestor, hence this thin wrapper.
+  // Key outside provider: Svelte Flow destroys its store on teardown, so each document needs a fresh provider.
   let props = $props();
 </script>
 
-<SvelteFlowProvider>
-  {#key props.documentKey}
+{#key props.documentKey}
+  <SvelteFlowProvider>
     <GeometryWorkspaceInner {...props} />
-  {/key}
-</SvelteFlowProvider>
+  </SvelteFlowProvider>
+{/key}

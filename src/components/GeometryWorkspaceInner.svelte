@@ -37,7 +37,7 @@
     deleteVariable, duplicateNodes, endEdit, getGraphAtScope, moveNodes, pasteFragment, spliceConvertedFragment, positionsFromFlow, redo,
     removeItems, setLiteralType, setNodeData, setTarget, setViewport, setViewportAtScope, undo, updateGraphAtScope,
     updateVariableAtScope, variableUsage, addFunctionParameter, updateFunctionParameter, removeFunctionParameter, syncFunctionCalls,
-    addGcnImports, addImportedSymbolNode, importTypeOptionsForTarget
+    addGcnImports, addImportedSymbolNode, importTypeOptionsForTarget, startAddGrab
   } from '../core/geometry-editor.js';
   import CodeEditor from './CodeEditor.svelte';
   import GeometryAddMenu from './GeometryAddMenu.svelte';
@@ -774,6 +774,7 @@
   function placeGrab() {
     if (!grab) return;
     const ids = grab.ids;
+    const onPlaced = grab.onPlaced;
     const positions = {};
     for (const id of ids) {
       const n = nodes.find((node) => node.id === id);
@@ -790,6 +791,7 @@
       applyScoped(() => nextGraph, true);
     }
     finishEdit();
+    onPlaced?.(ids);
     canvasEl?.focus({ preventScroll: true });
   }
 
@@ -940,24 +942,45 @@
     }
   }
 
-  async function pick(presetId) {
-    const at = menu.flowAt;
-    menu = null;
-    const result = addNode(activeGraph, presetId, { x: at.x - 20, y: at.y - 14 }, { target: doc.target });
-    if (!result) return;
-    applyScoped(() => result.doc);
-    await tick();
-    selectOnly([result.nodeId]);
+  async function focusPlacedNode(nodeId, presetId) {
     if (presetId === 'var') {
       await tick();
-      const input = document.querySelector(`.svelte-flow__node[data-id="${result.nodeId}"] input[aria-label="Variable name"]`);
+      const input = document.querySelector(`.svelte-flow__node[data-id="${nodeId}"] input[aria-label="Variable name"]`);
       if (input) {
         input.focus();
         input.select();
       }
     } else {
-      canvasEl.focus({ preventScroll: true });
+      canvasEl?.focus({ preventScroll: true });
     }
+  }
+
+  async function pick(presetId) {
+    const menuAt = menu.flowAt;
+    const canvasRect = canvasEl?.getBoundingClientRect();
+    const pointerInCanvas = pointInRect(lastPointer, canvasRect || { left: 0, top: 0, width: 0, height: 0 });
+    menu = null;
+    if (pointerInCanvas) {
+      finishEdit();
+      const pointerFlow = flow.screenToFlowPosition(lastPointer);
+      const position = { x: pointerFlow.x - 20, y: pointerFlow.y - 14 };
+      const result = addNode(activeGraph, presetId, position, { target: doc.target });
+      if (!result) return;
+      applyScoped(() => result.doc, true);
+      await tick();
+      selectOnly([result.nodeId]);
+      grab = { ...startAddGrab({ nodeId: result.nodeId, position, pointerFlow }), onPlaced: (ids) => focusPlacedNode(ids[0], presetId) };
+      say('Move to place · Click / Enter = place · Esc / Right-click = cancel');
+      canvasEl?.focus({ preventScroll: true });
+      return;
+    }
+
+    const result = addNode(activeGraph, presetId, { x: menuAt.x - 20, y: menuAt.y - 14 }, { target: doc.target });
+    if (!result) return;
+    applyScoped(() => result.doc);
+    await tick();
+    selectOnly([result.nodeId]);
+    await focusPlacedNode(result.nodeId, presetId);
   }
 
   function closeMenu() {
